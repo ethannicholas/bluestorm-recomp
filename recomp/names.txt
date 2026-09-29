@@ -1,0 +1,6 @@
+# addr name  -- functions identified by hand (supplements dtk symbols)
+8010A188 OSSaveContext
+8010A17C OSGetCurrentContext
+8010A2E0 OSGetStackPointer
+8010E828 SelectThreadToRun
+8010C4F0 __OSDispatchInterrupt

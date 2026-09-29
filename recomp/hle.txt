@@ -1,0 +1,4 @@
+# functions whose body is replaced by a runtime implementation (hle_<name>)
+OSSaveContext
+OSLoadContext
+OSReport
