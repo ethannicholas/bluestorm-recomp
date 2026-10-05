@@ -582,9 +582,15 @@ void renderer_efb_copy(uint32_t dest_addr, bool /*unused*/) {
             }
             fprintf(stderr, "      num_texgens=%u (bp genmode %u) xf texgen0=%08X texgen1=%08X\n", ps.num_texgens, ps.bp[0] & 15,
                     g_state.xf_regs[0x40], g_state.xf_regs[0x41]);
-            for (uint32_t v = cmd.first; v < cmd.first + 3; v++)
-                fprintf(stderr, "      v%u tex0=(%g,%g,%g) tex1=(%g,%g,%g)\n", v, bb.verts[v].tex[0][0], bb.verts[v].tex[0][1], bb.verts[v].tex[0][2],
-                        bb.verts[v].tex[1][0], bb.verts[v].tex[1][1], bb.verts[v].tex[1][2]);
+            for (uint32_t v = cmd.first; v < cmd.first + 2; v++) {
+                fprintf(stderr, "      v%u pos=(%g,%g,%g) col0=%02X%02X%02X%02X col1=%02X%02X%02X%02X\n", v,
+                        bb.verts[v].pos[0], bb.verts[v].pos[1], bb.verts[v].pos[2],
+                        bb.verts[v].col[0][0], bb.verts[v].col[0][1], bb.verts[v].col[0][2], bb.verts[v].col[0][3],
+                        bb.verts[v].col[1][0], bb.verts[v].col[1][1], bb.verts[v].col[1][2], bb.verts[v].col[1][3]);
+                for (int tc = 0; tc < 8; tc++)
+                    fprintf(stderr, "        tex%d=(%g,%g,%g)\n", tc, bb.verts[v].tex[tc][0],
+                            bb.verts[v].tex[tc][1], bb.verts[v].tex[tc][2]);
+            }
             for (int r = 0; r < 4; r++)
                 fprintf(stderr, "      reg%d %06X %06X konst%d %06X %06X\n", r, ps.tev_reg[r][0], ps.tev_reg[r][1], r, ps.tev_konst[r][0], ps.tev_konst[r][1]);
         }

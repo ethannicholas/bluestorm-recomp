@@ -548,6 +548,11 @@ void android_main(android_app* app) {
     bool have_content = false;
     bool stereo = g_vrcfg.start_in_stereo, manual_override = false, toggle_was_down = false;
     int busy_frames = 0;
+    // Kept across frames: a display frame with no new game frame re-submits these
+    // rather than re-rendering. They carry the pose each image was rendered for, so
+    // the compositor reprojects them for the current head pose.
+    XrCompositionLayerProjectionView proj_views[2]{};
+    bool have_proj = false;
     XrTime last_report = 0;
 
     while (!app->destroyRequested) {
@@ -613,7 +618,6 @@ void android_main(android_app* app) {
         std::vector<XrCompositionLayerBaseHeader*> layers;
         XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
         XrCompositionLayerProjection proj_layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-        XrCompositionLayerProjectionView proj_views[2]{};
 
         if (fs.shouldRender && stereo) {
             // --- stereo: the world through each eye, as a projection layer ---
@@ -624,7 +628,10 @@ void android_main(android_app* app) {
             li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             li.displayTime = fs.predictedDisplayTime;
             li.space = g_xr.space;
-            if (XR_SUCCEEDED(xrLocateViews(g_xr.session, &li, &vs, 2, &nv, views)) && nv == 2) {
+            // Only redraw the eyes when the game produced a frame. Acquiring and
+            // releasing an image without drawing into it hands the compositor whatever
+            // that image held several frames ago, which reads as a hard strobe.
+            if (batch && XR_SUCCEEDED(xrLocateViews(g_xr.session, &li, &vs, 2, &nv, views)) && nv == 2) {
                 // Both eyes share one batch: the CPU-side transform and the vertex
                 // buffer are produced once, only the uniforms and draws repeat.
                 gx::Batch* b = batch.get();
@@ -659,14 +666,15 @@ void android_main(android_app* app) {
                     proj_views[e].subImage.imageRect = {{0, 0}, {eye.w, eye.h}};
                     proj_views[e].subImage.imageArrayIndex = 0;
                 }
-                // A half-filled projection layer is invalid, so only submit when both
+                // A half-filled projection layer is invalid, so only keep it when both
                 // eyes were acquired.
-                if (both_eyes) {
-                    proj_layer.space = g_xr.space;
-                    proj_layer.viewCount = 2;
-                    proj_layer.views = proj_views;
-                    layers.push_back((XrCompositionLayerBaseHeader*)&proj_layer);
-                }
+                if (both_eyes) have_proj = true;
+            }
+            if (have_proj) {
+                proj_layer.space = g_xr.space;
+                proj_layer.viewCount = 2;
+                proj_layer.views = proj_views;
+                layers.push_back((XrCompositionLayerBaseHeader*)&proj_layer);
             }
         } else if (fs.shouldRender) {
             uint32_t idx = 0;

@@ -142,6 +142,12 @@ void main() {
 }
 
 std::string gen_pixel_shader(const ShaderKey& k) {
+    static const int tev_stop = getenv("WR_TEV_STOP") ? atoi(getenv("WR_TEV_STOP")) : -1;
+    static const int tev_reg = getenv("WR_TEV_REG") ? atoi(getenv("WR_TEV_REG")) : 0;
+    static const int tev_alpha = getenv("WR_TEV_ALPHA") ? atoi(getenv("WR_TEV_ALPHA")) : 0;
+    static const bool no_alpha_test = getenv("WR_NO_ALPHA_TEST") != nullptr;
+    static const bool no_fog = getenv("WR_NO_FOG") != nullptr;
+    static const bool ras_white = getenv("WR_RAS_WHITE") != nullptr;
     std::string s;
     char buf[1024];
     // The zero-argument case appends directly: handing a runtime format string to
@@ -250,7 +256,11 @@ std::string gen_pixel_shader(const ShaderKey& k) {
         {
             uint32_t rswap = aenv & 3;
             std::string sw_ = swizzle(k, rswap);
-            switch (chan) {
+            // WR_RAS_WHITE=1 forces the rasterized colour opaque white, to test whether
+            // a bad image comes from the CPU-side vertex colour/lighting in xf.cpp
+            // rather than from the TEV program itself.
+            if (ras_white) W("    ras = ivec4(255);\n");
+            else switch (chan) {
             case 0: W("    ras = col0.%s;\n", sw_.c_str()); break;
             case 1: W("    ras = col1.%s;\n", sw_.c_str()); break;
             case 5: W("    ras = ivec4(alphabump);\n"); break;
@@ -320,6 +330,21 @@ std::string gen_pixel_shader(const ShaderKey& k) {
             else W("    %s.a = clamp(ar, -1024, 1023);\n", kDest[dest]);
         }
         s += "  }\n";
+        // Debug: WR_TEV_STOP=N ends the chain after stage N and writes the running
+        // result straight out, to bisect which stage a bad image comes from.
+        // WR_TEV_REG picks which register to show (0=prev, 1=c0, 2=c1, 3=c2), and
+        // WR_TEV_ALPHA=1 shows that register's alpha as greyscale instead of its rgb.
+        if (tev_stop >= 0 && (int)st == tev_stop) {
+            // 0-3 pick a TEV register, 4 the texel this stage sampled, 5 the
+            // rasterized colour, 6 the konst. Showing the texel separates a bad
+            // texture or texcoord from bad combiner inputs.
+            static const char* kShow[7] = {"prev", "c0", "c1", "c2", "tex", "ras", "konst"};
+            const char* reg = kShow[tev_reg % 7];
+            if (tev_alpha) W("  o_color = vec4(vec3(float(%s.a & 255) / 255.0), 1.0);\n", reg);
+            else W("  o_color = vec4(vec3(%s.rgb & 255) / 255.0, 1.0);\n", reg);
+            s += "  return;\n";
+            break;
+        }
     }
     s += "  ivec4 outc = prev & 255;\n";
 
@@ -330,14 +355,15 @@ std::string gen_pixel_shader(const ShaderKey& k) {
         snprintf(t0, sizeof(t0), kCompare[f0], "outc.a", "u_alpharef.x");
         snprintf(t1, sizeof(t1), kCompare[f1], "outc.a", "u_alpharef.y");
         static const char* lop[4] = {"&&", "||", "!=", "=="};
-        if (!(f0 == 7 && f1 == 7 && logic == 0))
+        // WR_NO_ALPHA_TEST=1 skips it, to tell a discard apart from a shading bug.
+        if (!(f0 == 7 && f1 == 7 && logic == 0) && !no_alpha_test)
             W("  if (!(%s %s %s)) discard;\n", t0, lop[logic], t1);
     }
     // fog
     {
         uint32_t fsel = k.fog & 7;
         bool ortho = (k.fog >> 3) & 1;
-        if (fsel >= 2) {
+        if (fsel >= 2 && !no_fog) {
             s += "  float zs = gl_FragCoord.z * 16777215.0;\n";
             if (ortho) s += "  float ze = u_fog.x * (zs / 16777215.0);\n";
             else s += "  float ze = (u_fog.x * 16777216.0) / (u_fog.z - floor(zs / exp2(u_fog.w)));\n";
