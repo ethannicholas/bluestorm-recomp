@@ -23,9 +23,73 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 uint32_t boot_load(const char* iso_path);
 void debug_dump_threads();
+bool write_png(const char* path, const uint8_t* rgba, int w, int h);
+
+// ---------------------------------------------------------------------------
+// --eye renders through render_execute_eye into an offscreen target and dumps that,
+// instead of the flat path. It exists so the stereo renderer can be looked at without
+// a headset: an idle headset will not launch a 6DoF app, and shipping VR changes that
+// cannot be checked first has already cost a regression.
+//
+// The view is the identity, so the eye sits exactly where the game's camera is and the
+// result should closely match the flat render. Anything that differs -- geometry in the
+// wrong place, missing render-to-texture results -- is a fault in the eye path.
+// ---------------------------------------------------------------------------
+static bool g_eye_mode = false;
+static GLuint g_eye_fbo, g_eye_tex, g_eye_depth;
+static int g_eye_w = 960, g_eye_h = 720;
+
+static void eye_init() {
+    glGenTextures(1, &g_eye_tex);
+    glBindTexture(GL_TEXTURE_2D, g_eye_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_eye_w, g_eye_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glGenRenderbuffers(1, &g_eye_depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, g_eye_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, g_eye_w, g_eye_h);
+    glGenFramebuffers(1, &g_eye_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, g_eye_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_eye_tex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_eye_depth);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        fprintf(stderr, "eye fbo incomplete\n");
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// Column-major, matching glUniformMatrix4fv with transpose = GL_FALSE. The game's view
+// space is -Z forward, so this is an ordinary GL perspective in game units.
+static void eye_matrices(float* proj, float* view) {
+    const float fov = 1.0f;          // tan(45 deg): a 90 degree vertical field
+    const float aspect = (float)g_eye_w / (float)g_eye_h;
+    const float n = 10.0f, f = 500000.0f;
+    memset(proj, 0, 16 * sizeof(float));
+    proj[0] = 1.0f / (fov * aspect);
+    proj[5] = 1.0f / fov;
+    proj[10] = -(f + n) / (f - n);
+    proj[11] = -1.0f;
+    proj[14] = -(2.0f * f * n) / (f - n);
+    memset(view, 0, 16 * sizeof(float));
+    view[0] = view[5] = view[10] = view[15] = 1.0f;
+}
+
+static void eye_dump(const char* dir, uint32_t n) {
+    std::vector<uint8_t> px((size_t)g_eye_w * g_eye_h * 4), fl(px.size());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_eye_fbo);
+    glReadPixels(0, 0, g_eye_w, g_eye_h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    const size_t stride = (size_t)g_eye_w * 4;
+    for (int y = 0; y < g_eye_h; y++)
+        memcpy(&fl[y * stride], &px[(size_t)(g_eye_h - 1 - y) * stride], stride);
+    for (size_t i = 3; i < fl.size(); i += 4) fl[i] = 255;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/eye_%05u.png", dir, n);
+    write_png(path, fl.data(), g_eye_w, g_eye_h);
+}
 
 // ---------------------------------------------------------------------------
 static void on_interrupt() {
@@ -123,6 +187,7 @@ int main(int argc, char** argv) {
         if (!strncmp(argv[i], "--scale=", 8)) scale = atoi(argv[i] + 8);
         else if (!strncmp(argv[i], "--frames=", 9)) frames_wanted = atoi(argv[i] + 9);
         else if (!strncmp(argv[i], "--seconds=", 10)) seconds = atoi(argv[i] + 10);
+        else if (!strcmp(argv[i], "--eye")) g_eye_mode = true;
         else if (!strncmp(argv[i], "--dump-dir=", 11)) gx::g_dump_dir = argv[i] + 11;
         else if (!strncmp(argv[i], "--dump-every=", 13)) gx::g_dump_every = atoi(argv[i] + 13);
         else if (argv[i][0] != '-') iso = argv[i];
@@ -152,6 +217,7 @@ int main(int argc, char** argv) {
     fflush(stdout);
 
     gx::render_init(scale);
+    if (g_eye_mode) eye_init();
     gx::render_set_window_size(640 * scale, 480 * scale);
 
     uint32_t entry = boot_load(iso.c_str());
@@ -172,7 +238,15 @@ int main(int argc, char** argv) {
         pad_set_state(0, p);
 
         if (auto b = gx::take_batch(4)) {
-            if (gx::render_execute(*b)) presented++;
+            if (g_eye_mode) {
+                float P[16], V[16];
+                eye_matrices(P, V);
+                gx::render_set_vr_eye(P, V, 0.55f);
+                gx::render_execute_eye(*b, g_eye_fbo, g_eye_w, g_eye_h, true);
+                presented++;
+                if (gx::g_dump_dir && gx::g_dump_every && presented % gx::g_dump_every == 0)
+                    eye_dump(gx::g_dump_dir, presented);
+            } else if (gx::render_execute(*b)) presented++;
         }
 
         const auto now = clock::now();

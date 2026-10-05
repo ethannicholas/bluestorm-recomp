@@ -344,7 +344,18 @@ static void apply_state(const PixelState& st, int prim) {
         P[0] = p[0]; P[12] = p[1]; P[5] = p[2]; P[13] = p[3]; P[10] = p[4]; P[14] = p[5]; P[15] = 1.0f;
     }
     if (g_vr_active && perspective) {
-        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, g_vr_proj);
+        // WR_EYE_GAMEPROJ keeps the game's own frustum and applies only the head
+        // transform, which tells apart "the eye sees less than it should" from "the game
+        // never drew anything out there".
+        static const bool game_proj = getenv("WR_EYE_GAMEPROJ") != nullptr;
+        static bool logged = false;
+        if (!logged && getenv("WR_EYELOG")) {
+            logged = true;
+            fprintf(stderr, "[eye] game fov: x=%.1fdeg y=%.1fdeg (p0=%f p2=%f)\n",
+                    2.0f * atanf(1.0f / p[0]) * 57.2958f, 2.0f * atanf(1.0f / p[2]) * 57.2958f,
+                    p[0], p[2]);
+        }
+        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, game_proj ? P : g_vr_proj);
         glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, g_vr_view);
         glUniform1i(pr.u_vr, 1);
     } else {
@@ -636,58 +647,102 @@ void render_set_vr_eye(const float proj[16], const float view[16], float hud_sca
     g_vr_hud_scale = hud_scale;
 }
 
+static bool execute_batch(Batch& b, bool do_present);
+
+// The size of the frame the game actually scans out, which is the display copy's. It is
+// not the EFB's size: the EFB is 640x528 and the game displays 640x480 of it.
+static void display_size(const Batch& b, uint32_t& w, uint32_t& h) {
+    w = EFB_W;
+    h = EFB_H;
+    for (auto& c : b.cmds)
+        if (c.type == CmdType::EfbCopy && c.copy.to_xfb) { w = c.copy.dst_w; h = c.copy.dst_h; }
+}
+
+// A copy that takes the whole displayed frame is the game compositing its finished
+// image: a post pass reads the EFB out and draws it straight back as a screen-filling
+// quad. Smaller copies are real scene content -- the water reflection, the sprite sheet
+// the spray uses -- and the eye pass needs them.
+static bool is_fullscreen_copy(const EfbCopyCmd& c, uint32_t dw, uint32_t dh) {
+    return !c.to_xfb && c.dst_w >= dw && c.dst_h >= dh;
+}
+
+// Where the main scene starts in a batch. Each off-screen pass ends at the copy that
+// reads it out, so the main scene follows the last such copy. Full-frame copies don't
+// count: they come after the scene, not before it.
+static size_t main_scene_start(const Batch& b) {
+    uint32_t dw, dh;
+    display_size(b, dw, dh);
+    size_t start = 0;
+    for (size_t i = 0; i < b.cmds.size(); i++)
+        if (b.cmds[i].type == CmdType::EfbCopy && !b.cmds[i].copy.to_xfb &&
+            !is_fullscreen_copy(b.cmds[i].copy, dw, dh))
+            start = i + 1;
+    return start;
+}
+
+// Texture ids holding a copy of a whole frame.
+//
+// A draw sampling one is screen-space, so in an eye it is a flat billboard rather than
+// something in the world -- it leaves a faint rectangular seam where its edges fall. It
+// is tempting to drop those draws, but in this game the water surface is one of them:
+// dropping it leaves the seabed showing through bare sand instead of blue-green water,
+// which is far worse than the seam. WR_EYE_SKIPCOMP drops them anyway, for comparing.
+static std::vector<uint32_t> g_fullscreen_tex;
+
+static bool is_composite_draw(const PixelState& st) {
+    static const bool skip = getenv("WR_EYE_SKIPCOMP") != nullptr;
+    if (!skip) return false;
+    for (int i = 0; i < 8; i++) {
+        if (!st.tex_is_efb[i] || !st.tex_id[i]) continue;
+        for (uint32_t id : g_fullscreen_tex)
+            if (id == st.tex_id[i]) return true;
+    }
+    return false;
+}
+
 // Draw one eye's view of a batch into `fbo`.
 //
 // The vertex buffer, the CPU-side transform in xf.cpp and any render-to-texture results
 // are all shared between the eyes -- only the uniforms and the draw calls are repeated,
 // which is what makes stereo affordable here. Pass do_copies for the first eye only;
-// the second reuses what it produced. EFB copies to the XFB (the final present) are
-// skipped entirely, since an eye renders straight to its own target.
+// the second reuses what it produced.
 bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
-    // The frame is in two parts. Everything up to the last render-to-texture copy is
-    // off-screen work -- water reflections, droplet sprites -- drawn with its own
-    // cameras (a reflection uses a mirrored one) and belonging in a texture. Only what
-    // follows is the view the player sees.
-    //
-    // Re-projecting the off-screen passes through an eye puts that geometry in the
-    // world, which is where the untextured upside-down rider came from, and leaves the
-    // textures they should have produced unwritten, which is where the dark water
-    // square and the square droplets came from. So run that part exactly as the flat
-    // renderer would, once, and re-project only the main scene per eye.
-    size_t main_start = 0;
-    for (size_t i = 0; i < b.cmds.size(); i++)
-        if (b.cmds[i].type == CmdType::EfbCopy && !b.cmds[i].copy.to_xfb) main_start = i + 1;
-
+    // The scene samples textures the game produces by copying them back out of the EFB:
+    // the water reflection, the sprite sheet the spray uses. An eye pass never draws into
+    // the EFB, so on its own it would copy out an empty one -- which is what left the ski
+    // untextured and put a black quad on the water. So the first eye runs the whole frame
+    // flat into the EFB exactly as the hardware would, minus the scanout, and the eyes
+    // then re-project only the main scene on top of correct textures.
     if (do_copies) {
-        // In stereo, render_execute() never runs, so this is the only place the batch's
-        // textures and vertices reach the GPU. Both are shared by the eyes.
-        for (auto& t : b.new_textures) upload_texture(*t);
         g_vr_active = false;
-        glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
-        glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
-        glBindVertexArray(g_vao);
-        glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-        glBufferData(GL_ARRAY_BUFFER, b.verts.size() * sizeof(GpuVertex), b.verts.data(),
-                     GL_STREAM_DRAW);
-        uint32_t st = UINT32_MAX;
-        int pr = -1;
-        for (size_t i = 0; i < main_start; i++) {
-            const Cmd& c = b.cmds[i];
-            if (c.type == CmdType::Draw) {
-                if (c.state != st || c.prim != pr) {
-                    apply_state(b.states[c.state], c.prim);
-                    st = c.state;
-                    pr = c.prim;
-                }
-                static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
-                glDrawArrays(mode[c.prim], c.first, c.count);
-            } else if (c.type == CmdType::EfbCopy && !c.copy.to_xfb) {
-                do_efb_copy(c.copy);
-                glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
-                glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
-                st = UINT32_MAX;
-            }
+        execute_batch(b, false);
+        // These ids are stable across frames -- an EFB copy keeps the id its destination
+        // address was registered under -- so the set only ever needs adding to.
+        uint32_t dw, dh;
+        display_size(b, dw, dh);
+        for (auto& c : b.cmds) {
+            if (c.type != CmdType::EfbCopy || !is_fullscreen_copy(c.copy, dw, dh) || !c.copy.tex_id)
+                continue;
+            bool known = false;
+            for (uint32_t id : g_fullscreen_tex) known |= (id == c.copy.tex_id);
+            if (!known) g_fullscreen_tex.push_back(c.copy.tex_id);
         }
+    }
+    const size_t main_start = main_scene_start(b);
+    // WR_EYELOG=1 reports how a frame was split, which is the only way to tell a scene
+    // rendered at the wrong field of view from a composite quad standing in for one.
+    static const bool eyelog = getenv("WR_EYELOG") != nullptr;
+    int n_drawn = 0, n_skipped = 0;
+    if (eyelog && do_copies) {
+        uint32_t dw, dh;
+        display_size(b, dw, dh);
+        fprintf(stderr, "[eye] f%u cmds=%zu main_start=%zu display=%ux%u\n", g_render_frame,
+                b.cmds.size(), main_start, dw, dh);
+        for (auto& c : b.cmds)
+            if (c.type == CmdType::EfbCopy)
+                fprintf(stderr, "[eye]   copy %ux%u xfb=%d tex=%u full=%d\n", c.copy.dst_w,
+                        c.copy.dst_h, (int)c.copy.to_xfb, c.copy.tex_id,
+                        (int)is_fullscreen_copy(c.copy, dw, dh));
     }
 
     g_vr_active = true;
@@ -705,29 +760,28 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     uint32_t cur_state = UINT32_MAX;
     int cur_prim = -1;
     for (size_t i = main_start; i < b.cmds.size(); i++) {
-        const Cmd& c = b.cmds[i];
-        switch (c.type) {
-        case CmdType::Draw: {
-            if (c.state != cur_state || c.prim != cur_prim) {
-                apply_state(b.states[c.state], c.prim);
-                // apply_state binds the EFB's scissor and viewport expectations; the
-                // eye target overrides both.
-                glViewport(0, 0, w, h);
-                glDisable(GL_SCISSOR_TEST);
-                cur_state = c.state;
-                cur_prim = c.prim;
-            }
-            static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
-            glDrawArrays(mode[c.prim], c.first, c.count);
-            break;
-        }
-        case CmdType::EfbCopy:
+        Cmd& c = b.cmds[i];
+        // Copies and the present are the first eye's business, done against the EFB.
+        if (c.type != CmdType::Draw) {
             cur_state = UINT32_MAX;
-            break;
-        case CmdType::Present:
-            break;  // an eye renders straight to its own target
+            continue;
         }
+        if (is_composite_draw(b.states[c.state])) { n_skipped++; continue; }
+        n_drawn++;
+        if (c.state != cur_state || c.prim != cur_prim) {
+            apply_state(b.states[c.state], c.prim);
+            // apply_state binds the EFB's scissor and viewport expectations; the eye
+            // target overrides both.
+            glViewport(0, 0, w, h);
+            glDisable(GL_SCISSOR_TEST);
+            cur_state = c.state;
+            cur_prim = c.prim;
+        }
+        static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
+        glDrawArrays(mode[c.prim], c.first, c.count);
     }
+    if (eyelog && do_copies)
+        fprintf(stderr, "[eye]   drawn=%d skipped_composite=%d\n", n_drawn, n_skipped);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     g_vr_active = false;
     return true;
@@ -747,7 +801,10 @@ static void evict_textures() {
     }
 }
 
-bool render_execute(Batch& b) {
+// Runs a batch into the EFB the way the hardware would. With do_present false the final
+// scanout is skipped but everything else -- including every render-to-texture copy -- still
+// happens, which is how the stereo path obtains the textures its eye passes sample.
+static bool execute_batch(Batch& b, bool do_present) {
     g_render_frame++;
     evict_textures();
     for (auto& t : b.new_textures) upload_texture(*t);
@@ -756,6 +813,17 @@ bool render_execute(Batch& b) {
     glBindVertexArray(g_vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     glBufferData(GL_ARRAY_BUFFER, b.verts.size() * sizeof(GpuVertex), b.verts.data(), GL_STREAM_DRAW);
+    static const bool batchlog = getenv("WR_EYELOG") != nullptr;
+    if (batchlog) {
+        int nd = 0, nc = 0, np = 0;
+        for (auto& c : b.cmds) {
+            nd += c.type == CmdType::Draw;
+            nc += c.type == CmdType::EfbCopy;
+            np += c.type == CmdType::Present;
+        }
+        fprintf(stderr, "[batch] f%u cmds=%zu draws=%d copies=%d present=%d verts=%zu\n",
+                g_render_frame, b.cmds.size(), nd, nc, np, b.verts.size());
+    }
     bool presented = false;
     uint32_t cur_state = UINT32_MAX;
     int cur_prim = -1;
@@ -777,7 +845,7 @@ bool render_execute(Batch& b) {
             cur_state = UINT32_MAX;
             break;
         case CmdType::Present:
-            present(c.copy);
+            if (do_present) present(c.copy);
             presented = true;
             glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
             glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
@@ -787,5 +855,7 @@ bool render_execute(Batch& b) {
     }
     return presented;
 }
+
+bool render_execute(Batch& b) { return execute_batch(b, true); }
 
 }  // namespace gx

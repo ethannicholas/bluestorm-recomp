@@ -126,7 +126,11 @@ void main() {
         p.y = u_vp_a.z * clip.w + u_vp_a.w * clip.y;
         p.z = u_vp_b.x * clip.w + u_vp_b.y * clip.z;
         p.w = clip.w;
-        if (u_vr == 2) gl_Position = vec4(p.xy * u_hud_scale, p.z, p.w);
+        // The overlay goes through GX's viewport transform, whose Y points down, so it
+        // needs the same negation the flat path applies -- an eye target is presented
+        // directly rather than through the blit, but the blit's flip is about texture
+        // orientation, not about this.
+        if (u_vr == 2) gl_Position = vec4(p.x * u_hud_scale, -p.y * u_hud_scale, p.z, p.w);
         else           gl_Position = vec4(p.x, -p.y, p.z, p.w);
     }
     gl_PointSize = u_point_size;

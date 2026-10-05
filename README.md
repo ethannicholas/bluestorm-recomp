@@ -246,7 +246,19 @@ PNGs. No APK, no window, no OpenXR — it exists to check the ES back end on rea
 ```
 
 `-InputScript` sets `WR_INPUT`, which is how anything past the title screen is reached without a
-controller. Frames are pulled back to `build-android/frames/`.
+controller. Frames are pulled back to `build-android/frames/`. The presses are counted in
+submitted game frames, not wall-clock, so a script reaches the same place whatever the frame rate;
+`WR_INPUT_LOG=1` prints each one as it fires. Without input the game loops its attract movie,
+which is a single textured quad per frame and exercises nothing.
+
+`--eye` renders through the stereo path instead, into an offscreen eye target, and dumps that.
+Changes to the VR renderer are visible here without putting the headset on, which is the only
+practical way to tell a wrong frame split from a wrong projection:
+
+```powershell
+adb shell "cd /data/local/tmp && WR_INPUT='600:START:10,800:START:10,1000:START:10,1200:A:10,1400:A:10,1600:A:10' \
+  ./waverace_egl --eye --seconds=150 --dump-dir=/data/local/tmp/eye --dump-every=500 <iso>"
+```
 
 ### Installing on a headset
 
@@ -293,6 +305,33 @@ Stereo is cheap here because of where `xf.cpp` stops. Vertices reach the rendere
 *view* space with the projection applied in the shader, so an eye is just another matrix in front
 of it: both eyes share one vertex buffer, one CPU-side transform and one set of render-to-texture
 results, and only the uniforms and draw calls repeat.
+
+#### Splitting a frame for the eyes
+
+A frame is not one pass. A race frame holds about a thousand draws and five EFB copies: three
+off-screen passes (a 480×480 reflection, a 128×128, a 320×240), then the main scene, then a
+640×480 copy of the finished image, then the display copy. Only the main scene may be re-projected
+per eye — the off-screen passes produce *textures* the scene samples, and re-aiming those at an eye
+corrupts them.
+
+Two things make this work:
+
+- **The first eye runs the whole frame flat into the EFB first**, scanout aside. An eye pass never
+  draws into the EFB, so without this every render-to-texture copy reads an empty one. That is
+  what left the ski untextured and put a black square on the water.
+- **The main scene is what follows the last *partial* copy.** The copy that takes the whole
+  displayed frame comes after the scene, not before it, so it must not move the boundary. The
+  frame is 640×480 while the EFB is 640×528, so "whole frame" has to be measured against the
+  display copy in the same batch; measuring it against the EFB matches nothing, puts the boundary
+  past the entire scene and leaves the eye holding the ~50 HUD draws and nothing else.
+
+Draws that sample a whole-frame copy are screen-space, so in an eye they are flat billboards and
+leave a faint rectangular seam. They are still drawn: in this game the water surface is one of
+them, and dropping it leaves the seabed showing through bare sand instead of blue-green water.
+`WR_EYE_SKIPCOMP=1` drops them for comparison.
+
+`WR_EYELOG=1` prints each frame's split — command count, boundary, every copy with its size — and
+is the quickest way to tell "the eye rendered the wrong part" from "the eye rendered nothing".
 
 ### Tuning VR (`vr.txt`)
 
