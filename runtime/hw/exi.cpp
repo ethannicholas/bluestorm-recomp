@@ -1,5 +1,6 @@
 // External Interface: IPL device (SRAM / RTC / UART). Memory cards: not present (yet).
 #include "../runtime.h"
+#include "../platform.h"
 #include <ctime>
 #include <memory>
 #include "memcard.h"
@@ -38,9 +39,7 @@ static void sram_init() {
 static uint32_t rtc_now() {
     // seconds since 2000-01-01 00:00:00 local time
     time_t t = time(nullptr);
-    struct tm lt;
-    localtime_r(&t, &lt);
-    time_t local = t + lt.tm_gmtoff;
+    time_t local = t + plat_utc_offset_seconds();
     return (uint32_t)(local - 946684800);
 }
 

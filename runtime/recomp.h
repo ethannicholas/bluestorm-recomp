@@ -1,5 +1,6 @@
 /* Interface between recompiled guest code and the runtime. Must stay C. */
 #pragma once
+#include "compat.h"
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
@@ -48,45 +49,45 @@ void mmio_write32(uint32_t a, uint32_t v);
 void mmio_write16(uint32_t a, uint16_t v);
 void mmio_write8(uint32_t a, uint8_t v);
 
-#define LIKELY(x) __builtin_expect(!!(x), 1)
-#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define LIKELY(x) WR_LIKELY(x)
+#define UNLIKELY(x) WR_UNLIKELY(x)
 
 static inline uint32_t LD32(uint32_t a) {
     if (UNLIKELY(IS_MMIO(a))) return mmio_read32(a);
-    uint32_t v; memcpy(&v, HOST(a), 4); return __builtin_bswap32(v);
+    uint32_t v; memcpy(&v, HOST(a), 4); return WR_BSWAP32(v);
 }
 static inline uint32_t LD16(uint32_t a) {
     if (UNLIKELY(IS_MMIO(a))) return mmio_read16(a);
-    uint16_t v; memcpy(&v, HOST(a), 2); return __builtin_bswap16(v);
+    uint16_t v; memcpy(&v, HOST(a), 2); return WR_BSWAP16(v);
 }
 static inline uint32_t LDS16(uint32_t a) { return (uint32_t)(int32_t)(int16_t)LD16(a); }
 static inline uint32_t LD8(uint32_t a) {
     if (UNLIKELY(IS_MMIO(a))) return mmio_read8(a);
     return *HOST(a);
 }
-static inline uint32_t LD32BR(uint32_t a) { return __builtin_bswap32(LD32(a)); }
-static inline uint32_t LD16BR(uint32_t a) { return __builtin_bswap16((uint16_t)LD16(a)); }
+static inline uint32_t LD32BR(uint32_t a) { return WR_BSWAP32(LD32(a)); }
+static inline uint32_t LD16BR(uint32_t a) { return WR_BSWAP16((uint16_t)LD16(a)); }
 static inline uint64_t LD64(uint32_t a) {
     if (UNLIKELY(IS_MMIO(a))) return ((uint64_t)mmio_read32(a) << 32) | mmio_read32(a + 4);
-    uint64_t v; memcpy(&v, HOST(a), 8); return __builtin_bswap64(v);
+    uint64_t v; memcpy(&v, HOST(a), 8); return WR_BSWAP64(v);
 }
 static inline void ST32(uint32_t a, uint32_t v) {
     if (UNLIKELY(IS_MMIO(a))) { mmio_write32(a, v); return; }
-    v = __builtin_bswap32(v); memcpy(HOST(a), &v, 4);
+    v = WR_BSWAP32(v); memcpy(HOST(a), &v, 4);
 }
 static inline void ST16(uint32_t a, uint32_t v) {
     if (UNLIKELY(IS_MMIO(a))) { mmio_write16(a, (uint16_t)v); return; }
-    uint16_t h = __builtin_bswap16((uint16_t)v); memcpy(HOST(a), &h, 2);
+    uint16_t h = WR_BSWAP16((uint16_t)v); memcpy(HOST(a), &h, 2);
 }
 static inline void ST8(uint32_t a, uint32_t v) {
     if (UNLIKELY(IS_MMIO(a))) { mmio_write8(a, (uint8_t)v); return; }
     *HOST(a) = (uint8_t)v;
 }
-static inline void ST32BR(uint32_t a, uint32_t v) { ST32(a, __builtin_bswap32(v)); }
-static inline void ST16BR(uint32_t a, uint32_t v) { ST16(a, __builtin_bswap16((uint16_t)v)); }
+static inline void ST32BR(uint32_t a, uint32_t v) { ST32(a, WR_BSWAP32(v)); }
+static inline void ST16BR(uint32_t a, uint32_t v) { ST16(a, WR_BSWAP16((uint16_t)v)); }
 static inline void ST64(uint32_t a, uint64_t v) {
     if (UNLIKELY(IS_MMIO(a))) { mmio_write32(a, (uint32_t)(v >> 32)); mmio_write32(a + 4, (uint32_t)v); return; }
-    v = __builtin_bswap64(v); memcpy(HOST(a), &v, 8);
+    v = WR_BSWAP64(v); memcpy(HOST(a), &v, 8);
 }
 static inline double LDF32(uint32_t a) {
     uint32_t v = LD32(a); float f; memcpy(&f, &v, 4); return (double)f;

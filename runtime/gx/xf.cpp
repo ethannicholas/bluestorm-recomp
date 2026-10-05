@@ -4,6 +4,7 @@
 #include "gx.h"
 #include "render.h"
 #include "texture.h"
+#include <algorithm>
 #include <cmath>
 #include <mutex>
 #include <condition_variable>

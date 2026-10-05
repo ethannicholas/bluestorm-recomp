@@ -1,4 +1,4 @@
-// OpenGL 4.1 core back end. Runs on the main thread.
+// OpenGL 3.3 core back end. Runs on the main thread.
 #include "../runtime.h"
 #include "render.h"
 #include "render_gl.h"
@@ -96,7 +96,7 @@ static const Program& get_program(const ShaderKey& k) {
     return g_programs.emplace(k, pr).first->second;
 }
 
-static const char* kCopyVS = R"(#version 410 core
+static const char* kCopyVS = WR_GLSL_VERSION R"(
 out vec2 v_uv;
 uniform vec4 u_rect;  // source rect in normalized EFB coords (x0,y0,x1,y1), y down
 void main() {
@@ -107,7 +107,7 @@ void main() {
 )";
 
 // Converts EFB color (or depth) to the requested GX copy format. Output row 0 = top.
-static const char* kCopyFS = R"(#version 410 core
+static const char* kCopyFS = WR_GLSL_VERSION R"(
 in vec2 v_uv;
 uniform sampler2D u_src;
 uniform sampler2D u_depth;
@@ -139,7 +139,7 @@ void main() {
 }
 )";
 
-static const char* kBlitFS = R"(#version 410 core
+static const char* kBlitFS = WR_GLSL_VERSION R"(
 in vec2 v_uv;
 uniform sampler2D u_src;
 out vec4 o;

@@ -28,8 +28,8 @@ void audio_push_dma(const int16_t* samples_be, uint32_t frames) {
     size_t cap = g_ring.size() / 2;
     for (uint32_t i = 0; i < frames; i++) {
         // AX writes interleaved R, L (big endian)
-        int16_t r = (int16_t)__builtin_bswap16((uint16_t)samples_be[2 * i]);
-        int16_t l = (int16_t)__builtin_bswap16((uint16_t)samples_be[2 * i + 1]);
+        int16_t r = (int16_t)WR_BSWAP16((uint16_t)samples_be[2 * i]);
+        int16_t l = (int16_t)WR_BSWAP16((uint16_t)samples_be[2 * i + 1]);
         if (g_ring_count == cap) { g_ring_r = (g_ring_r + 1) % cap; g_ring_count--; }  // drop oldest
         g_ring[2 * g_ring_w] = l;
         g_ring[2 * g_ring_w + 1] = r;

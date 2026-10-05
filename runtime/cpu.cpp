@@ -1,13 +1,12 @@
 // Memory, CPU helper routines, timing and event scheduling.
 #include "runtime.h"
-#include <sys/mman.h>
+#include "platform.h"
 #include <chrono>
 #include <mutex>
 #include <queue>
 #include <vector>
 #include <cstdlib>
 #include <cmath>
-#include <execinfo.h>
 
 uint8_t* g_mem;
 uint8_t* g_aram;
@@ -39,9 +38,7 @@ void fatal(const char* fmt, ...) {
         for (int i = 0; i < 32; i += 4)
             fprintf(stderr, "  r%-2d %08X %08X %08X %08X\n", i, c->r[i], c->r[i + 1], c->r[i + 2], c->r[i + 3]);
     }
-    void* bt[64];
-    int n = backtrace(bt, 64);
-    backtrace_symbols_fd(bt, n, 2);
+    plat_backtrace_print();
     fflush(stderr);
     abort();
 }
@@ -51,11 +48,11 @@ void fatal(const char* fmt, ...) {
 // ---------------------------------------------------------------------------
 void mem_init() {
     const size_t reserve = 0x40000000;
-    void* p = mmap(nullptr, reserve, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) fatal("mem reserve failed");
+    void* p = plat_reserve(reserve);
+    if (!p) fatal("mem reserve failed");
     g_mem = (uint8_t*)p;
-    if (mprotect(g_mem, RAM_SIZE, PROT_READ | PROT_WRITE)) fatal("mem commit failed");
-    if (mprotect(g_mem + LC_BASE, 0x4000, PROT_READ | PROT_WRITE)) fatal("lc commit failed");
+    if (!plat_commit(g_mem, RAM_SIZE)) fatal("mem commit failed");
+    if (!plat_commit(g_mem + LC_BASE, 0x4000)) fatal("lc commit failed");
     g_aram = (uint8_t*)calloc(1, ARAM_SIZE);
 }
 

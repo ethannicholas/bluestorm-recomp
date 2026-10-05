@@ -1,5 +1,6 @@
 // Generates GLSL for the GX pixel pipeline (TEV) from BP state.
 #include "shadergen.h"
+#include "gl.h"   // WR_GLSL_VERSION
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -82,7 +83,7 @@ static std::string swizzle(const ShaderKey& k, uint32_t table) {
 static const char* kCompare[8] = {"false", "(%s < %s)", "(%s == %s)", "(%s <= %s)", "(%s > %s)", "(%s != %s)", "(%s >= %s)", "true"};
 
 std::string gen_vertex_shader() {
-    return R"(#version 410 core
+    return WR_GLSL_VERSION R"(
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec4 a_col0;
 layout(location = 2) in vec4 a_col1;
@@ -118,7 +119,7 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     uint32_t nstages = ((k.genmode >> 10) & 15) + 1;
     uint32_t nind = (k.genmode >> 16) & 7;
 
-    s += "#version 410 core\n";
+    s += WR_GLSL_VERSION;
     s += "in vec4 v_col0;\nin vec4 v_col1;\nin vec3 v_tex[8];\n";
     s += "uniform sampler2D u_tex[8];\n";
     s += "uniform ivec4 u_reg[4];\nuniform ivec4 u_konst[4];\n";

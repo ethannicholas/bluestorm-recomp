@@ -42,8 +42,10 @@ Working:
 
 Known limitations:
 
-- **macOS (Apple Silicon) only** for now. The code is portable C/C++ (SDL2 + OpenGL), but other
-  platforms need an OpenGL loader and small platform shims.
+- Builds on **macOS (Apple Silicon)** and **Windows (x64 and ARM64)**. Other platforms should
+  need little beyond a CMake branch: the POSIX/Win32 split is confined to `runtime/platform.cpp`.
+- Windows needs a real OpenGL 3.3 driver, which some virtual machines do not provide; see
+  [Graphics](#graphics).
 - Runs at the game's native 30 fps (the simulation advances a fixed 1/30 s per frame).
 - Accuracy is still being validated. Expect visual and audio differences from real hardware.
 
@@ -61,7 +63,8 @@ The build verifies this hash and stops with an error for any other version.
 
 ### Requirements
 
-- macOS on Apple Silicon
+**macOS (Apple Silicon)**
+
 - Xcode (or the Command Line Tools), CMake 3.20+, Ninja, Python 3
 - SDL2
 
@@ -69,6 +72,22 @@ With Homebrew:
 
 ```sh
 brew install cmake ninja sdl2 python
+```
+
+**Windows (x64 or ARM64)**
+
+- Clang, CMake 3.20+, Ninja, Python 3
+- The Windows SDK and MSVC headers/libraries (the "Desktop development with C++" workload of
+  Visual Studio or the standalone Build Tools) — clang targets the MSVC ABI and uses them
+
+Clang is used rather than MSVC: the runtime and the generated code rely on GCC-style flags and
+builtins, and clang copes better with the very large generated translation units. SDL2 is built
+from source automatically (`FetchContent`), since there are no prebuilt ARM64 Windows binaries.
+
+With [winget](https://learn.microsoft.com/windows/package-manager/):
+
+```powershell
+winget install Kitware.CMake Ninja-build.Ninja Python.Python.3.13 LLVM.LLVM Microsoft.VisualStudio.2022.BuildTools
 ```
 
 ### 1. Provide your game image
@@ -88,18 +107,31 @@ cargo install --locked nodtool
 nodtool convert "rom/Wave Race - Blue Storm (USA).rvz" rom/game.iso
 ```
 
+`nodtool` also ships prebuilt binaries (including Windows ARM64) on its
+[releases page](https://github.com/encounter/nod/releases), which avoids needing Rust. Note that
+Dolphin only gained RVZ support in 5.0-12188, so the 5.0 release that package managers offer
+cannot convert one.
+
 The build uses the first `.iso` it finds in `rom/`. To use an image elsewhere, pass
 `-DGAME_ISO=/path/to/game.iso` when configuring.
 
 ### 2. Build
 
 ```sh
-./build.sh
+./build.sh          # macOS
+```
+
+```powershell
+.\build.ps1         # Windows
 ```
 
 The first run configures CMake, extracts `main.dol` from your image into `build/`, verifies it,
 recompiles all 2,572 game functions to C (`build/gen/`) and builds the `build/waverace`
 executable. Recompilation plus compilation takes well under a minute on a recent Mac.
+
+Without a game image, only `ninja -C build runtime_check` is available: it compiles the runtime
+(but cannot link, which needs the recompiled game code). That is enough to check a change to the
+runtime or a port to a new platform.
 
 ### 3. Run
 
@@ -111,6 +143,31 @@ executable. Recompilation plus compilation takes well under a minute on a recent
 Run it from the repository root: the memory card is created in `saves/` relative to the
 current directory. Like any save file, it contains data written by the game, so don't
 share or commit it (`saves/` is git-ignored).
+
+## Graphics
+
+The renderer needs an **OpenGL 3.3 core profile**. It uses nothing newer: samplers, VAOs, FBOs
+and explicit attribute locations are the whole requirement, so a 3.3 floor keeps the mapping
+layers that stop there usable. On macOS it links the system framework directly; elsewhere the
+entry points are resolved at runtime by a vendored [glad](https://gen.glad.sh/) loader
+(`runtime/gx/glad/`, regenerate with `glad --api gl:core=3.3 --extensions ""`).
+
+If the game exits with `OpenGL 1.1 is too old (got "1.1.0" / "GDI Generic")`, the host has no
+OpenGL driver at all and Windows is falling back to its software 1.1 implementation. This is
+common in virtual machines: VMware's and VirtualBox's Windows guest drivers expose Direct3D but
+no OpenGL ICD, and on Windows ARM64 there is no vendor GL driver to fall back on. Options:
+
+- Enable 3D acceleration in the VM's settings, and install the guest additions / VMware Tools
+  that match it.
+- Install Microsoft's **OpenCL, OpenGL, and Vulkan Compatibility Pack** (`winget install
+  9NQPSL29BFFF --source msstore`), a Mesa build that maps OpenGL 3.3 onto Direct3D 12. It needs
+  a D3D12-capable adapter; `dxdiag` reports the feature levels your adapter supports.
+- Drop a Mesa `opengl32.dll` (llvmpipe) next to `waverace.exe` to render in software.
+  `opengl32.dll` is not a KnownDLL, so a local copy takes precedence.
+- Run on the host rather than in the VM.
+
+`--headless` skips graphics and audio entirely, which is useful for checking that everything
+below the renderer works.
 
 ## Controls
 
@@ -175,6 +232,12 @@ rom/game.iso ──extract_dol.py──> build/main.dol ──recomp.py──> b
   (`dtk dol split analysis/config.yml analysis/out` after a build has produced `build/main.dol`).
 - `tools/dis`: prints the disassembly of a function from dtk's output.
 - `tools/contact.py`: tiles dumped frames into a contact sheet.
+- `tools/glprobe.c` (Windows): reports the OpenGL versions the host can actually create, to
+  diagnose the "too old" failure in [Graphics](#graphics).
+  Build with `clang tools/glprobe.c -o build/glprobe.exe -lopengl32 -lgdi32 -luser32`.
+- `tools/d3d12probe.cpp` (Windows): reports which adapters can create a D3D12 device, i.e.
+  whether the OpenGL compatibility pack has anything to map onto.
+  Build with `clang++ tools/d3d12probe.cpp -o build/d3d12probe.exe -ld3d12 -ldxgi -lole32`.
 
 ## Acknowledgements
 

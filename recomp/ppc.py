@@ -403,7 +403,7 @@ def translate31(pc, i, d, a, b, rc):
             r += ' ' + cr0(A)
         return r
     if xo == 26:
-        return logic(f'{S} ? (uint32_t)__builtin_clz({S}) : 32')
+        return logic(f'{S} ? (uint32_t)WR_CLZ32({S}) : 32')
     if xo == 954:
         return logic(f'(uint32_t)(int32_t)(int8_t){S}')
     if xo == 922:

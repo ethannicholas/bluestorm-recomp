@@ -1,22 +1,20 @@
 // DVD Interface: command execution against the ISO image, incl. audio stream commands.
 #include "../runtime.h"
-#include <fcntl.h>
-#include <unistd.h>
+#include "../platform.h"
 
-static int g_iso_fd = -1;
+static PlatFile* g_iso;
 static uint32_t g_disr, g_dicvr, g_cmd[3], g_dimar, g_dilen, g_dicr, g_diimm, g_dicfg;
 static bool g_busy;
 
 #include "dtk.h"
 
 bool iso_read(uint64_t offset, void* dst, uint32_t len) {
-    ssize_t r = pread(g_iso_fd, dst, len, (off_t)offset);
-    return r == (ssize_t)len;
+    return plat_read_at(g_iso, offset, dst, len);
 }
 
 void di_init(const char* iso_path) {
-    g_iso_fd = open(iso_path, O_RDONLY);
-    if (g_iso_fd < 0) fatal("cannot open ISO %s", iso_path);
+    g_iso = plat_open_read(iso_path);
+    if (!g_iso) fatal("cannot open ISO %s", iso_path);
 }
 
 static void di_update_irq() {

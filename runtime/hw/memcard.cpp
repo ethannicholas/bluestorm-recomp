@@ -1,8 +1,8 @@
 // GameCube memory card (EXI device) backed by a raw image file.
 #include "../runtime.h"
+#include "../platform.h"
 #include "memcard.h"
 #include <cstdio>
-#include <sys/stat.h>
 
 enum : uint8_t {
     CMD_ID = 0x00, CMD_READ_ARRAY = 0x52, CMD_SET_INT = 0x81, CMD_READ_STATUS = 0x83, CMD_READ_ID = 0x85,
@@ -80,13 +80,15 @@ void MemCard::format() {
 
 void MemCard::flush() {
     if (!dirty_) return;
-    size_t slash = path_.rfind('/');
-    if (slash != std::string::npos) mkdir(path_.substr(0, slash).c_str(), 0755);
+    size_t slash = path_.find_last_of("/\\");
+    if (slash != std::string::npos) plat_make_dirs(path_.substr(0, slash));
     std::string tmp = path_ + ".tmp";
     if (FILE* f = fopen(tmp.c_str(), "wb")) {
         fwrite(data_.data(), 1, data_.size(), f);
         fclose(f);
-        rename(tmp.c_str(), path_.c_str());
+        // Windows' rename() fails if the destination exists, so go through the
+        // platform layer, which replaces it.
+        plat_replace_file(tmp.c_str(), path_.c_str());
         dirty_ = false;
     }
 }

@@ -1,45 +1,47 @@
 // Entry point and SDL frontend: window, input, audio. The main thread executes GX
 // batches produced by the guest thread.
 #include "runtime.h"
+#include "platform.h"
 #include "gx/render_gl.h"
 #include "gx/gl.h"
 #include "hw/pad.h"
+#ifdef _WIN32
+// Console app: keep our own main() rather than SDL2main's WinMain shim.
+#define SDL_MAIN_HANDLED
+#endif
 #include <SDL.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <csignal>
-#include <execinfo.h>
-#include <thread>
-#include <unistd.h>
-#include <dirent.h>
+#include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 uint32_t boot_load(const char* iso_path);
 void debug_dump_threads();
 void debug_sampler_start();
 
-static void on_signal(int sig) {
-    signal(SIGALRM, [](int) { _exit(2); });
-    alarm(2);  // never hang in here (stdio locks may be held by other threads)
+// Stringify, to quote the required GL version in a message without a format argument.
+#define WR_STR_(x) #x
+#define WR_STR(x) WR_STR_(x)
+
+static void on_interrupt() {
+    plat_watchdog(2, 2);  // never hang in here (stdio locks may be held by other threads)
     debug_dump_threads();
-    _exit(1);
+    plat_exit_now(1);
 }
 
-static void on_fault(int sig, siginfo_t* si, void*) {
-    uintptr_t a = (uintptr_t)si->si_addr;
+static void on_fault(const void* fault_addr, int code) {
+    uintptr_t a = (uintptr_t)fault_addr;
     if (a >= (uintptr_t)g_mem && a < (uintptr_t)g_mem + 0x40000000)
         fprintf(stderr, "\nFAULT: guest memory access at (addr & 0x3FFFFFFF) = %08lX\n", (unsigned long)(a - (uintptr_t)g_mem));
     else
-        fprintf(stderr, "\nFAULT: host address %p (signal %d)\n", si->si_addr, sig);
-    signal(SIGALRM, [](int) { _exit(2); });
-    alarm(2);
-    void* bt[64];
-    int n = backtrace(bt, 64);
-    backtrace_symbols_fd(bt, n, 2);
+        fprintf(stderr, "\nFAULT: host address %p (code %d)\n", fault_addr, code);
+    plat_watchdog(2, 2);
+    plat_backtrace_print();
     debug_dump_threads();
-    _exit(1);
+    plat_exit_now(1);
 }
 
 bool audio_open();
@@ -163,16 +165,7 @@ static void update_pad() {
 int main(int argc, char** argv) {
     // Default: the image the build was configured with, else the first .iso in ./rom
     std::string iso_default = WR_DEFAULT_ISO;
-    if (access(iso_default.c_str(), R_OK) != 0) {
-        iso_default.clear();
-        if (DIR* d = opendir("rom")) {
-            while (dirent* e = readdir(d)) {
-                std::string n = e->d_name;
-                if (n.size() > 4 && n.substr(n.size() - 4) == ".iso") { iso_default = "rom/" + n; break; }
-            }
-            closedir(d);
-        }
-    }
+    if (!plat_readable(iso_default.c_str())) iso_default = plat_find_file("rom", ".iso");
     const char* iso = iso_default.c_str();
     bool headless = false, hidden = false;
     int scale = 2;
@@ -187,15 +180,9 @@ int main(int argc, char** argv) {
         else if (!strncmp(argv[i], "--dump-every=", 13)) gx::g_dump_every = atoi(argv[i] + 13);
         else if (argv[i][0] != '-') iso = argv[i];
     }
-    signal(SIGINT, on_signal);
-    signal(SIGTERM, on_signal);
-    struct sigaction sa = {};
-    sa.sa_sigaction = on_fault;
-    sa.sa_flags = SA_SIGINFO;
-    sigaction(SIGSEGV, &sa, nullptr);
-    sigaction(SIGBUS, &sa, nullptr);
+    plat_install_crash_handlers(on_interrupt, on_fault);
 
-    if (!*iso || access(iso, R_OK) != 0) {
+    if (!plat_readable(iso)) {
         fprintf(stderr, "No game image found. Put your Wave Race: Blue Storm (USA) .iso in rom/ or pass its path.\n");
         return 1;
     }
@@ -216,9 +203,12 @@ int main(int argc, char** argv) {
         }
     }
 
+#ifdef _WIN32
+    SDL_SetMainReady();
+#endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) fatal("SDL_Init: %s", SDL_GetError());
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, WR_GL_MAJOR);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, WR_GL_MINOR);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
@@ -227,8 +217,21 @@ int main(int argc, char** argv) {
                                        (hidden ? SDL_WINDOW_HIDDEN : 0));
     if (!win) fatal("SDL_CreateWindow: %s", SDL_GetError());
     SDL_GLContext ctx = SDL_GL_CreateContext(win);
-    if (!ctx) fatal("SDL_GL_CreateContext: %s", SDL_GetError());
+    static const char* kGLHelp =
+        "  The renderer needs an OpenGL " WR_STR(WR_GL_MAJOR) "." WR_STR(WR_GL_MINOR)
+        " core profile. If this host only\n"
+        "  offers legacy OpenGL (\"GDI Generic\" 1.1, typical for a VM with no GL driver),\n"
+        "  install a GL implementation that provides it -- see Graphics notes in README.md.";
+    if (!ctx) fatal("SDL_GL_CreateContext: %s\n%s", SDL_GetError(), kGLHelp);
     SDL_GL_SetSwapInterval(0);
+    // A legacy driver still "loads": it resolves the GL 1.1 exports and leaves every
+    // 2.0+ entry point null, so check the version before handing off to the renderer.
+    int glver = gl_load();
+    if (glver < WR_GL_VERSION_MIN) {
+        fatal("OpenGL %d.%d is too old (got \"%s\" / \"%s\")\n%s",
+              glver / 10, glver % 10, glGetString(GL_VERSION) ? (const char*)glGetString(GL_VERSION) : "?",
+              glGetString(GL_RENDERER) ? (const char*)glGetString(GL_RENDERER) : "?", kGLHelp);
+    }
     LOG(LOG_GX, "GL: %s / %s", glGetString(GL_RENDERER), glGetString(GL_VERSION));
     gx::render_init(scale);
 
@@ -270,5 +273,5 @@ int main(int argc, char** argv) {
         }
     }
     threads_request_quit();
-    _exit(0);
+    plat_exit_now(0);
 }

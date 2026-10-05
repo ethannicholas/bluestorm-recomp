@@ -12,10 +12,10 @@
 //   * OSLoadContext(ctx) resumes whichever host thread owns the binding (possibly
 //     ourselves), or spawns a new host thread for a never-run context.
 #include "runtime.h"
+#include "platform.h"
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
-#include <pthread.h>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -34,7 +34,6 @@ struct Binding {
 struct HostThread {
     CPU cpu;
     int id;
-    pthread_t th;
     std::mutex m;
     std::condition_variable cv;
     bool run = false;
@@ -98,12 +97,13 @@ static HostThread* new_host_thread() {
     return h;
 }
 
+// Guest code recurses deeply and the SDK gives its threads generous stacks, so give
+// each host thread 64MB rather than the platform default.
+static constexpr size_t HOST_STACK = 64 << 20;
+
 static void spawn(HostThread* h) {
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 64 << 20);
-    pthread_create(&h->th, &attr, host_thread_main, h);
-    pthread_attr_destroy(&attr);
+    if (!plat_thread_start(host_thread_main, h, HOST_STACK))
+        fatal("could not start host thread %d", h->id);
 }
 
 static void wake(HostThread* h, Binding* b) {
@@ -118,7 +118,7 @@ static void wake(HostThread* h, Binding* b) {
 static Binding* wait_for_baton(HostThread* self) {
     std::unique_lock<std::mutex> lk(self->m);
     self->cv.wait(lk, [&] { return self->run || g_quit.load(); });
-    if (g_quit) { lk.unlock(); pthread_exit(nullptr); }
+    if (g_quit) { lk.unlock(); plat_thread_exit(); }
     return self->resume;
 }
 
@@ -246,7 +246,7 @@ static void irq_deliver(CPU* c, uint32_t exc) {
 
 extern "C" void irq_poll(CPU* c) {
     g_irq_pending = 0;
-    if (g_quit) pthread_exit(nullptr);
+    if (g_quit) plat_thread_exit();
     events_run_due();
     uint64_t now = now_ticks();
     if (g_dec_deadline.load() <= now) { g_dec_pending = true; g_dec_deadline = UINT64_MAX; }
@@ -282,11 +282,8 @@ void threads_start_boot(uint32_t entry) {
         return nullptr;
     } };
     h->start_ctx = entry;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 64 << 20);
-    pthread_create(&h->th, &attr, Boot::main, h);
-    pthread_attr_destroy(&attr);
+    if (!plat_thread_start(Boot::main, h, HOST_STACK))
+        fatal("could not start the boot thread");
 }
 
 void threads_request_quit() {

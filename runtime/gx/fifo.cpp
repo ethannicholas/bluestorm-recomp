@@ -191,8 +191,8 @@ void pe_write16(uint32_t off, uint16_t v) {
     g_pe_regs[(off & 0x3F) >> 1] = v;
 }
 
-__attribute__((weak)) uint32_t efb_peek(uint32_t addr) { return 0; }
-__attribute__((weak)) void efb_poke(uint32_t addr, uint32_t v) {}
+WR_WEAK uint32_t efb_peek(uint32_t addr) { return 0; }
+WR_WEAK void efb_poke(uint32_t addr, uint32_t v) {}
 
 void debug_dump_fifo() {
     fprintf(stderr, "FIFO: CP cr=%04X sr=%04X base=%08X end=%08X wptr=%08X rptr=%08X rwdist=%08X bp=%08X | PI base=%08X end=%08X wptr=%08X | pending=%zu gp=%u\n",
