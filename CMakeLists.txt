@@ -70,9 +70,31 @@ if(HAVE_GAME_ISO)
 endif()
 
 # ---- Runtime ----
+# WR_BENCH_ONLY builds just the headless benchmark: no renderer, no SDL2, no GL. That
+# is what a cross-build for a device (Android/arm64, say) uses, since it only needs a
+# C++ toolchain and the recompiled code.
+option(WR_BENCH_ONLY "Build only the headless benchmark (no SDL2, no renderer)" OFF)
+
 file(GLOB_RECURSE RUNTIME_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/runtime/*.cpp)
 
-# GL entry points are resolved at runtime via a vendored glad loader (GL 4.1 core).
+# bench_main.cpp is an alternative entry point; it must not land in a target that
+# already has main.cpp.
+list(REMOVE_ITEM RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/bench_main.cpp)
+
+# The benchmark drops the renderer and the SDL frontend. Everything it keeps -- the
+# CPU, OS, hardware and GX front end, including the batch queue in gx/xf.cpp -- is
+# free of both GL and SDL.
+set(BENCH_SOURCES ${RUNTIME_SOURCES})
+list(REMOVE_ITEM BENCH_SOURCES
+  ${CMAKE_SOURCE_DIR}/runtime/main.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/audio.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/png.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/gx/render_gl.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/gx/gl_load.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/gx/shadergen.cpp)
+list(APPEND BENCH_SOURCES ${CMAKE_SOURCE_DIR}/runtime/bench_main.cpp)
+
+# GL entry points are resolved at runtime via a vendored glad loader (GL 3.3 core).
 # macOS links the system framework directly and needs neither.
 set(GLAD_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/runtime/gx/glad/include)
 if(NOT APPLE)
@@ -81,7 +103,9 @@ endif()
 
 # SDL2: pkg-config where it exists; on Windows there are no prebuilt ARM64 binaries,
 # so build it from source.
-if(WIN32)
+if(WR_BENCH_ONLY)
+  set(WR_SDL_TARGET "")
+elseif(WIN32)
   include(FetchContent)
   set(SDL_SHARED OFF CACHE BOOL "" FORCE)
   set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -105,9 +129,10 @@ else()
   set(WR_RUNTIME_WARNINGS -Wall -Wno-unused-function)
 endif()
 
-# Platform libraries the runtime needs beyond SDL2.
+# Platform libraries the runtime needs beyond SDL2. The benchmark links none of this.
 set(WR_PLATFORM_LIBS "")
-if(APPLE)
+if(WR_BENCH_ONLY)
+elseif(APPLE)
   list(APPEND WR_PLATFORM_LIBS "-framework OpenGL")
 elseif(WIN32)
   # opengl32 for the GL entry points, dbghelp to symbolize crash backtraces.
@@ -117,21 +142,36 @@ else()
   list(APPEND WR_PLATFORM_LIBS OpenGL::GL)
 endif()
 
+# Headless benchmark: reports how fast the guest advances, with no graphics or audio
+# in the way. Used to compare host CPUs -- see the Benchmarking section in README.md.
+if(HAVE_GAME_ISO)
+  add_executable(waverace_bench ${BENCH_SOURCES})
+  target_include_directories(waverace_bench PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR})
+  target_link_libraries(waverace_bench PRIVATE game_recomp)
+  target_compile_options(waverace_bench PRIVATE ${WR_RUNTIME_WARNINGS})
+  target_compile_definitions(waverace_bench PRIVATE WR_DEFAULT_ISO="${GAME_ISO}")
+  if(WIN32)
+    target_link_libraries(waverace_bench PRIVATE dbghelp)
+  endif()
+endif()
+
 # Compile-only target: available even without a disc image, so the runtime and any
 # port work can be checked on its own. With an image present `waverace` already
 # compiles these sources, so keep it out of the default build rather than doubling
 # every build; `ninja runtime_check` still works.
-if(HAVE_GAME_ISO)
-  add_library(runtime_check OBJECT EXCLUDE_FROM_ALL ${RUNTIME_SOURCES})
-else()
-  add_library(runtime_check OBJECT ${RUNTIME_SOURCES})
+if(NOT WR_BENCH_ONLY)
+  if(HAVE_GAME_ISO)
+    add_library(runtime_check OBJECT EXCLUDE_FROM_ALL ${RUNTIME_SOURCES})
+  else()
+    add_library(runtime_check OBJECT ${RUNTIME_SOURCES})
+  endif()
+  target_include_directories(runtime_check PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR} ${GLAD_INCLUDE_DIR})
+  target_link_libraries(runtime_check PRIVATE ${WR_SDL_TARGET})
+  target_compile_options(runtime_check PRIVATE ${WR_RUNTIME_WARNINGS})
+  target_compile_definitions(runtime_check PRIVATE WR_DEFAULT_ISO="${GAME_ISO}")
 endif()
-target_include_directories(runtime_check PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR} ${GLAD_INCLUDE_DIR})
-target_link_libraries(runtime_check PRIVATE ${WR_SDL_TARGET})
-target_compile_options(runtime_check PRIVATE ${WR_RUNTIME_WARNINGS})
-target_compile_definitions(runtime_check PRIVATE WR_DEFAULT_ISO="${GAME_ISO}")
 
-if(HAVE_GAME_ISO)
+if(HAVE_GAME_ISO AND NOT WR_BENCH_ONLY)
   add_executable(waverace ${RUNTIME_SOURCES})
   target_include_directories(waverace PRIVATE ${GLAD_INCLUDE_DIR})
   target_link_libraries(waverace PRIVATE game_recomp ${WR_SDL_TARGET} ${WR_PLATFORM_LIBS})

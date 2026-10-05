@@ -187,11 +187,17 @@ bool plat_read_at(PlatFile* f, uint64_t offset, void* dst, uint32_t len) {
 #else  // POSIX
 // ===========================================================================
 #include <csignal>
-#include <execinfo.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <pthread.h>
+#ifdef __ANDROID__
+// bionic has no execinfo.h; unwind by hand and symbolize with dladdr.
+#include <dlfcn.h>
+#include <unwind.h>
+#else
+#include <execinfo.h>
+#endif
 
 void* plat_reserve(size_t size) {
     void* p = mmap(nullptr, size, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
@@ -202,11 +208,41 @@ bool plat_commit(void* base, size_t size) {
     return mprotect(base, size, PROT_READ | PROT_WRITE) == 0;
 }
 
+#ifdef __ANDROID__
+namespace {
+struct BacktraceState { void** frames; int count; int max; };
+
+_Unwind_Reason_Code bt_frame(struct _Unwind_Context* ctx, void* arg) {
+    auto* st = static_cast<BacktraceState*>(arg);
+    uintptr_t pc = _Unwind_GetIP(ctx);
+    if (pc) {
+        if (st->count >= st->max) return _URC_END_OF_STACK;
+        st->frames[st->count++] = reinterpret_cast<void*>(pc);
+    }
+    return _URC_NO_REASON;
+}
+}  // namespace
+
+void plat_backtrace_print() {
+    void* frames[64];
+    BacktraceState st{frames, 0, 64};
+    _Unwind_Backtrace(bt_frame, &st);
+    for (int i = 0; i < st.count; i++) {
+        Dl_info info{};
+        if (dladdr(frames[i], &info) && info.dli_sname)
+            fprintf(stderr, "  %2d %p %s\n", i, frames[i], info.dli_sname);
+        else
+            fprintf(stderr, "  %2d %p\n", i, frames[i]);
+    }
+    fflush(stderr);
+}
+#else
 void plat_backtrace_print() {
     void* bt[64];
     int n = backtrace(bt, 64);
     backtrace_symbols_fd(bt, n, 2);
 }
+#endif
 
 void plat_watchdog(int seconds, int exit_code) {
     static int s_code;

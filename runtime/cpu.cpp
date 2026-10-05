@@ -224,14 +224,26 @@ extern "C" void psq_store(CPU* c, uint32_t ea, int frs, int w, int gqr) {
 // ---------------------------------------------------------------------------
 static std::chrono::steady_clock::time_point g_t0;
 
+// Diagnostic only: WR_TIMESCALE=N makes the emulated timebase advance N times faster,
+// so the game tries to run at N x real time. Useful for finding out how much CPU
+// headroom a machine actually has -- a host that is merely keeping up at 1.0 and one
+// with room to spare both report the game's capped 30 fps otherwise. It skews every
+// other emulated timing (DVD, audio, retrace), so it is not a correctness path.
+static double g_time_scale = 1.0;
+
 void timing_init() {
     g_t0 = std::chrono::steady_clock::now();
+    if (const char* e = getenv("WR_TIMESCALE")) {
+        double s = atof(e);
+        if (s > 0) g_time_scale = s;
+    }
     build_fn_table();
 }
 
 uint64_t now_ticks() {
     auto d = std::chrono::steady_clock::now() - g_t0;
-    return (uint64_t)((double)std::chrono::duration_cast<std::chrono::nanoseconds>(d).count() * (TB_FREQ / 1e9));
+    return (uint64_t)((double)std::chrono::duration_cast<std::chrono::nanoseconds>(d).count() *
+                      (TB_FREQ / 1e9) * g_time_scale);
 }
 
 struct Event {

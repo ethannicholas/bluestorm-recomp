@@ -144,6 +144,77 @@ Run it from the repository root: the memory card is created in `saves/` relative
 current directory. Like any save file, it contains data written by the game, so don't
 share or commit it (`saves/` is git-ignored).
 
+## Benchmarking
+
+`waverace_bench` runs the game with no graphics, audio or input and reports how fast the guest
+actually advances. It exists to compare CPUs on equal terms — in particular to find out whether
+a device can sustain the game's 30 fps before porting the renderer to it.
+
+```sh
+./build/waverace_bench --seconds=25
+```
+
+```
+whole run:    411 frames in 25.0 s = 16.44 fps
+steady state: 360 frames in 17.0 s = 21.18 fps = 71% of the game's 30 fps
+              1533k vertices/s
+```
+
+The first seconds are boot and asset loading, which run at a different rate than gameplay;
+`--warmup=N` (default 8) excludes them from the steady-state figure, which is the number to
+compare between machines. The target drops the renderer and the SDL frontend entirely, so it
+builds anywhere the recompiled code builds — including a cross-build for a device.
+
+### Measuring headroom
+
+A host that is only just keeping up and one with plenty to spare both report the same capped
+30 fps, because the simulation advances a fixed 1/30 s per frame. Per-thread CPU time does not
+settle it either: the game paces itself by waiting on video retrace, and that wait reads as a
+busy thread, so the guest thread shows ~99% of a core even when it has room to spare.
+
+`WR_TIMESCALE=N` makes the emulated timebase advance N times faster, so the game tries to run
+at N times real time. Raise it until the frame rate stops climbing and that plateau is the
+machine's actual ceiling:
+
+| | 1.0 | 1.5 | 2.0 | 3.0 |
+|---|---|---|---|---|
+| Quest 3 (6× Cortex-A78C, 2.05/2.36 GHz) | 29.9 | 38.3 | 43.1 | **48.5** |
+| VMware guest, 2 vCPUs of Apple Silicon | 20.5 | – | 29.9 | **30.7** |
+
+The Quest tops out near 48 fps — about 1.6× real time, so the 30 fps simulation leaves roughly
+60% headroom there. `WR_TIMESCALE` skews all other emulated timing, so it is a diagnostic only.
+
+The second row shows why a single measurement at 1.0 can mislead: 20.5 fps is *below* that
+machine's own 30.7 fps ceiling, which throughput alone cannot explain. With only two cores, the
+guest thread contends with the 200 µs ticker and the batch drain and overshoots its retrace
+waits, so it is latency-bound rather than CPU-bound. Prefer a machine with cores to spare when
+measuring, and read the ceiling rather than the 1.0 figure.
+
+Note that guest execution is serialised: many guest threads exist but exactly one runs at a
+time (see `runtime/threads.cpp`), so extra cores do not raise this ceiling. The vertex
+throughput column matters for the same reason — CPU-side transform and lighting run on that
+one thread.
+
+### On an Android device (e.g. a Quest headset)
+
+Needs only the NDK and `adb`, not the full SDK, Gradle or a JDK:
+
+- [Android NDK](https://developer.android.com/ndk/downloads) unpacked to
+  `%LOCALAPPDATA%\Android\Sdk\ndk\<version>\`
+- [platform-tools](https://developer.android.com/tools/releases/platform-tools) unpacked to
+  `%LOCALAPPDATA%\Android\Sdk\platform-tools\`
+
+Put the headset in developer mode, allow USB debugging, confirm `adb devices` lists it, then:
+
+```powershell
+.\build-android.ps1 -Run
+```
+
+That cross-compiles for `arm64-v8a`, pushes the binary and the disc image to
+`/data/local/tmp/waverace/`, and runs the benchmark. The image is only pushed when it isn't
+already on the device at the right size. `-DWR_BENCH_ONLY=ON` is what makes a build with no
+SDL2, no GL and no renderer possible.
+
 ## Graphics
 
 The renderer needs an **OpenGL 3.3 core profile**. It uses nothing newer: samplers, VAOs, FBOs

@@ -130,7 +130,12 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     s += "uniform vec4 u_fog;\n";       // A, C, bmag, bshift
     s += "uniform vec3 u_fogcolor;\n";
     s += "layout(location = 0) out vec4 o_color;\n";
-    s += "ivec4 sample_tex(int m, vec2 uv) { return ivec4(round(texture(u_tex[m], uv) * 255.0)); }\n";
+    s += "uniform vec2 u_indcoordscale[4];\n";
+    s += "vec2 u_indscalef(int i) { return u_indcoordscale[i]; }\n";
+    // A macro, not a function: a sampler array has to be indexed by a constant
+    // expression in GLSL ES (and strictly in GLSL 330 as well). Every call site
+    // passes a literal map index, so expansion makes the index constant.
+    s += "#define sample_tex(m, uv) ivec4(round(texture(u_tex[m], (uv)) * 255.0))\n";
     s += "void main() {\n";
     s += "  ivec4 prev = u_reg[0], c0 = u_reg[1], c1 = u_reg[2], c2 = u_reg[3];\n";
     s += "  ivec4 col0 = ivec4(round(v_col0 * 255.0)), col1 = ivec4(round(v_col1 * 255.0));\n";
@@ -313,13 +318,6 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     s += "  o_color = vec4(outc) / 255.0;\n";
     if (getenv("WR_FLAT")) s += "  o_color = vec4(1.0, 0.0, 1.0, 1.0);\n";
     s += "}\n";
-
-    // Indirect coordinate scale helper: emitted before main via string substitution.
-    std::string helper =
-        "uniform vec2 u_indcoordscale[4];\n"
-        "vec2 u_indscalef(int i) { return u_indcoordscale[i]; }\n";
-    size_t pos = s.find("ivec4 sample_tex");
-    s.insert(pos, helper);
     return s;
 }
 

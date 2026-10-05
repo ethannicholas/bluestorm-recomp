@@ -10,7 +10,10 @@ rom/*
 disc/
 
 # Generated / local
-build/
+# Any build directory: these hold the recompiled game code in gen/, which is derived
+# from the disc and must never be committed. The trailing slash keeps build.sh,
+# build.ps1 and build-android.ps1 tracked.
+build*/
 saves/
 analysis/out/
 analysis/all.s
