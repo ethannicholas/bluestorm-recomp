@@ -63,6 +63,16 @@ static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
 // followed by an EFB clear, so repainting has to come from here, not the live EFB.
 static GLuint g_snap_fbo, g_snap_tex;
 static bool g_frame_marker = false;
+
+// Where each draw of the current frame landed on screen, for WR_SEAM. Recorded as the
+// frame is executed and printed only if that frame turns out to contain a seam, so the
+// draw that produced the seam can be named without guessing at a frame number -- which
+// the wall-clock timebase makes meaningless across runs anyway.
+struct DrawExtent { int index; uint32_t verts; float x0, x1, y0, y1; bool ortho;
+                    int sc_x0, sc_y0, sc_x1, sc_y1, off_x, off_y; };
+static std::vector<DrawExtent> g_draw_extents;
+static int g_seam_x = -1, g_seam_y = -1;  // where the previous frame's seam was
+static bool g_seam_trace = false;  // trace the next frame draw by draw
 static GLuint g_vao, g_vbo;
 static GLuint g_copy_prog, g_copy_vao;
 static GLint g_copy_u_src, g_copy_u_rect, g_copy_u_mode, g_copy_u_depth;
@@ -328,7 +338,24 @@ static const GLenum kBlendSrc[8] = {GL_ZERO, GL_ONE, GL_DST_COLOR, GL_ONE_MINUS_
 static const GLenum kBlendDst[8] = {GL_ZERO, GL_ONE, GL_SRC_COLOR, GL_ONE_MINUS_SRC_COLOR, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA};
 static const GLenum kDepthFunc[8] = {GL_NEVER, GL_LESS, GL_EQUAL, GL_LEQUAL, GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS};
 static bool samples_fullscreen_copy(const PixelState& st);
+
+// The origin that the scissor box and the viewport are both measured from, in EFB pixels.
+//
+// GX stores it halved, so GXSetScissorBoxOffset(0, 0) reads back as 342 -- which is where
+// the 342 hardcoded here comes from. Reading the register instead would be more faithful
+// in general, and both the scissor and the viewport would have to use it or geometry and
+// clipping disagree and nearly everything is scissored away. It is not done, because this
+// game's register reads 340 throughout, and switching to it shifts the whole picture two
+// pixels right with nothing to say which is correct. The constant is what has been
+// checked against reference footage, so it stays until there is a reason to move it.
+static void scissor_offset(const uint32_t*, int& xoff, int& yoff) {
+    xoff = 342;
+    yoff = 342;
+}
+
 static void apply_state(const PixelState& st, int prim) {
+    int xoff, yoff;
+    scissor_offset(st.bp, xoff, yoff);
     const uint32_t* bp = st.bp;
     ShaderKey key = make_shader_key(st);
     const Program& pr = get_program(key);
@@ -372,7 +399,7 @@ static void apply_state(const PixelState& st, int prim) {
         glUniform1f(pr.u_hud_scale, g_vr_hud_scale);
     }
     const float* vp = st.viewport;  // sx, sy, sz, ox, oy, oz
-    float vpa[4] = {2.0f * (vp[3] - 342.0f) / EFB_W - 1.0f, 2.0f * vp[0] / EFB_W, 2.0f * (vp[4] - 342.0f) / EFB_H - 1.0f, 2.0f * vp[1] / EFB_H};
+    float vpa[4] = {2.0f * (vp[3] - xoff) / EFB_W - 1.0f, 2.0f * vp[0] / EFB_W, 2.0f * (vp[4] - yoff) / EFB_H - 1.0f, 2.0f * vp[1] / EFB_H};
     float vpb[4] = {2.0f * vp[5] / 16777215.0f - 1.0f, 2.0f * vp[2] / 16777215.0f, 0, 0};
     glUniform4fv(pr.u_vp_a, 1, vpa);
     glUniform4fv(pr.u_vp_b, 1, vpb);
@@ -484,11 +511,9 @@ static void apply_state(const PixelState& st, int prim) {
             glCullFace(back ? GL_BACK : GL_FRONT);
         }
     }
-    // Scissor (EFB coords, y down)
-    int xoff = (int)((bp[0x59] & 0x3FF) << 1) - 342 * 0, yoff = (int)(((bp[0x59] >> 10) & 0x3FF) << 1);
-    (void)xoff; (void)yoff;
-    int x0 = (int)(bp[0x20] >> 12 & 0x7FF) - 342, y0 = (int)(bp[0x20] & 0x7FF) - 342;
-    int x1 = (int)(bp[0x21] >> 12 & 0x7FF) - 341, y1 = (int)(bp[0x21] & 0x7FF) - 341;
+    // Scissor (EFB coords, y down). See scissor_offset() for why 342 is not a constant.
+    int x0 = (int)(bp[0x20] >> 12 & 0x7FF) - xoff, y0 = (int)(bp[0x20] & 0x7FF) - yoff;
+    int x1 = (int)(bp[0x21] >> 12 & 0x7FF) - xoff + 1, y1 = (int)(bp[0x21] & 0x7FF) - yoff + 1;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (x1 > EFB_W) x1 = EFB_W;
@@ -660,6 +685,37 @@ static void present(const EfbCopyCmd& c) {
     const bool in_range = range_lo < 0 || ((int)g_present_count >= range_lo &&
                                            (int)g_present_count <= range_hi);
     if (g_dump_dir && g_dump_every && in_range && g_present_count % g_dump_every == 0) dump_efb(c);
+    // WR_SEAM=1 dumps only frames that contain a full-height vertical edge somewhere in
+    // the interior. The character-select seam appears for a few frames somewhere in a
+    // long session, and a fixed dump interval will not land on it; this looks for the
+    // fault itself rather than for a moment someone guessed at.
+    static const bool seam_hunt = getenv("WR_SEAM") != nullptr;
+    if (seam_hunt && g_dump_dir) {
+        const int w = c.src_w * g_scale, h = c.src_h * g_scale;
+        std::vector<uint8_t> px((size_t)w * h * 4);
+        glReadPixels(c.src_x * g_scale, (EFB_H - c.src_y - c.src_h) * g_scale, w, h, GL_RGBA,
+                     GL_UNSIGNED_BYTE, px.data());
+        int best_x = -1, best_rows = 0;
+        for (int x = 40; x < w - 40; x++) {
+            int rows = 0;
+            for (int y = 0; y < h; y++) {
+                const uint8_t* a = &px[((size_t)y * w + x) * 4];
+                const int d = abs(a[0] - a[4]) + abs(a[1] - a[5]) + abs(a[2] - a[6]);
+                if (d > 40) rows++;
+            }
+            if (rows > best_rows) { best_rows = rows; best_x = x; }
+        }
+        if (best_rows > h * 6 / 10) {
+            fprintf(stderr, "[seam] frame %u: x=%d spans %d of %d rows\n", g_present_count,
+                    best_x, best_rows, h);
+            for (auto& d : g_draw_extents)
+                fprintf(stderr, "[seam]   draw %3d verts=%5u x=%6.1f..%-6.1f y=%6.1f..%-6.1f %s "
+                        "sc=%d,%d..%d,%d off=%d,%d\n",
+                        d.index, d.verts, d.x0, d.x1, d.y0, d.y1, d.ortho ? "2D" : "3D",
+                        d.sc_x0, d.sc_y0, d.sc_x1, d.sc_y1, d.off_x, d.off_y);
+            dump_efb(c);
+        }
+    }
     g_last_present = c;
     g_have_present = true;
     // Keep a copy before the display copy's clear wipes the EFB, so a later repaint
@@ -920,6 +976,8 @@ static bool execute_batch(Batch& b, bool do_present) {
     static const bool no_comp = getenv("WR_NO_COMP") != nullptr;
     static const bool only_comp = getenv("WR_ONLY_COMP") != nullptr;
     static const bool complog = getenv("WR_COMPLOG") != nullptr;
+    static const bool seam_record = getenv("WR_SEAM") != nullptr;
+    if (seam_record) g_draw_extents.clear();
     int draw_index = 0;
     for (auto& c : b.cmds) {
         switch (c.type) {
@@ -952,6 +1010,44 @@ static bool execute_batch(Batch& b, bool do_present) {
                 fprintf(stderr, "\n");
             }
             const int this_draw = draw_index++;
+            if (seam_record) {
+                // Mirror of the vertex shader's flat path: project, then apply GX's
+                // viewport transform, and take the screen-space bounds of the draw.
+                const PixelState& st = b.states[c.state];
+                const float* p = st.proj;
+                const bool ortho = (int)p[6] != 0;
+                const float* vp = st.viewport;
+                int sxo, syo;
+                scissor_offset(st.bp, sxo, syo);
+                const float ax = 2.0f * (vp[3] - sxo) / EFB_W - 1.0f, bx = 2.0f * vp[0] / EFB_W;
+                const float ay = 2.0f * (vp[4] - syo) / EFB_H - 1.0f, by = 2.0f * vp[1] / EFB_H;
+                DrawExtent e{this_draw, c.count, 1e9f, -1e9f, 1e9f, -1e9f, ortho, 0, 0, 0, 0, 0, 0};
+                e.off_x = sxo; e.off_y = syo;
+                e.sc_x0 = (int)(st.bp[0x20] >> 12 & 0x7FF) - sxo;
+                e.sc_y0 = (int)(st.bp[0x20] & 0x7FF) - syo;
+                e.sc_x1 = (int)(st.bp[0x21] >> 12 & 0x7FF) - sxo + 1;
+                e.sc_y1 = (int)(st.bp[0x21] & 0x7FF) - syo + 1;
+                for (uint32_t v = c.first; v < c.first + c.count && v < b.verts.size(); v++) {
+                    const float* q = b.verts[v].pos;
+                    float cx, cy, cw;
+                    if (ortho) {
+                        cx = p[0] * q[0] + p[1] * q[2] + 0.0f;
+                        cy = p[2] * q[1] + p[3] * q[2] + 0.0f;
+                        cw = 1.0f;
+                        cx += p[1]; cy += p[3];  // ortho translate lives in the same slots
+                    } else {
+                        cx = p[0] * q[0] + p[1] * q[2];
+                        cy = p[2] * q[1] + p[3] * q[2];
+                        cw = -q[2];
+                    }
+                    if (fabsf(cw) < 1e-6f) continue;
+                    const float nx = ax + bx * (cx / cw), ny = ay + by * (cy / cw);
+                    const float sx = (nx * 0.5f + 0.5f) * EFB_W, sy = (ny * 0.5f + 0.5f) * EFB_H;
+                    e.x0 = fminf(e.x0, sx); e.x1 = fmaxf(e.x1, sx);
+                    e.y0 = fminf(e.y0, sy); e.y1 = fmaxf(e.y1, sy);
+                }
+                if (e.x0 < 1e8f) g_draw_extents.push_back(e);
+            }
             if (skip_lo >= 0 && this_draw >= skip_lo && this_draw <= skip_hi) break;
             // WR_NO_EFBTEX drops draws that sample a partial EFB copy -- here, the copy of
             // the water surface that the game tints submerged geometry with. Unlike a draw
@@ -989,6 +1085,29 @@ static bool execute_batch(Batch& b, bool do_present) {
             }
             static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
             glDrawArrays(mode[c.prim], c.first, c.count);
+            // With a seam's position known from the previous frame, read one scanline
+            // after each draw and name the first draw that puts the discontinuity there.
+            // Neither the geometry extents nor the scissor rects accounted for it, so the
+            // only way left is to watch the pixels change.
+            if (g_seam_trace && g_seam_x > 0) {
+                // The whole column, not one pixel: the seam is broken up vertically, so a
+                // single row is as likely to miss it as to find it.
+                const int sx = g_seam_x * g_scale, hh = EFB_H * g_scale;
+                static std::vector<uint8_t> col;
+                col.resize((size_t)hh * 2 * 4);
+                glReadPixels(sx - 1, 0, 2, hh, GL_RGBA, GL_UNSIGNED_BYTE, col.data());
+                int rows = 0;
+                for (int y = 0; y < hh; y++) {
+                    const uint8_t* a = &col[(size_t)y * 8];
+                    if (abs(a[0] - a[4]) + abs(a[1] - a[5]) + abs(a[2] - a[6]) > 40) rows++;
+                }
+                if (rows > hh / 3) {
+                    fprintf(stderr, "[seam] appears at draw %d (verts=%u, %s) on %d of %d rows\n",
+                            this_draw, c.count,
+                            (int)b.states[c.state].proj[6] != 0 ? "2D" : "3D", rows, hh);
+                    g_seam_trace = false;
+                }
+            }
             break;
         }
         case CmdType::EfbCopy:
