@@ -301,15 +301,24 @@ renders. `adb logcat -s waverace` reports compositor and game frame counts every
 `wr_input.txt` in that same directory takes a `WR_INPUT` script, which drives the game without
 touching the controllers.
 
-### Known performance problem on mobile GPUs
+### A note on measuring performance here
 
-The renderer applies one `PixelState` per draw call, and the game issues **~830 draws per frame**
-during a race. Each one does a `glUseProgram`, a full uniform re-upload and eight texture and
-sampler binds, for an average of only ~106 vertices. Desktop drivers absorb that; a tiled mobile
-GPU does not. Measured on a Quest 3 (Adreno 740) at `--scale=1`: menus run at ~30 fps, a race at
-**0.5–3 fps**. Texture uploads (1 new texture per frame) and EFB copies (1 per frame) are *not*
-the cause — it is state-change overhead. Deduplicating consecutive identical states and merging
-adjacent draws that share one would be the fix.
+An earlier revision of this file claimed a race ran at 0.5-3 fps on a Quest 3 and blamed
+draw-call overhead. **That was wrong**, and the way it was wrong is worth recording.
+
+The measurement was taken with `waverace_egl` before the batch queue was bounded. The queue was
+growing by tens of megabytes a second, the process reached 3.8 GB resident and was swapping hard,
+and the frame rate being measured was the frame rate of a thrashing process. Bounding the queue
+fixed the frame rate as a side effect, and the race is playable in the headset.
+
+Two lessons for anyone measuring this again: check resident memory before trusting a frame rate,
+and prefer measuring in the app you actually ship over a headless harness.
+
+The draw-call shape is still worth knowing — ~830 draws per frame during a race, averaging ~106
+vertices each — and deduplicating `PixelState` by content would likely still help. But it is an
+optimisation, not the explanation for a slideshow that was really a memory leak. Note that
+`render_execute` already skips `apply_state` when consecutive draws share a state index; what it
+cannot skip is distinct indices holding identical contents.
 
 If the game exits with `OpenGL 1.1 is too old (got "1.1.0" / "GDI Generic")`, the host has no
 OpenGL driver at all and Windows is falling back to its software 1.1 implementation. This is

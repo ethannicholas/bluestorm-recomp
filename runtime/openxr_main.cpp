@@ -425,7 +425,8 @@ void android_main(android_app* app) {
     threads_start_boot(entry);
     LOGI("game started");
 
-    uint32_t xr_frames = 0, game_frames = 0;
+    uint32_t xr_frames = 0, game_frames = 0, skipped = 0;
+    bool have_content = false;
     XrTime last_report = 0;
 
     while (!app->destroyRequested) {
@@ -471,11 +472,25 @@ void android_main(android_app* app) {
                     // produces far fewer, so repaint the last one otherwise.
                     if (!drew) gx::render_repaint();
                     gx::render_set_output_fbo(0);
+                    // Make sure the blit has actually been issued before handing the
+                    // image back. Without this the compositor can sample an image whose
+                    // writes are still queued and show whatever it held previously --
+                    // with a 3-image swapchain that reads as a hard strobe.
+                    glFlush();
+                    have_content = true;
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_xr.swapchain, &ri);
             }
+        } else {
+            skipped++;
+        }
 
+        // Submit the quad on every frame that has content, including ones the runtime
+        // told us not to render. Dropping the layer shows the user an empty frame,
+        // which strobes against the frames that do carry it; re-submitting it just
+        // re-displays the last released image.
+        if (have_content) {
             quad.layerFlags = 0;
             quad.space = g_xr.space;
             quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -497,8 +512,9 @@ void android_main(android_app* app) {
 
         xr_frames++;
         if (fs.predictedDisplayTime - last_report > 5000000000LL) {  // 5 s in ns
-            LOGI("compositor %u frames, game %u frames", xr_frames, game_frames);
-            xr_frames = game_frames = 0;
+            LOGI("compositor %u frames, game %u frames, %u not rendered",
+                 xr_frames, game_frames, skipped);
+            xr_frames = game_frames = skipped = 0;
             last_report = fs.predictedDisplayTime;
         }
     }
