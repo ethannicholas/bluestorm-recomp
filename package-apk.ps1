@@ -49,11 +49,23 @@ foreach ($f in $unsigned, $aligned, $signed) { if (Test-Path $f) { Remove-Item $
     --min-sdk-version 29 --target-sdk-version 34
 if ($LASTEXITCODE -ne 0) { throw "aapt2 link failed" }
 
-# 2. Add the native library.
+# 2. Add the native libraries: ours, plus the OpenXR loader it links against, which
+#    FetchContent unpacked from the Khronos AAR.
+$libs = @{ "lib/$Abi/libwaverace.so" = (Resolve-Path $so) }
+$loader = Get-ChildItem -Recurse -Filter 'libopenxr_loader.so' "$BuildDir/_deps" -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -match [regex]::Escape($Abi) } | Select-Object -First 1
+if ($loader) {
+    $libs["lib/$Abi/libopenxr_loader.so"] = $loader.FullName
+    Write-Host "bundling $($loader.Name)"
+} else {
+    Write-Warning "libopenxr_loader.so not found under $BuildDir/_deps - the app will fail to load"
+}
+
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::Open((Resolve-Path $unsigned), 'Update')
-[void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-    $zip, (Resolve-Path $so), "lib/$Abi/libwaverace.so")
+foreach ($entry in $libs.GetEnumerator()) {
+    [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $entry.Value, $entry.Key)
+}
 $zip.Dispose()
 
 # 3. Align, then sign with a local debug key (created once).

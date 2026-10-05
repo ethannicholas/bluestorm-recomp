@@ -83,6 +83,7 @@ list(REMOVE_ITEM RUNTIME_SOURCES
   ${CMAKE_SOURCE_DIR}/runtime/bench_main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/egl_main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/android_main.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/openxr_main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/audio_stub.cpp)
 
 # Everything below the renderer and the SDL frontend -- the CPU, OS, hardware and GX
@@ -206,8 +207,20 @@ if(ANDROID AND HAVE_GAME_ISO)
   # Same set as waverace_egl, with the NativeActivity entry point instead of the
   # headless one. The library must be called libwaverace.so to match the manifest's
   # android.app.lib_name.
+  # The OpenXR loader comes from Khronos' official Android AAR on Maven Central: it
+  # carries both the headers and a prebuilt arm64 libopenxr_loader.so, so nothing has
+  # to be committed as a binary.
+  include(FetchContent)
+  FetchContent_Declare(openxr_aar
+    URL https://repo1.maven.org/maven2/org/khronos/openxr/openxr_loader_for_android/1.1.63/openxr_loader_for_android-1.1.63.aar
+    URL_HASH SHA256=622419d2f6741c3443a3beb4779af0764318edd01830de967f24c741ebcded73
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(openxr_aar)
+  set(OPENXR_INCLUDE ${openxr_aar_SOURCE_DIR}/prefab/modules/headers/include)
+  set(OPENXR_LIB ${openxr_aar_SOURCE_DIR}/prefab/modules/openxr_loader/libs/android.${ANDROID_ABI}/libopenxr_loader.so)
+
   set(APP_SOURCES ${CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/runtime/android_main.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/openxr_main.cpp
     ${CMAKE_SOURCE_DIR}/runtime/png.cpp
     ${CMAKE_SOURCE_DIR}/runtime/gx/render_gl.cpp
     ${CMAKE_SOURCE_DIR}/runtime/gx/shadergen.cpp
@@ -215,8 +228,8 @@ if(ANDROID AND HAVE_GAME_ISO)
     ${GLAD_SOURCE})
   add_library(waverace SHARED ${APP_SOURCES})
   target_include_directories(waverace PRIVATE
-    ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR} ${GLAD_INCLUDE_DIR})
-  target_link_libraries(waverace PRIVATE game_recomp native_app_glue EGL android log)
+    ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR} ${GLAD_INCLUDE_DIR} ${OPENXR_INCLUDE})
+  target_link_libraries(waverace PRIVATE game_recomp native_app_glue ${OPENXR_LIB} EGL android log)
   target_compile_options(waverace PRIVATE ${WR_RUNTIME_WARNINGS})
   target_compile_definitions(waverace PRIVATE WR_DEFAULT_ISO="" ${WR_GL_DEFS})
   # NativeActivity resolves this symbol by name; without it the linker drops the glue.

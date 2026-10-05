@@ -250,11 +250,38 @@ controller. Frames are pulled back to `build-android/frames/`.
 
 ### Installing on a headset
 
+The Android app is an **immersive OpenXR** app, not a 2D panel: it takes over the display and
+owns the controllers. A panel in the home environment cannot capture input at all (the A button
+goes to the shell), which is why this is immersive even though it only shows a flat screen.
+
+Theater mode is built on `XrCompositionLayerQuad`: the compositor is handed one flat texture and
+places it in space, reprojecting at display rate. Head tracking therefore stays smooth however
+slowly the game renders. Measured on a Quest 3: **72 Hz compositor with no stale frames while the
+game fed it 30 fps**. Full 3D later replaces the quad with a projection layer and per-eye
+`u_proj`/`u_view`; the session, swapchain and input code are unchanged by that.
+
+The OpenXR loader comes from Khronos' official Android AAR on Maven Central, fetched at configure
+time, so no binary is committed. Because there is no Gradle and so no manifest merger, the
+loader's own manifest requirements (two permissions and a `<queries>` block for the runtime
+broker) are written out by hand in `android/AndroidManifest.xml`; without them the loader cannot
+see the runtime on Android 11+ and `xrCreateInstance` fails.
+
+| GameCube | Touch controller |
+|---|---|
+| Control stick | Left thumbstick |
+| C-stick | Right thumbstick |
+| A / B | A / B (right) |
+| X / Y | X / Y (left) |
+| Z | Right grip |
+| L / R | Left / right trigger |
+| Start | Menu (left) |
+
+
+
 `android/AndroidManifest.xml` plus `package-apk.ps1` build an installable APK around a
 `NativeActivity`. There is no Java source and no Gradle — the framework's
 `android.app.NativeActivity` loads `libwaverace.so` and calls `android_main()` — so packaging is
-just `aapt2` → zip → `zipalign` → `apksigner`. It is a flat 2D app, so on Horizon OS it appears
-under *Unknown Sources* and runs in a panel; it is not a VR app yet.
+just `aapt2` → zip → `zipalign` → `apksigner`. It appears on Horizon OS under *Unknown Sources*.
 
 Needs, in addition to the NDK: a JDK, and the SDK's `build-tools` and a `platform`:
 
@@ -269,11 +296,10 @@ The disc image is **not** in the APK — it is yours, and far too large. It is p
 external files directory, which needs no runtime permission:
 `/sdcard/Android/data/com.example.waverace/files/game.iso`.
 
-The headset must actually be worn. An idle headset tears the window down immediately
-(`APP_CMD_TERM_WINDOW`), and the app then sits waiting, rendering nothing. `adb logcat -s
-waverace` reports the frame rate every five seconds and says so explicitly when there is no
-window. Controller support is whatever Android gamepad events reach a 2D panel; `wr_input.txt`
-in that same directory takes a `WR_INPUT` script to drive the game without one.
+The headset must actually be worn: the OpenXR session stays `IDLE` otherwise and nothing
+renders. `adb logcat -s waverace` reports compositor and game frame counts every five seconds.
+`wr_input.txt` in that same directory takes a `WR_INPUT` script, which drives the game without
+touching the controllers.
 
 ### Known performance problem on mobile GPUs
 

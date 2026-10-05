@@ -237,6 +237,7 @@ void render_init(int internal_scale) {
 
 void render_set_window_size(int w, int h) { g_win_w = w; g_win_h = h; }
 
+
 // ---------------------------------------------------------------------------
 static void upload_texture(const TexData& t) {
     GlTex g{};
@@ -508,10 +509,17 @@ static void dump_efb(const EfbCopyCmd& c) {
     write_png(path, flipped.data(), w, h);
 }
 
-static void present(const EfbCopyCmd& c) {
-    g_present_count++;
-    if (g_dump_dir && g_dump_every && g_present_count % g_dump_every == 0) dump_efb(c);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+// Where the finished frame is blitted. 0 is the window's framebuffer; a VR frontend
+// points this at one of its swapchain images instead.
+static GLuint g_output_fbo = 0;
+// The most recent presented rect, so the output can be refreshed without the game
+// having produced a new frame (a VR compositor wants one every display frame, which is
+// far more often than this game renders).
+static EfbCopyCmd g_last_present{};
+static bool g_have_present = false;
+
+static void blit_to_output(const EfbCopyCmd& c) {
+    glBindFramebuffer(GL_FRAMEBUFFER, g_output_fbo);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     set_logic_op_off();
@@ -536,6 +544,14 @@ static void present(const EfbCopyCmd& c) {
     glBindVertexArray(g_copy_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(g_vao);
+}
+
+static void present(const EfbCopyCmd& c) {
+    g_present_count++;
+    if (g_dump_dir && g_dump_every && g_present_count % g_dump_every == 0) dump_efb(c);
+    g_last_present = c;
+    g_have_present = true;
+    blit_to_output(c);
     if (g_dump_dir && getenv("WR_DUMP_WINDOW") && g_dump_every && g_present_count % g_dump_every == 0) {
         std::vector<uint8_t> px((size_t)g_win_w * g_win_h * 4), fl(px.size());
         glReadPixels(0, 0, g_win_w, g_win_h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -546,6 +562,13 @@ static void present(const EfbCopyCmd& c) {
         write_png(path, fl.data(), g_win_w, g_win_h);
         fprintf(stderr, "[win] %dx%d glError=%x\n", g_win_w, g_win_h, glGetError());
     }
+}
+void render_set_output_fbo(unsigned fbo) { g_output_fbo = (GLuint)fbo; }
+
+bool render_repaint() {
+    if (!g_have_present) return false;
+    blit_to_output(g_last_present);
+    return true;
 }
 
 // Executes a batch. Returns true if it contained a Present.
