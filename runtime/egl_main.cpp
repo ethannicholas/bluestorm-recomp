@@ -244,7 +244,18 @@ int main(int argc, char** argv) {
                 gx::render_set_vr_eye(P, V, 0.55f);
                 gx::render_execute_eye(*b, g_eye_fbo, g_eye_w, g_eye_h, true);
                 presented++;
-                if (gx::g_dump_dir && gx::g_dump_every && presented % gx::g_dump_every == 0)
+                // WR_DUMP_COPIES=N dumps whenever a frame holds at least N EFB copies,
+                // which is how a frame thick with spray is caught: the faults that only
+                // appear at speed are in exactly those frames, and a fixed interval
+                // almost never lands on one.
+                static const int want_copies = getenv("WR_DUMP_COPIES")
+                                                   ? atoi(getenv("WR_DUMP_COPIES")) : 0;
+                int ncopies = 0;
+                if (want_copies)
+                    for (auto& c : b->cmds) ncopies += c.type == gx::CmdType::EfbCopy;
+                if (gx::g_dump_dir &&
+                    ((gx::g_dump_every && presented % gx::g_dump_every == 0) ||
+                     (want_copies && ncopies >= want_copies)))
                     eye_dump(gx::g_dump_dir, presented);
             } else if (gx::render_execute(*b)) presented++;
         }

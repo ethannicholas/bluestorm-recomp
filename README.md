@@ -319,24 +319,38 @@ Two things make this work:
 - **The first eye runs the whole frame flat into the EFB first**, scanout aside. An eye pass never
   draws into the EFB, so without this every render-to-texture copy reads an empty one. That is
   what left the ski untextured and put a black square on the water.
-- **Every pass that ends in a *partial* copy is skipped**, wherever it sits. The copy that takes
-  the whole displayed frame is not one of those: it comes after the scene, not before it. "Whole
-  frame" has to be measured against the display copy in the same batch, since the frame is 640×480
-  while the EFB is 640×528 — measuring against the EFB matches nothing, and then every copy looks
-  like an off-screen pass.
+- **A pass is skipped when its copy *clears* the EFB**, wherever that pass sits. The clear is what
+  marks a real off-screen pass: the next pass needs the buffer empty. A copy that does not clear
+  is a *grab* — the game lifting a piece of the live scene to texture with — and the draws in
+  front of it belong to whatever pass is still in progress.
 
-  The off-screen passes are not all up front. Once the racer is fast enough to throw spray the
-  game copies out around fifty 32×32 and 64×64 sprites *after* the main scene, so a rule phrased
-  as "the scene is whatever follows the last partial copy" drops the whole scene the moment you
-  get up to speed and leaves those sprites hanging on black. Hence per-pass, not a boundary.
+  Both halves of that matter, and each was learned the hard way. The off-screen passes are not all
+  up front: at speed the spray grabs some fifty 32×32 and 64×64 rects from scattered screen
+  positions *after* the main scene, so "the scene is whatever follows the last copy" drops the
+  entire scene the moment you get going. And treating every copy as ending a pass then throws away
+  whatever draws sit in front of the first grab — the water surface among them, so the ocean
+  vanished at speed instead.
 
-Draws that sample a whole-frame copy are screen-space, so in an eye they are flat billboards and
-leave a faint rectangular seam. They are still drawn: in this game the water surface is one of
-them, and dropping it leaves the seabed showing through bare sand instead of blue-green water.
-`WR_EYE_SKIPCOMP=1` drops them for comparison.
+  The copy of the whole displayed frame is never an off-screen pass. "Whole frame" is measured
+  against the display copy in the same batch, since the frame is 640×480 while the EFB is 640×528;
+  measuring against the EFB matches nothing.
 
-`WR_EYELOG=1` prints each frame's split — command count, boundary, every copy with its size — and
-is the quickest way to tell "the eye rendered the wrong part" from "the eye rendered nothing".
+Draws that sample a whole-frame copy are screen-space — in this game the water surface is one,
+composited over the scene. Placed in the world they are billboards whose edge cuts visibly across
+the ocean, so they are drawn flat across the whole eye instead. The texture holds the flat render
+rather than that eye's, so the detail in it is only approximately where it belongs, but an edge
+through the middle of the sea is worse. Dropping them is worse still: the seabed then shows
+through bare sand instead of blue-green water. `WR_EYE_SKIPCOMP=1` does that, for comparison.
+
+What remains visible at speed: the spray grabs are replayed as billboards too, and show as faint
+squares where they fall.
+
+`WR_EYELOG=1` prints each frame's split — every copy with its size, source rect, clear flag, the
+draws ahead of it and whether they were replayed — and is the quickest way to tell "the eye
+rendered the wrong part" from "the eye rendered nothing". `WR_DUMP_COPIES=20` dumps whenever a
+frame holds at least that many copies, which is how a frame thick with spray gets caught: the
+faults that only appear at speed are in exactly those frames, and a fixed dump interval almost
+never lands on one.
 
 ### Tuning VR (`vr.txt`)
 

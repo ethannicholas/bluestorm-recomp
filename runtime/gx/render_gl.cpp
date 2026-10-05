@@ -326,6 +326,7 @@ static float fog_float(uint32_t v) {
 static const GLenum kBlendSrc[8] = {GL_ZERO, GL_ONE, GL_DST_COLOR, GL_ONE_MINUS_DST_COLOR, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA};
 static const GLenum kBlendDst[8] = {GL_ZERO, GL_ONE, GL_SRC_COLOR, GL_ONE_MINUS_SRC_COLOR, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA};
 static const GLenum kDepthFunc[8] = {GL_NEVER, GL_LESS, GL_EQUAL, GL_LEQUAL, GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS};
+static bool samples_fullscreen_copy(const PixelState& st);
 static void apply_state(const PixelState& st, int prim) {
     const uint32_t* bp = st.bp;
     ShaderKey key = make_shader_key(st);
@@ -343,7 +344,16 @@ static void apply_state(const PixelState& st, int prim) {
     } else {
         P[0] = p[0]; P[12] = p[1]; P[5] = p[2]; P[13] = p[3]; P[10] = p[4]; P[14] = p[5]; P[15] = 1.0f;
     }
-    if (g_vr_active && perspective) {
+    // A draw sampling a copy of the whole frame is screen-space -- here it is the water
+    // surface, composited over the scene. Placed in the world it is a billboard whose
+    // edge cuts across the view, so it is drawn flat across the whole eye instead. Its
+    // texture holds the flat render rather than this eye's, so the detail in it is only
+    // approximately where it belongs; an edge through the middle of the ocean is worse.
+    if (g_vr_active && perspective && samples_fullscreen_copy(st)) {
+        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, P);
+        glUniform1i(pr.u_vr, 2);
+        glUniform1f(pr.u_hud_scale, 1.0f);
+    } else if (g_vr_active && perspective) {
         // WR_EYE_GAMEPROJ keeps the game's own frustum and applies only the head
         // transform, which tells apart "the eye sees less than it should" from "the game
         // never drew anything out there".
@@ -678,16 +688,18 @@ static bool is_fullscreen_copy(const EfbCopyCmd& c, uint32_t dw, uint32_t dh) {
 
 // Marks the commands an eye must not replay.
 //
-// Copies delimit passes, and a pass ending in a partial copy is drawing into an
-// off-screen target -- a reflection, the sprite sheet the spray uses. Its draws are in
-// that target's space, so re-aiming them at an eye is meaningless; the first eye has
-// already produced all of them against the EFB. Everything else -- the main scene, the
-// composite over it, the HUD -- is replayed.
+// An off-screen pass draws into a target and then copies it out -- a reflection, the
+// sheet the spray uses. Its draws are in that target's space, so re-aiming them at an
+// eye is meaningless, and the first eye has already produced all of them against the
+// EFB. Everything else -- the main scene, the composite over it, the HUD -- is replayed.
 //
-// These passes are not all up front. The spray sheet is rendered *after* the main scene
-// once the racer is fast enough to throw spray, so taking the scene to be whatever
-// follows the last partial copy drops the entire scene the moment you get up to speed,
-// leaving the squares the spray is composited from on black.
+// What marks such a pass is that its copy *clears* the EFB, since the next pass needs it
+// empty. A copy that does not clear is a grab: the game lifting a piece of the live
+// scene to texture with, which is how the spray is done -- at speed it takes some fifty
+// 32x32 and 64x64 rects from scattered screen positions, each preceded by no draws of
+// its own. Treating every copy as ending a pass instead throws away whatever draws
+// happen to sit in front of the first grab, and the water surface is among them: the
+// ocean disappeared the moment the racer was fast enough to throw spray.
 static void mark_offscreen_passes(const Batch& b, std::vector<uint8_t>& skip) {
     uint32_t dw, dh;
     display_size(b, dw, dh);
@@ -695,7 +707,8 @@ static void mark_offscreen_passes(const Batch& b, std::vector<uint8_t>& skip) {
     size_t pass_start = 0;
     for (size_t i = 0; i < b.cmds.size(); i++) {
         if (b.cmds[i].type != CmdType::EfbCopy) continue;
-        if (!b.cmds[i].copy.to_xfb && !is_fullscreen_copy(b.cmds[i].copy, dw, dh))
+        const EfbCopyCmd& c = b.cmds[i].copy;
+        if (!c.to_xfb && c.clear && !is_fullscreen_copy(c, dw, dh))
             for (size_t j = pass_start; j <= i; j++) skip[j] = 1;
         pass_start = i + 1;
     }
@@ -710,9 +723,7 @@ static void mark_offscreen_passes(const Batch& b, std::vector<uint8_t>& skip) {
 // which is far worse than the seam. WR_EYE_SKIPCOMP drops them anyway, for comparing.
 static std::vector<uint32_t> g_fullscreen_tex;
 
-static bool is_composite_draw(const PixelState& st) {
-    static const bool skip = getenv("WR_EYE_SKIPCOMP") != nullptr;
-    if (!skip) return false;
+static bool samples_fullscreen_copy(const PixelState& st) {
     for (int i = 0; i < 8; i++) {
         if (!st.tex_is_efb[i] || !st.tex_id[i]) continue;
         for (uint32_t id : g_fullscreen_tex)
@@ -766,9 +777,11 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
             int nd = 0;
             for (size_t j = pass_start; j < i; j++) nd += b.cmds[j].type == CmdType::Draw;
             const EfbCopyCmd& cc = b.cmds[i].copy;
-            fprintf(stderr, "[eye]   copy %ux%u xfb=%d tex=%u full=%d draws=%d %s\n", cc.dst_w,
-                    cc.dst_h, (int)cc.to_xfb, cc.tex_id, (int)is_fullscreen_copy(cc, dw, dh),
-                    nd, skip[i] ? "SKIP" : "replay");
+            fprintf(stderr, "[eye]   copy %ux%u xfb=%d tex=%u full=%d draws=%d clr=%d%d src=%u,%u+%ux%u %s\n",
+                    cc.dst_w, cc.dst_h, (int)cc.to_xfb, cc.tex_id,
+                    (int)is_fullscreen_copy(cc, dw, dh), nd, (int)cc.clear,
+                    (int)cc.clear_color, cc.src_x, cc.src_y, cc.src_w, cc.src_h,
+                    skip[i] ? "SKIP" : "replay");
             pass_start = i + 1;
         }
     }
@@ -795,7 +808,10 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
             continue;
         }
         if (skip[i]) { n_skipped++; continue; }
-        if (is_composite_draw(b.states[c.state])) { n_skipped++; continue; }
+        // WR_EYE_SKIPCOMP drops the screen-space passes entirely, for comparing against
+        // drawing them flat across the eye. Dropping the water one leaves bare seabed.
+        static const bool skipcomp = getenv("WR_EYE_SKIPCOMP") != nullptr;
+        if (skipcomp && samples_fullscreen_copy(b.states[c.state])) { n_skipped++; continue; }
         n_drawn++;
         if (c.state != cur_state || c.prim != cur_prim) {
             apply_state(b.states[c.state], c.prim);
