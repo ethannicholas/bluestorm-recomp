@@ -587,14 +587,19 @@ void renderer_efb_copy(uint32_t dest_addr, bool /*unused*/) {
     cc.format = tf / 2 + (tf & 1) * 8;
     if ((v >> 15) & 1) cc.format |= 0x10;
     cc.depth = (bp[0x43] & 7) == 3;
-    if (getenv("WR_COPYLOG")) fprintf(stderr, "[copy] f%u xfb=%d dest=%08X %ux%u@%u,%u fmt=%X clear=%d pe_copy=%06X\n", g_frame_counter, cc.to_xfb, dest_addr,
-                                      cc.src_w, cc.src_h, cc.src_x, cc.src_y, cc.format, cc.clear, v);
     cc.clear = (v >> 11) & 1;
     cc.clear_color = (bp[0x41] >> 3) & 1;
     cc.clear_alpha = (bp[0x41] >> 4) & 1;
     cc.clear_z = (bp[0x40] >> 4) & 1;
     cc.clear_rgba = ((bp[0x4F] & 0xFF) << 24) | ((bp[0x50] >> 8 & 0xFF) << 16) | ((bp[0x50] & 0xFF) << 8) | ((bp[0x4F] >> 8) & 0xFF);
     cc.clear_z_value = bp[0x51] & 0xFFFFFF;
+    // Logged after the fields are filled in; it used to print cc.clear before it was
+    // assigned, so every copy appeared not to clear.
+    static const bool copylog = getenv("WR_COPYLOG") != nullptr;
+    if (copylog)
+        fprintf(stderr, "[copy] f%u xfb=%d dest=%08X dst=%ux%u src=%ux%u@%u,%u fmt=%X clear=%d "
+                "half=%d pe=%06X\n", g_frame_counter, cc.to_xfb, dest_addr, cc.dst_w, cc.dst_h,
+                cc.src_w, cc.src_h, cc.src_x, cc.src_y, cc.format, cc.clear, (int)half, v);
     if (!cc.to_xfb) cc.tex_id = texture_register_efb_copy(dest_addr, cc.dst_w, cc.dst_h, cc.format);
     // For display copies the presentation must see the EFB before the copy's clear.
     if (cc.to_xfb) {

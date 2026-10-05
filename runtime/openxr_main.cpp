@@ -553,6 +553,7 @@ void android_main(android_app* app) {
     LOGI("game started");
 
     uint32_t xr_frames = 0, game_frames = 0, skipped = 0;
+    uint64_t disp_frames = 0;  // monotonic, unlike xr_frames which the stats line resets
     bool have_content = false;
     bool stereo = g_vrcfg.start_in_stereo, manual_override = false, toggle_was_down = false;
     // Kept across frames: a display frame with no new game frame re-submits these
@@ -716,6 +717,15 @@ void android_main(android_app* app) {
                     // produces far fewer, so repaint the last one otherwise.
                     if (!drew) gx::render_repaint();
                     gx::render_set_output_fbo(0);
+                    // `log_frames 1` in vr.txt traces the theater path one display frame
+                    // at a time: which swapchain image was written, whether it got a new
+                    // game frame or a repaint, and which game frame it is showing. The
+                    // headless harness renders the same pixels but cannot reproduce the
+                    // compositor, so flicker that is not in the EFB has to be caught here.
+                    if (g_vrcfg.log_frames)
+                        LOGI("[t] disp=%llu img=%u %s present=%u batch=%d",
+                             (unsigned long long)disp_frames, idx, drew ? "drew" : "rept",
+                             gx::present_count(), batch ? 1 : 0);
                     // Make sure the blit has actually been issued before handing the
                     // image back. Without this the compositor can sample an image whose
                     // writes are still queued and show whatever it held previously --
@@ -755,6 +765,7 @@ void android_main(android_app* app) {
         xrEndFrame(g_xr.session, &fe);
 
         xr_frames++;
+        disp_frames++;
         if (fs.predictedDisplayTime - last_report > 5000000000LL) {  // 5 s in ns
             LOGI("compositor %u frames, game %u frames, %u not rendered",
                  xr_frames, game_frames, skipped);

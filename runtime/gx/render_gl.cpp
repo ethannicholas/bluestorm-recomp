@@ -626,7 +626,21 @@ static void blit_to_output(const EfbCopyCmd& c, GLuint src_tex) {
 
 static void present(const EfbCopyCmd& c) {
     g_present_count++;
-    if (g_dump_dir && g_dump_every && g_present_count % g_dump_every == 0) dump_efb(c);
+    // WR_DUMP_RANGE=a-b restricts dumping to a window of presented frames, so a short
+    // stretch can be captured every single frame. Flicker is only visible frame by frame.
+    static int range_lo = -1, range_hi = -1;
+    static bool range_parsed = false;
+    if (!range_parsed) {
+        range_parsed = true;
+        if (const char* s = getenv("WR_DUMP_RANGE")) {
+            range_lo = atoi(s);
+            const char* dash = strchr(s, '-');
+            range_hi = dash ? atoi(dash + 1) : range_lo;
+        }
+    }
+    const bool in_range = range_lo < 0 || ((int)g_present_count >= range_lo &&
+                                           (int)g_present_count <= range_hi);
+    if (g_dump_dir && g_dump_every && in_range && g_present_count % g_dump_every == 0) dump_efb(c);
     g_last_present = c;
     g_have_present = true;
     // Keep a copy before the display copy's clear wipes the EFB, so a later repaint
@@ -650,6 +664,7 @@ static void present(const EfbCopyCmd& c) {
     }
 }
 void render_set_output_fbo(unsigned fbo) { g_output_fbo = (GLuint)fbo; }
+uint32_t present_count() { return g_present_count; }
 
 bool render_repaint() {
     if (!g_have_present) return false;

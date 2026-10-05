@@ -15,6 +15,9 @@ void render_set_output_fbo(unsigned fbo);
 bool render_repaint();
 bool render_execute(Batch& b);
 
+// Frames presented so far, for tracing what a display frame is actually showing.
+uint32_t present_count();
+
 // ---- VR ----
 // Set the eye projection and the eye's transform relative to the game's camera, plus
 // how much of the field of view the flat 2D elements are shrunk into.

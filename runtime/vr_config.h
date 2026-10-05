@@ -32,6 +32,9 @@ struct VrConfig {
     // when rendering in stereo.
     float hud_scale = 0.55f;
 
+    // Trace the theater path one display frame at a time (adb logcat -s waverace).
+    bool log_frames = false;
+
     // Start in stereo rather than theater, for testing.
     bool start_in_stereo = false;
 };
