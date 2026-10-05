@@ -248,6 +248,33 @@ PNGs. No APK, no window, no OpenXR — it exists to check the ES back end on rea
 `-InputScript` sets `WR_INPUT`, which is how anything past the title screen is reached without a
 controller. Frames are pulled back to `build-android/frames/`.
 
+### Installing on a headset
+
+`android/AndroidManifest.xml` plus `package-apk.ps1` build an installable APK around a
+`NativeActivity`. There is no Java source and no Gradle — the framework's
+`android.app.NativeActivity` loads `libwaverace.so` and calls `android_main()` — so packaging is
+just `aapt2` → zip → `zipalign` → `apksigner`. It is a flat 2D app, so on Horizon OS it appears
+under *Unknown Sources* and runs in a panel; it is not a VR app yet.
+
+Needs, in addition to the NDK: a JDK, and the SDK's `build-tools` and a `platform`:
+
+```powershell
+winget install Microsoft.OpenJDK.21
+# then sdkmanager --licenses, and: platforms;android-34  build-tools;34.0.0
+.\build-android.ps1          # builds libwaverace.so
+.\package-apk.ps1 -Install   # packages, installs, pushes the disc image
+```
+
+The disc image is **not** in the APK — it is yours, and far too large. It is pushed to the app's
+external files directory, which needs no runtime permission:
+`/sdcard/Android/data/com.example.waverace/files/game.iso`.
+
+The headset must actually be worn. An idle headset tears the window down immediately
+(`APP_CMD_TERM_WINDOW`), and the app then sits waiting, rendering nothing. `adb logcat -s
+waverace` reports the frame rate every five seconds and says so explicitly when there is no
+window. Controller support is whatever Android gamepad events reach a 2D panel; `wr_input.txt`
+in that same directory takes a `WR_INPUT` script to drive the game without one.
+
 ### Known performance problem on mobile GPUs
 
 The renderer applies one `PixelState` per draw call, and the game issues **~830 draws per frame**

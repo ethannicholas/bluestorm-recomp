@@ -23,10 +23,21 @@ static std::mutex g_q_mutex;
 static std::condition_variable g_q_cv;
 static std::deque<std::unique_ptr<Batch>> g_queue;
 
+// A batch holds every vertex of a frame -- around 10 MB during a race -- so the queue
+// has to be a hard bound, not a hint. If the renderer is slower than the guest (a
+// mobile GPU, say) an advisory wait that queues anyway grows this by tens of megabytes
+// a second; on a Quest 3 that reached 3.8 GB and the app was killed by lowmemorykiller.
+static constexpr size_t kMaxQueuedBatches = 8;
+
 void submit_batch(std::unique_ptr<Batch> b) {
     std::unique_lock<std::mutex> lk(g_q_mutex);
-    // Don't let the guest run too far ahead of the renderer.
-    g_q_cv.wait_for(lk, std::chrono::milliseconds(100), [] { return g_queue.size() < 8; });
+    // Wait for room, which throttles the guest to the renderer's rate. The timeout is
+    // only a safety valve: if nothing is consuming at all (no window, a stalled render
+    // thread) the guest must not block forever, so drop the oldest frame instead.
+    if (!g_q_cv.wait_for(lk, std::chrono::seconds(2),
+                         [] { return g_queue.size() < kMaxQueuedBatches; })) {
+        if (!g_queue.empty()) g_queue.pop_front();
+    }
     g_queue.push_back(std::move(b));
     g_q_cv.notify_all();
 }

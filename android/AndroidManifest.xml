@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NativeActivity app: there is no Java source, the framework's
+     android.app.NativeActivity loads libwaverace.so and calls android_main().
+
+     Deliberately a flat 2D app, not a VR one: on Horizon OS it appears under
+     "Unknown Sources" and runs in a resizable panel. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="com.example.waverace"
+          android:versionCode="1"
+          android:versionName="0.1">
+
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34" />
+    <uses-feature android:glEsVersion="0x00030002" android:required="true" />
+
+    <!-- extractNativeLibs=true lets the .so be stored compressed and unaligned, which
+         keeps packaging to a plain zip write. Targeting 34 it would otherwise default
+         to false and require uncompressed, page-aligned libraries. -->
+    <application android:label="Wave Race"
+                 android:hasCode="false"
+                 android:debuggable="true"
+                 android:extractNativeLibs="true">
+        <activity android:name="android.app.NativeActivity"
+                  android:label="Wave Race"
+                  android:exported="true"
+                  android:launchMode="singleTask"
+                  android:screenOrientation="landscape"
+                  android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|uiMode|density">
+            <!-- Tells NativeActivity which library to load (lib<name>.so). -->
+            <meta-data android:name="android.app.lib_name" android:value="waverace" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

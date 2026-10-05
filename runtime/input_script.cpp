@@ -13,11 +13,11 @@ std::vector<ScriptedPress> g_script;
 bool g_log;
 }  // namespace
 
-void input_script_init() {
+void input_script_init(const char* spec) {
     g_log = getenv("WR_INPUT_LOG") != nullptr;
-    const char* e = getenv("WR_INPUT");
-    if (!e) return;
-    std::string s = e;
+    if (!spec || !*spec) spec = getenv("WR_INPUT");
+    if (!spec || !*spec) return;
+    std::string s = spec;
     size_t pos = 0;
     while (pos < s.size()) {
         size_t end = s.find(',', pos);

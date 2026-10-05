@@ -6,11 +6,14 @@
 #pragma once
 #include "hw/pad.h"
 
-// Reads WR_INPUT: "frame:BUTTON[+BUTTON]:duration,..." where frame is the
-// presented-frame count at which to press, e.g. "900:START:10,1200:A:10".
+// Parses "frame:BUTTON[+BUTTON]:duration,..." where frame is the presented-frame
+// count at which to press, e.g. "900:START:10,1200:A:10".
 // Buttons: A B X Y Z L R START UP DOWN LEFT RIGHT; stick: SL SR SU SD.
 // WR_INPUT_LOG=1 logs each press as it fires.
-void input_script_init();
+//
+// `spec` null or empty falls back to the WR_INPUT environment variable, which an
+// Android app has no way to set -- it passes the script in directly instead.
+void input_script_init(const char* spec = nullptr);
 
 // Overlays any press that is active at the current presented-frame count.
 void input_script_apply(PadState& p);

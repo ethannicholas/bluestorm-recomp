@@ -82,6 +82,7 @@ file(GLOB_RECURSE RUNTIME_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/runtime/
 list(REMOVE_ITEM RUNTIME_SOURCES
   ${CMAKE_SOURCE_DIR}/runtime/bench_main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/egl_main.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/android_main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/audio_stub.cpp)
 
 # Everything below the renderer and the SDL frontend -- the CPU, OS, hardware and GX
@@ -193,6 +194,33 @@ if(ANDROID AND HAVE_GAME_ISO)
   target_link_libraries(waverace_egl PRIVATE game_recomp EGL log)
   target_compile_options(waverace_egl PRIVATE ${WR_RUNTIME_WARNINGS})
   target_compile_definitions(waverace_egl PRIVATE WR_DEFAULT_ISO="${GAME_ISO}" ${WR_GL_DEFS})
+
+  # The installable app: a NativeActivity shared library, packaged into an APK by
+  # package-apk.ps1. android.app.NativeActivity loads it and calls android_main(),
+  # so there is no Java source at all.
+  add_library(native_app_glue STATIC
+    ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
+  target_include_directories(native_app_glue PUBLIC
+    ${ANDROID_NDK}/sources/android/native_app_glue)
+
+  # Same set as waverace_egl, with the NativeActivity entry point instead of the
+  # headless one. The library must be called libwaverace.so to match the manifest's
+  # android.app.lib_name.
+  set(APP_SOURCES ${CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/runtime/android_main.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/png.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/gx/render_gl.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/gx/shadergen.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/gx/gl_load.cpp
+    ${GLAD_SOURCE})
+  add_library(waverace SHARED ${APP_SOURCES})
+  target_include_directories(waverace PRIVATE
+    ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR} ${GLAD_INCLUDE_DIR})
+  target_link_libraries(waverace PRIVATE game_recomp native_app_glue EGL android log)
+  target_compile_options(waverace PRIVATE ${WR_RUNTIME_WARNINGS})
+  target_compile_definitions(waverace PRIVATE WR_DEFAULT_ISO="" ${WR_GL_DEFS})
+  # NativeActivity resolves this symbol by name; without it the linker drops the glue.
+  target_link_options(waverace PRIVATE -u ANativeActivity_onCreate)
 endif()
 
 # Compile-only target: available even without a disc image, so the runtime and any
