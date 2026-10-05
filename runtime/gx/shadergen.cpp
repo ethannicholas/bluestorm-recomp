@@ -148,6 +148,7 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     static const bool no_alpha_test = getenv("WR_NO_ALPHA_TEST") != nullptr;
     static const bool no_fog = getenv("WR_NO_FOG") != nullptr;
     static const bool ras_white = getenv("WR_RAS_WHITE") != nullptr;
+    static const int snap_stage = getenv("WR_SNAP") ? atoi(getenv("WR_SNAP")) : -1;
     std::string s;
     char buf[1024];
     // The zero-argument case appends directly: handing a runtime format string to
@@ -185,6 +186,7 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     s += "  ivec4 col0 = ivec4(round(v_col0 * 255.0)), col1 = ivec4(round(v_col1 * 255.0));\n";
     s += "  ivec4 tex = ivec4(0), ras = ivec4(0), konst = ivec4(0);\n";
     s += "  int alphabump = 0;\n";
+    s += "  ivec4 snap = ivec4(0);\n";  // WR_SNAP target; unused unless WR_SHOW=snap
     s += "  vec2 ind_prev = vec2(0.0);\n";
 
     // texcoords (projective divide)
@@ -284,8 +286,16 @@ std::string gen_pixel_shader(const ShaderKey& k) {
                 static const char* biast[3] = {"", " + 128", " - 128"};
                 static const char* sl[4] = {"", " << 1", " << 2", ""};
                 static const char* lb[4] = {"", " + 128", "", " + 127"};
-                W("    ivec3 cr = (((cd%s)%s) %c (((((ca << 8) + (cb - ca) * (cc + (cc >> 7)))%s)%s) >> 8))%s;\n",
-                  biast[bias_], sl[scale], op ? '-' : '+', sl[scale], lb[2 * op + (scale != 3 ? 1 : 0)], scale == 3 ? " >> 1" : "");
+                // The lerp weights both terms rather than using GX's (b - a) * c form.
+                // The two are algebraically identical, but (b - a) is negative whenever
+                // b < a, and GLSL ES leaves >> on a negative value undefined -- a driver
+                // may reassociate the shift onto that term. On an Adreno 740 the original
+                // form returned zero for most of the screen, which is what made the title
+                // screen render black.
+                W("    ivec3 ccx = cc + (cc >> 7);\n");
+                W("    ivec3 cr = (((cd%s)%s) %c ((((ca * (256 - ccx) + cb * ccx)%s)%s) >> 8))%s;\n",
+                  biast[bias_], sl[scale], op ? '-' : '+', sl[scale],
+                  lb[2 * op + (scale != 3 ? 1 : 0)], scale == 3 ? " / 2" : "");
             } else {
                 uint32_t mode = (scale << 1) | op;
                 switch (mode) {
@@ -311,8 +321,15 @@ std::string gen_pixel_shader(const ShaderKey& k) {
                 static const char* biast[3] = {"", " + 128", " - 128"};
                 static const char* sl[4] = {"", " << 1", " << 2", ""};
                 static const char* lb[4] = {"", " + 128", "", " + 127"};
-                W("    int ar = (((ad%s)%s) %c (((((aa << 8) + (ab - aa) * (ac + (ac >> 7)))%s)%s) >> 8))%s;\n",
-                  biast[bias_], sl[scale], op ? '-' : '+', sl[scale], lb[2 * op + (scale == 3 ? 1 : 0)], scale == 3 ? " >> 1" : "");
+                // Same weighted form as the colour combiner, for the same reason: (ab - aa)
+                // is negative whenever ab < aa, and >> on a negative is undefined in
+                // GLSL ES. The rounding-bias condition also matched on `scale == 3` here
+                // where the colour path uses `scale != 3`; the two are the same equation,
+                // so this was inverted and is corrected to agree.
+                W("    int acx = ac + (ac >> 7);\n");
+                W("    int ar = (((ad%s)%s) %c ((((aa * (256 - acx) + ab * acx)%s)%s) >> 8))%s;\n",
+                  biast[bias_], sl[scale], op ? '-' : '+', sl[scale],
+                  lb[2 * op + (scale != 3 ? 1 : 0)], scale == 3 ? " / 2" : "");
             } else {
                 uint32_t mode = (scale << 1) | op;
                 switch (mode) {
@@ -330,6 +347,10 @@ std::string gen_pixel_shader(const ShaderKey& k) {
             else W("    %s.a = clamp(ar, -1024, 1023);\n", kDest[dest]);
         }
         s += "  }\n";
+        // WR_SNAP=N copies prev after stage N into `snap`, which WR_SHOW=snap displays
+        // at the end. This bisects the chain without altering control flow, so unlike
+        // WR_TEV_STOP it cannot change what it measures.
+        if (snap_stage >= 0 && (int)st == snap_stage) s += "  snap = prev;\n";
         // Debug: WR_TEV_STOP=N ends the chain after stage N and writes the running
         // result straight out, to bisect which stage a bad image comes from.
         // WR_TEV_REG picks which register to show (0=prev, 1=c0, 2=c1, 3=c2), and
@@ -381,6 +402,27 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     }
     s += "  o_color = vec4(outc) / 255.0;\n";
     if (getenv("WR_FLAT")) s += "  o_color = vec4(1.0, 0.0, 1.0, 1.0);\n";
+    // WR_SHOW=prev|c0|c1|c2|konst (plus WR_SHOW_ALPHA=1) replaces the final colour
+    // with a TEV value. Unlike WR_TEV_STOP this changes no control flow at all --
+    // every stage, the alpha test and fog still run exactly as they normally would --
+    // so it cannot perturb what it is measuring.
+    if (const char* show = getenv("WR_SHOW")) {
+        // "probe" packs stage 12's three inputs into one image so they are measured in
+        // a single run, on the same pixels of the same frame: red is prev as it entered
+        // the stage (WR_SNAP), green is c1's red, blue is c1's alpha. Comparing these
+        // across separate runs is unsound because the attract sequence drifts.
+        if (!strcmp(show, "probe"))
+            s += "  o_color = vec4(float(snap.r & 255) / 255.0, float(c1.r & 255) / 255.0,"
+                 " float(c1.a & 255) / 255.0, 1.0);\n";
+        // "probe2" shows one stage's input, its blend factor and its output together:
+        // red is prev entering stage WR_SNAP+1, green is c1's alpha (the factor), blue
+        // is prev at the end. If red is bright and green is zero, blue must match red.
+        else if (!strcmp(show, "probe2"))
+            s += "  o_color = vec4(float(snap.r & 255) / 255.0, float(c1.a & 255) / 255.0,"
+                 " float(prev.r & 255) / 255.0, 1.0);\n";
+        else if (getenv("WR_SHOW_ALPHA")) W("  o_color = vec4(vec3(float(%s.a & 255) / 255.0), 1.0);\n", show);
+        else W("  o_color = vec4(vec3(%s.rgb & 255) / 255.0, 1.0);\n", show);
+    }
     s += "}\n";
     return s;
 }
