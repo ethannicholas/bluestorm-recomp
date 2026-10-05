@@ -604,11 +604,16 @@ void android_main(android_app* app) {
                     if (c.type == gx::CmdType::Draw &&
                         (int)batch->states[c.state].proj[6] == 0) persp++;
                 const bool busy = persp >= g_vrcfg.stereo_draw_threshold;
-                busy_frames = busy ? busy_frames + 1 : 0;
-                if (busy && !stereo && busy_frames >= g_vrcfg.stereo_switch_frames) {
+                // Run length of consecutive frames: positive while busy, negative while
+                // not. The condition has to hold for stereo_switch_frames in BOTH
+                // directions -- dropping out of stereo on the first frame that dips
+                // below the threshold made the view flap during a race.
+                if (busy) busy_frames = busy_frames < 0 ? 1 : busy_frames + 1;
+                else      busy_frames = busy_frames > 0 ? -1 : busy_frames - 1;
+                if (!stereo && busy_frames >= g_vrcfg.stereo_switch_frames) {
                     stereo = true;
                     LOGI("switching to stereo (%d perspective draws)", persp);
-                } else if (!busy && stereo && busy_frames == 0) {
+                } else if (stereo && -busy_frames >= g_vrcfg.stereo_switch_frames) {
                     stereo = false;
                     LOGI("switching to theater");
                 }

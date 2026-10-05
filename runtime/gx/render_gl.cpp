@@ -59,6 +59,9 @@ static bool g_vr_active = false;
 static float g_vr_proj[16], g_vr_view[16];
 static float g_vr_hud_scale = 0.55f;
 static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
+// Copy of the EFB as it looked at the last present. The display copy is immediately
+// followed by an EFB clear, so repainting has to come from here, not the live EFB.
+static GLuint g_snap_fbo, g_snap_tex;
 static GLuint g_vao, g_vbo;
 static GLuint g_copy_prog, g_copy_vao;
 static GLint g_copy_u_src, g_copy_u_rect, g_copy_u_mode, g_copy_u_depth;
@@ -67,8 +70,14 @@ static GLint g_blit_u_src, g_blit_u_rect;
 static GLuint g_copy_fbo;
 static GLuint g_vs;
 static std::unordered_map<ShaderKey, Program, ShaderKeyHash> g_programs;
-struct GlTex { GLuint tex; uint32_t w, h; bool efb; };
+struct GlTex { GLuint tex; uint32_t w, h; bool efb; uint32_t last_used; };
 static std::unordered_map<uint32_t, GlTex> g_textures;
+// Frames counted here rather than reusing the GX frame counter, so eviction works the
+// same for any frontend. Textures the game stops using are released: a race streams
+// them continuously, and without this both the GL objects and the decoded copies grow
+// without bound until the device runs out of memory and crawls.
+static uint32_t g_render_frame;
+static constexpr uint32_t kTexIdleFrames = 240;  // ~8 s at 30 fps
 static std::unordered_map<uint32_t, GLuint> g_samplers;
 static int g_win_w, g_win_h;
 bool g_cull_swap = false;
@@ -200,6 +209,17 @@ void render_init(int internal_scale) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenFramebuffers(1, &g_snap_fbo);
+    glGenTextures(1, &g_snap_tex);
+    glBindTexture(GL_TEXTURE_2D, g_snap_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, EFB_W * g_scale, EFB_H * g_scale, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, g_snap_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_snap_tex, 0);
+
     glGenTextures(1, &g_efb_depth);
     glBindTexture(GL_TEXTURE_2D, g_efb_depth);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, EFB_W * g_scale, EFB_H * g_scale, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
@@ -262,6 +282,7 @@ static void upload_texture(const TexData& t) {
         h = h > 1 ? h / 2 : 1;
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)t.levels.size() - 1);
+    g.last_used = g_render_frame;
     g_textures[t.id] = g;
 }
 
@@ -386,6 +407,7 @@ static void apply_state(const PixelState& st, int prim) {
         auto it = id ? g_textures.find(id) : g_textures.end();
         if (it == g_textures.end()) { glBindTexture(GL_TEXTURE_2D, 0); continue; }
         glBindTexture(GL_TEXTURE_2D, it->second.tex);
+        it->second.last_used = g_render_frame;
         uint32_t base = m < 4 ? 0x80 + m : 0xA0 + (m - 4);
         uint32_t img0 = bp[base + 8];
         tsz[m * 2] = (float)((img0 & 0x3FF) + 1);
@@ -546,7 +568,7 @@ static GLuint g_output_fbo = 0;
 static EfbCopyCmd g_last_present{};
 static bool g_have_present = false;
 
-static void blit_to_output(const EfbCopyCmd& c) {
+static void blit_to_output(const EfbCopyCmd& c, GLuint src_tex) {
     glBindFramebuffer(GL_FRAMEBUFFER, g_output_fbo);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
@@ -564,7 +586,7 @@ static void blit_to_output(const EfbCopyCmd& c) {
     glViewport((w - vw) / 2, (h - vh) / 2, vw, vh);
     glUseProgram(g_blit_prog);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_efb_color);
+    glBindTexture(GL_TEXTURE_2D, src_tex);
     glBindSampler(0, 0);
     glUniform1i(g_blit_u_src, 0);
     float rect[4] = {(float)c.src_x / EFB_W, (float)(c.src_y + c.src_h) / EFB_H, (float)(c.src_x + c.src_w) / EFB_W, (float)c.src_y / EFB_H};
@@ -579,7 +601,15 @@ static void present(const EfbCopyCmd& c) {
     if (g_dump_dir && g_dump_every && g_present_count % g_dump_every == 0) dump_efb(c);
     g_last_present = c;
     g_have_present = true;
-    blit_to_output(c);
+    // Keep a copy before the display copy's clear wipes the EFB, so a later repaint
+    // has something to show. Without this, every frame the game did not produce would
+    // repaint a cleared EFB -- black -- which strobes against the frames it did.
+    const GLint fw = EFB_W * g_scale, fh = EFB_H * g_scale;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_efb_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_snap_fbo);
+    glBlitFramebuffer(0, 0, fw, fh, 0, 0, fw, fh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    blit_to_output(c, g_efb_color);
     if (g_dump_dir && getenv("WR_DUMP_WINDOW") && g_dump_every && g_present_count % g_dump_every == 0) {
         std::vector<uint8_t> px((size_t)g_win_w * g_win_h * 4), fl(px.size());
         glReadPixels(0, 0, g_win_w, g_win_h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -595,7 +625,7 @@ void render_set_output_fbo(unsigned fbo) { g_output_fbo = (GLuint)fbo; }
 
 bool render_repaint() {
     if (!g_have_present) return false;
-    blit_to_output(g_last_present);
+    blit_to_output(g_last_present, g_snap_tex);
     return true;
 }
 
@@ -614,17 +644,53 @@ void render_set_vr_eye(const float proj[16], const float view[16], float hud_sca
 // the second reuses what it produced. EFB copies to the XFB (the final present) are
 // skipped entirely, since an eye renders straight to its own target.
 bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
-    g_vr_active = true;
-    // In stereo, render_execute() never runs, so this is the only place the batch's
-    // textures and vertices reach the GPU. Both are shared by the eyes, so upload once
-    // on the first -- which is what makes the second eye cost only its draw calls.
+    // The frame is in two parts. Everything up to the last render-to-texture copy is
+    // off-screen work -- water reflections, droplet sprites -- drawn with its own
+    // cameras (a reflection uses a mirrored one) and belonging in a texture. Only what
+    // follows is the view the player sees.
+    //
+    // Re-projecting the off-screen passes through an eye puts that geometry in the
+    // world, which is where the untextured upside-down rider came from, and leaves the
+    // textures they should have produced unwritten, which is where the dark water
+    // square and the square droplets came from. So run that part exactly as the flat
+    // renderer would, once, and re-project only the main scene per eye.
+    size_t main_start = 0;
+    for (size_t i = 0; i < b.cmds.size(); i++)
+        if (b.cmds[i].type == CmdType::EfbCopy && !b.cmds[i].copy.to_xfb) main_start = i + 1;
+
     if (do_copies) {
+        // In stereo, render_execute() never runs, so this is the only place the batch's
+        // textures and vertices reach the GPU. Both are shared by the eyes.
         for (auto& t : b.new_textures) upload_texture(*t);
+        g_vr_active = false;
+        glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
+        glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
         glBindVertexArray(g_vao);
         glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
         glBufferData(GL_ARRAY_BUFFER, b.verts.size() * sizeof(GpuVertex), b.verts.data(),
                      GL_STREAM_DRAW);
+        uint32_t st = UINT32_MAX;
+        int pr = -1;
+        for (size_t i = 0; i < main_start; i++) {
+            const Cmd& c = b.cmds[i];
+            if (c.type == CmdType::Draw) {
+                if (c.state != st || c.prim != pr) {
+                    apply_state(b.states[c.state], c.prim);
+                    st = c.state;
+                    pr = c.prim;
+                }
+                static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
+                glDrawArrays(mode[c.prim], c.first, c.count);
+            } else if (c.type == CmdType::EfbCopy && !c.copy.to_xfb) {
+                do_efb_copy(c.copy);
+                glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
+                glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
+                st = UINT32_MAX;
+            }
+        }
     }
+
+    g_vr_active = true;
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
     glViewport(0, 0, w, h);
     glDisable(GL_SCISSOR_TEST);
@@ -638,7 +704,8 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
 
     uint32_t cur_state = UINT32_MAX;
     int cur_prim = -1;
-    for (auto& c : b.cmds) {
+    for (size_t i = main_start; i < b.cmds.size(); i++) {
+        const Cmd& c = b.cmds[i];
         switch (c.type) {
         case CmdType::Draw: {
             if (c.state != cur_state || c.prim != cur_prim) {
@@ -655,16 +722,6 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
             break;
         }
         case CmdType::EfbCopy:
-            if (do_copies && !c.copy.to_xfb) {
-                // Render-to-texture has to happen against the EFB, not the eye target.
-                g_vr_active = false;
-                glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
-                glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
-                do_efb_copy(c.copy);
-                g_vr_active = true;
-                glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
-                glViewport(0, 0, w, h);
-            }
             cur_state = UINT32_MAX;
             break;
         case CmdType::Present:
@@ -676,7 +733,23 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     return true;
 }
 
+// Release GL textures the game has stopped using. EFB copies are replaced explicitly
+// by do_efb_copy and are left alone here.
+static void evict_textures() {
+    if ((g_render_frame & 63) != 0) return;
+    for (auto it = g_textures.begin(); it != g_textures.end();) {
+        if (!it->second.efb && g_render_frame - it->second.last_used > kTexIdleFrames) {
+            glDeleteTextures(1, &it->second.tex);
+            it = g_textures.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 bool render_execute(Batch& b) {
+    g_render_frame++;
+    evict_textures();
     for (auto& t : b.new_textures) upload_texture(*t);
     glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
     glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);

@@ -616,6 +616,7 @@ void renderer_efb_copy(uint32_t dest_addr, bool /*unused*/) {
     }
     if (cc.to_xfb) {
         g_frame_counter++;
+        texture_evict();
         g_frames_submitted++;
         g_have_last_state = false;
         flush_batch();

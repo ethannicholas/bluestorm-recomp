@@ -295,4 +295,15 @@ TexLookup texture_lookup(const TexParams& p, std::vector<std::shared_ptr<TexData
 
 void texture_invalidate_efb_copy(uint32_t addr) { g_efb_copies.erase(addr & 0x03FFFFFF); }
 
+// Drop decoded textures the game has stopped referencing. Each entry holds every mip
+// level as RGBA8, so a long race would otherwise accumulate hundreds of megabytes.
+void texture_evict() {
+    static constexpr uint32_t kIdleFrames = 240;  // ~8 s at 30 fps
+    if ((g_frame_counter & 63) != 0) return;
+    for (auto it = g_cache.begin(); it != g_cache.end();) {
+        if (g_frame_counter - it->second.last_frame > kIdleFrames) it = g_cache.erase(it);
+        else ++it;
+    }
+}
+
 }  // namespace gx
