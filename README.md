@@ -297,9 +297,22 @@ The app presents the game two ways and switches between them automatically:
 - **Stereo** — the world rendered per eye as an `XrCompositionLayerProjection`, with the 2D
   elements kept flat as an overlay.
 
-The switch is driven by the game's own output: a frame's perspective draws are counted, and a
-race submits several hundred where a menu submits a handful. Clicking the right thumbstick pins
-the view manually, which is also the way to compare the two.
+The switch is driven by the game's own state: `0x80631FA4` is 1 from the moment the countdown
+starts until the race ends, and 0 through boot, the menus, course select, loading, the course
+overview flyover and the results screen. Being exact, it needs no hysteresis. Clicking the right
+thumbstick pins the view manually, which is also the way to compare the two.
+
+It replaces counting a frame's perspective draws, which was wrong in both directions: the course
+overview is a full 3D flyover and cleared the threshold, so stereo began before the race, and a
+sparse view during a race dipped below it, so the view flapped. The draw count survives only as a
+fallback for a disc the address does not suit — if it ever reads anything but 0 or 1 it is not the
+flag, and the old heuristic takes over.
+
+The address came from diffing guest RAM against labelled screenshots: `WR_RAMSNAP=<dir>` makes
+`waverace_egl` write the low 8 MB of guest RAM beside a PNG every `WR_RAMSNAP_EVERY` frames, and
+the frames say which snapshot is a menu, the overview, a race or the results. Asking for the words
+that hold one value across every racing snapshot and a different single value across every
+non-racing one left exactly two candidates out of two million.
 
 Stereo is cheap here because of where `xf.cpp` stops. Vertices reach the renderer in the game's
 *view* space with the projection applied in the shader, so an eye is just another matrix in front
@@ -357,6 +370,23 @@ rendered the wrong part" from "the eye rendered nothing". `WR_DUMP_COPIES=20` du
 frame holds at least that many copies, which is how a frame thick with spray gets caught: the
 faults that only appear at speed are in exactly those frames, and a fixed dump interval almost
 never lands on one.
+
+#### Attributing part of the image to the draws that made it
+
+Not a VR problem but found through this harness, and the tools stay because the question recurs:
+*which draw put that there?* A race frame is ~390 draws in the flat path.
+
+- `WR_COMPLOG=1` logs every draw that samples a render-to-texture result, with its vertex count,
+  texgens and texture ids.
+- `WR_DRAWLOG=<frame>` lists every draw in one frame with its index, so geometry drawn twice shows
+  up as two draws with identical vertex counts and textures.
+- `WR_DRAW_SKIP=a-b` drops a range of draw indices, `WR_NO_COMP` / `WR_ONLY_COMP` drop or isolate
+  the draws sampling a whole-frame copy, and `WR_NO_EFBTEX` drops those sampling a partial one.
+
+One caution that has cost time twice: **the emulated timebase is wall-clock driven, so frame N is
+not the same moment in two runs.** Any A/B that compares frame N across runs is comparing different
+scenes. Either make the comparison inside one run, or pick a selector that is stable from frame to
+frame — "draws sampling the water copy" rather than "draws 256 to 273".
 
 ### Tuning VR (`vr.txt`)
 

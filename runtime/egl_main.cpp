@@ -239,13 +239,30 @@ int main(int argc, char** argv) {
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
     auto t_mark = t0;
-    uint32_t presented = 0, presented_at_mark = 0;
+    uint32_t presented = 0, presented_at_mark = 0, last_snap = 0;
     for (;;) {
         PadState p;
         p.connected = true;
         input_script_apply(p);
         pad_set_state(0, p);
 
+        // WR_RAMSNAP=dir dumps guest RAM once a second. Diffing snapshots taken in known
+        // game states is how a variable like "the race is running" gets found; the draw
+        // count the stereo switch uses now is a guess that fires on the course overview.
+        static const char* ramsnap = getenv("WR_RAMSNAP");
+        static const uint32_t snap_every = getenv("WR_RAMSNAP_EVERY")
+                                               ? atoi(getenv("WR_RAMSNAP_EVERY")) : 150;
+        // The low 8 MB: enough to hold the game's own state without writing 24 MB a shot.
+        static const uint32_t snap_bytes = 8u << 20;
+        if (ramsnap && presented && presented % snap_every == 0 && presented != last_snap) {
+            last_snap = presented;
+            char path[512];
+            snprintf(path, sizeof(path), "%s/ram_%05u.bin", ramsnap, presented);
+            if (FILE* f = fopen(path, "wb")) {
+                fwrite(mem_ptr(0x80000000), 1, snap_bytes, f);
+                fclose(f);
+            }
+        }
         if (auto b = gx::take_batch(4)) {
             if (g_eye_mode) {
                 float P[16], V[16];

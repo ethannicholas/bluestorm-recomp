@@ -13,6 +13,11 @@
 #include "platform.h"
 #include "input_script.h"
 #include "vr_config.h"
+
+// Set while the player is on the course: from the start of the countdown until the race
+// ends. Zero through boot, menus, course select, loading, the course overview flyover and
+// the results screen. Specific to the supported disc (see the Supported version section).
+static constexpr uint32_t kRaceActiveAddr = 0x80631FA4;
 #include "gx/render.h"
 #include "gx/render_gl.h"
 #include "gx/gl.h"
@@ -548,6 +553,7 @@ void android_main(android_app* app) {
     bool have_content = false;
     bool stereo = g_vrcfg.start_in_stereo, manual_override = false, toggle_was_down = false;
     int busy_frames = 0;
+    bool race_flag_ok = true;
     // Kept across frames: a display frame with no new game frame re-submits these
     // rather than re-rendering. They carry the pose each image was rendered for, so
     // the compositor reprojects them for the current head pose.
@@ -599,23 +605,42 @@ void android_main(android_app* app) {
         if (batch) {
             game_frames++;
             if (!manual_override) {
-                int persp = 0;
-                for (auto& c : batch->cmds)
-                    if (c.type == gx::CmdType::Draw &&
-                        (int)batch->states[c.state].proj[6] == 0) persp++;
-                const bool busy = persp >= g_vrcfg.stereo_draw_threshold;
-                // Run length of consecutive frames: positive while busy, negative while
-                // not. The condition has to hold for stereo_switch_frames in BOTH
-                // directions -- dropping out of stereo on the first frame that dips
-                // below the threshold made the view flap during a race.
-                if (busy) busy_frames = busy_frames < 0 ? 1 : busy_frames + 1;
-                else      busy_frames = busy_frames > 0 ? -1 : busy_frames - 1;
-                if (!stereo && busy_frames >= g_vrcfg.stereo_switch_frames) {
-                    stereo = true;
-                    LOGI("switching to stereo (%d perspective draws)", persp);
-                } else if (stereo && -busy_frames >= g_vrcfg.stereo_switch_frames) {
-                    stereo = false;
-                    LOGI("switching to theater");
+                // The game's own "on the course" flag: 1 from the moment the countdown
+                // starts until the race ends, 0 for everything else -- boot, menus,
+                // course select, loading, the course overview and the results screen.
+                // Found by diffing guest RAM across labelled snapshots; see the Tools
+                // section of README.md. It is exact, so no hysteresis is needed.
+                //
+                // Counting perspective draws instead, as this used to, puts the overview
+                // flyover over the threshold (it is a full 3D scene) and dips below it
+                // during a race whenever the view is sparse, which is what made the view
+                // flap. That heuristic is kept only as a fallback for a disc this address
+                // does not suit: if it ever holds anything but 0 or 1, it is not the flag.
+                const uint32_t race_flag = mem_r32(kRaceActiveAddr);
+                bool want_stereo;
+                if (race_flag <= 1) {
+                    race_flag_ok = true;
+                    want_stereo = race_flag != 0;
+                } else {
+                    if (race_flag_ok) {
+                        race_flag_ok = false;
+                        LOGI("race flag at %#x reads %#x; falling back to draw counting",
+                             kRaceActiveAddr, race_flag);
+                    }
+                    int persp = 0;
+                    for (auto& c : batch->cmds)
+                        if (c.type == gx::CmdType::Draw &&
+                            (int)batch->states[c.state].proj[6] == 0) persp++;
+                    const bool busy = persp >= g_vrcfg.stereo_draw_threshold;
+                    if (busy) busy_frames = busy_frames < 0 ? 1 : busy_frames + 1;
+                    else      busy_frames = busy_frames > 0 ? -1 : busy_frames - 1;
+                    want_stereo = stereo;
+                    if (!stereo && busy_frames >= g_vrcfg.stereo_switch_frames) want_stereo = true;
+                    else if (stereo && -busy_frames >= g_vrcfg.stereo_switch_frames) want_stereo = false;
+                }
+                if (want_stereo != stereo) {
+                    stereo = want_stereo;
+                    LOGI("switching to %s", stereo ? "stereo" : "theater");
                 }
             }
         }

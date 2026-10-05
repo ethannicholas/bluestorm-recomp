@@ -720,6 +720,20 @@ static void mark_offscreen_passes(const Batch& b, std::vector<uint8_t>& skip) {
 // which is far worse than the seam. WR_EYE_SKIPCOMP drops them anyway, for comparing.
 static std::vector<uint32_t> g_fullscreen_tex;
 
+// These ids are stable across frames -- an EFB copy keeps the id its destination address
+// was registered under -- so the set only ever needs adding to.
+static void note_fullscreen_copies(const Batch& b) {
+    uint32_t dw, dh;
+    display_size(b, dw, dh);
+    for (auto& c : b.cmds) {
+        if (c.type != CmdType::EfbCopy || !is_fullscreen_copy(c.copy, dw, dh) || !c.copy.tex_id)
+            continue;
+        bool known = false;
+        for (uint32_t id : g_fullscreen_tex) known |= (id == c.copy.tex_id);
+        if (!known) g_fullscreen_tex.push_back(c.copy.tex_id);
+    }
+}
+
 static bool samples_fullscreen_copy(const PixelState& st) {
     for (int i = 0; i < 8; i++) {
         if (!st.tex_is_efb[i] || !st.tex_id[i]) continue;
@@ -744,18 +758,7 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     // then re-project only the main scene on top of correct textures.
     if (do_copies) {
         g_vr_active = false;
-        execute_batch(b, false);
-        // These ids are stable across frames -- an EFB copy keeps the id its destination
-        // address was registered under -- so the set only ever needs adding to.
-        uint32_t dw, dh;
-        display_size(b, dw, dh);
-        for (auto& c : b.cmds) {
-            if (c.type != CmdType::EfbCopy || !is_fullscreen_copy(c.copy, dw, dh) || !c.copy.tex_id)
-                continue;
-            bool known = false;
-            for (uint32_t id : g_fullscreen_tex) known |= (id == c.copy.tex_id);
-            if (!known) g_fullscreen_tex.push_back(c.copy.tex_id);
-        }
+        execute_batch(b, false);  // which also notes this batch's whole-frame copies
     }
     static std::vector<uint8_t> skip;
     mark_offscreen_passes(b, skip);
@@ -861,6 +864,7 @@ static bool execute_batch(Batch& b, bool do_present) {
     glBindVertexArray(g_vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     glBufferData(GL_ARRAY_BUFFER, b.verts.size() * sizeof(GpuVertex), b.verts.data(), GL_STREAM_DRAW);
+    note_fullscreen_copies(b);
     static const bool batchlog = getenv("WR_EYELOG") != nullptr;
     if (batchlog) {
         int nd = 0, nc = 0, np = 0;
@@ -875,9 +879,74 @@ static bool execute_batch(Batch& b, bool do_present) {
     bool presented = false;
     uint32_t cur_state = UINT32_MAX;
     int cur_prim = -1;
+    // WR_NO_COMP drops draws that sample a copy of the whole frame, in the flat path too.
+    // The duplicate racer on the water is visible without any of the VR code, so this is
+    // how to tell whether that draw is responsible for it.
+    static const bool no_comp = getenv("WR_NO_COMP") != nullptr;
+    static const bool only_comp = getenv("WR_ONLY_COMP") != nullptr;
+    static const bool complog = getenv("WR_COMPLOG") != nullptr;
+    int draw_index = 0;
     for (auto& c : b.cmds) {
         switch (c.type) {
         case CmdType::Draw: {
+            const bool comp = (no_comp || complog || only_comp) &&
+                              samples_fullscreen_copy(b.states[c.state]);
+            if (only_comp && !comp) break;
+            // WR_DRAWLOG=<frame> lists every draw in one frame with its index, so a
+            // specific piece of geometry can be found and then skipped by index.
+            static const uint32_t drawlog = getenv("WR_DRAWLOG") ? atoi(getenv("WR_DRAWLOG")) : 0;
+            // WR_DRAW_SKIP=a-b drops a range of draw indices, to attribute a piece of the
+            // image to the draws that made it.
+            static int skip_lo = -1, skip_hi = -1;
+            static bool skip_parsed = false;
+            if (!skip_parsed) {
+                skip_parsed = true;
+                if (const char* s = getenv("WR_DRAW_SKIP")) {
+                    skip_lo = atoi(s);
+                    const char* dash = strchr(s, '-');
+                    skip_hi = dash ? atoi(dash + 1) : skip_lo;
+                }
+            }
+            if (drawlog && g_render_frame == drawlog) {
+                const PixelState& st = b.states[c.state];
+                fprintf(stderr, "[draw] %d verts=%u st=%u texgens=%u", draw_index, c.count,
+                        c.state, st.num_texgens);
+                for (int i = 0; i < 8; i++)
+                    if (st.tex_id[i]) fprintf(stderr, " t%d=%u%s", i, st.tex_id[i],
+                                              st.tex_is_efb[i] ? "*" : "");
+                fprintf(stderr, "\n");
+            }
+            const int this_draw = draw_index++;
+            if (skip_lo >= 0 && this_draw >= skip_lo && this_draw <= skip_hi) break;
+            // WR_NO_EFBTEX drops draws that sample a partial EFB copy -- here, the copy of
+            // the water surface that the game tints submerged geometry with. Unlike a draw
+            // index this is stable from frame to frame, which matters because the game's
+            // timebase is wall-clock driven and frame N is not the same moment twice.
+            static const bool no_efbtex = getenv("WR_NO_EFBTEX") != nullptr;
+            if (no_efbtex) {
+                const PixelState& st = b.states[c.state];
+                bool partial = false;
+                for (int i = 0; i < 8; i++)
+                    if (st.tex_is_efb[i] && st.tex_id[i]) partial = true;
+                if (partial && !samples_fullscreen_copy(st)) break;
+            }
+            if (complog) {
+                // Every draw that samples a render-to-texture result, not just the
+                // whole-frame ones: the duplicate racer is in one of these layers and
+                // the whole-frame one turned out to be innocent.
+                const PixelState& st = b.states[c.state];
+                bool any_efb = false;
+                for (int i = 0; i < 8; i++) any_efb |= st.tex_is_efb[i] && st.tex_id[i];
+                if (any_efb) {
+                    fprintf(stderr, "[efb] f%u verts=%u texgens=%u cols=%u full=%d", g_render_frame,
+                            c.count, st.num_texgens, st.num_colors, (int)comp);
+                    for (int i = 0; i < 8; i++)
+                        if (st.tex_id[i]) fprintf(stderr, " t%d=%u%s", i, st.tex_id[i],
+                                                  st.tex_is_efb[i] ? "*" : "");
+                    fprintf(stderr, "\n");
+                }
+            }
+            if (comp && no_comp) break;
             if (c.state != cur_state || c.prim != cur_prim) {
                 apply_state(b.states[c.state], c.prim);
                 cur_state = c.state;
