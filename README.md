@@ -275,6 +275,48 @@ see the runtime on Android 11+ and `xrCreateInstance` fails.
 | Z | Right grip |
 | L / R | Left / right trigger |
 | Start | Menu (left) |
+| *(toggle view)* | Right thumbstick click |
+
+### Theater and stereo
+
+The app presents the game two ways and switches between them automatically:
+
+- **Theater** — the frame on a flat screen in space, as an `XrCompositionLayerQuad`.
+- **Stereo** — the world rendered per eye as an `XrCompositionLayerProjection`, with the 2D
+  elements kept flat as an overlay.
+
+The switch is driven by the game's own output: a frame's perspective draws are counted, and a
+race submits several hundred where a menu submits a handful. Clicking the right thumbstick pins
+the view manually, which is also the way to compare the two.
+
+Stereo is cheap here because of where `xf.cpp` stops. Vertices reach the renderer in the game's
+*view* space with the projection applied in the shader, so an eye is just another matrix in front
+of it: both eyes share one vertex buffer, one CPU-side transform and one set of render-to-texture
+results, and only the uniforms and draw calls repeat.
+
+### Tuning VR (`vr.txt`)
+
+Some values cannot be known from the source. `a_pos` arrives in the game's own units and nothing
+says how many make a metre — get it wrong and the world is giant or doll-sized, which is only
+judgeable by wearing the headset. So they are read at startup from
+`/sdcard/Android/data/com.example.waverace/files/vr.txt` and can be changed with `adb push`
+between runs, no rebuild:
+
+```
+units_per_metre 100      # game units per real metre: sets the apparent size of the world
+offset_x 0               # viewpoint relative to the game's camera, in game units
+offset_y 0               #   x right, y up, z back
+offset_z 0
+near_m 0.1               # near/far planes in metres; too wide a ratio causes z-fighting
+far_m 2000
+hud_scale 0.55           # how much of the field of view the 2D overlay occupies
+stereo_draw_threshold 300  # perspective draws above which a frame counts as in-world
+stereo_switch_frames 30    # frames it must hold before switching
+start_in_stereo 0          # start in stereo rather than theater
+```
+
+The defaults are starting guesses, `units_per_metre` especially. The logged values appear in
+`adb logcat -s waverace` at startup.
 
 
 

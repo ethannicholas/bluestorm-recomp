@@ -84,6 +84,7 @@ list(REMOVE_ITEM RUNTIME_SOURCES
   ${CMAKE_SOURCE_DIR}/runtime/egl_main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/android_main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/openxr_main.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/vr_config.cpp
   ${CMAKE_SOURCE_DIR}/runtime/audio_stub.cpp)
 
 # Everything below the renderer and the SDL frontend -- the CPU, OS, hardware and GX
@@ -221,6 +222,7 @@ if(ANDROID AND HAVE_GAME_ISO)
 
   set(APP_SOURCES ${CORE_SOURCES}
     ${CMAKE_SOURCE_DIR}/runtime/openxr_main.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/vr_config.cpp
     ${CMAKE_SOURCE_DIR}/runtime/png.cpp
     ${CMAKE_SOURCE_DIR}/runtime/gx/render_gl.cpp
     ${CMAKE_SOURCE_DIR}/runtime/gx/shadergen.cpp

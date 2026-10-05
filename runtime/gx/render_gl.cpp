@@ -47,9 +47,17 @@ struct Program {
     GLuint prog;
     GLint u_proj, u_vp_a, u_vp_b, u_point_size, u_tex, u_reg, u_konst, u_texsize, u_indmtx, u_indscale,
         u_alpharef, u_fog, u_fogcolor, u_indcoordscale;
+    GLint u_vr, u_view, u_hud_scale;
 };
 
 static int g_scale = 2;
+
+// VR eye state. When active, perspective batches are re-projected for the eye and the
+// orthographic ones (the 2D HUD) become a flat overlay rather than being projected
+// into the world.
+static bool g_vr_active = false;
+static float g_vr_proj[16], g_vr_view[16];
+static float g_vr_hud_scale = 0.55f;
 static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
 static GLuint g_vao, g_vbo;
 static GLuint g_copy_prog, g_copy_vao;
@@ -111,6 +119,9 @@ static const Program& get_program(const ShaderKey& k) {
     pr.u_vp_a = glGetUniformLocation(p, "u_vp_a");
     pr.u_vp_b = glGetUniformLocation(p, "u_vp_b");
     pr.u_point_size = glGetUniformLocation(p, "u_point_size");
+    pr.u_vr = glGetUniformLocation(p, "u_vr");
+    pr.u_view = glGetUniformLocation(p, "u_view");
+    pr.u_hud_scale = glGetUniformLocation(p, "u_hud_scale");
     pr.u_tex = glGetUniformLocation(p, "u_tex");
     pr.u_reg = glGetUniformLocation(p, "u_reg");
     pr.u_konst = glGetUniformLocation(p, "u_konst");
@@ -300,15 +311,26 @@ static void apply_state(const PixelState& st, int prim) {
     const Program& pr = get_program(key);
     glUseProgram(pr.prog);
 
-    // Projection
+    // Projection. In VR a perspective batch is world geometry and gets the eye's
+    // projection instead of the game's; an orthographic one is a 2D element and keeps
+    // the game's, drawn as an overlay.
     float P[16] = {0};
     const float* p = st.proj;
-    if ((int)p[6] == 0) {  // perspective
+    const bool perspective = (int)p[6] == 0;
+    if (perspective) {
         P[0] = p[0]; P[8] = p[1]; P[5] = p[2]; P[9] = p[3]; P[10] = p[4]; P[14] = p[5]; P[11] = -1.0f;
     } else {
         P[0] = p[0]; P[12] = p[1]; P[5] = p[2]; P[13] = p[3]; P[10] = p[4]; P[14] = p[5]; P[15] = 1.0f;
     }
-    glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, P);
+    if (g_vr_active && perspective) {
+        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, g_vr_proj);
+        glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, g_vr_view);
+        glUniform1i(pr.u_vr, 1);
+    } else {
+        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, P);
+        glUniform1i(pr.u_vr, g_vr_active ? 2 : 0);
+        glUniform1f(pr.u_hud_scale, g_vr_hud_scale);
+    }
     const float* vp = st.viewport;  // sx, sy, sz, ox, oy, oz
     float vpa[4] = {2.0f * (vp[3] - 342.0f) / EFB_W - 1.0f, 2.0f * vp[0] / EFB_W, 2.0f * (vp[4] - 342.0f) / EFB_H - 1.0f, 2.0f * vp[1] / EFB_H};
     float vpb[4] = {2.0f * vp[5] / 16777215.0f - 1.0f, 2.0f * vp[2] / 16777215.0f, 0, 0};
@@ -432,6 +454,12 @@ static void apply_state(const PixelState& st, int prim) {
     if (y1 > EFB_H) y1 = EFB_H;
     if (x1 < x0) x1 = x0;
     if (y1 < y0) y1 = y0;
+    if (g_vr_active) {
+        // The scissor rect is in EFB coordinates, which say nothing about an eye's
+        // render target.
+        glDisable(GL_SCISSOR_TEST);
+        return;
+    }
     glEnable(GL_SCISSOR_TEST);
     glScissor(x0 * g_scale, (EFB_H - y1) * g_scale, (x1 - x0) * g_scale, (y1 - y0) * g_scale);
 }
@@ -572,6 +600,82 @@ bool render_repaint() {
 }
 
 // Executes a batch. Returns true if it contained a Present.
+void render_set_vr_eye(const float proj[16], const float view[16], float hud_scale) {
+    memcpy(g_vr_proj, proj, sizeof(g_vr_proj));
+    memcpy(g_vr_view, view, sizeof(g_vr_view));
+    g_vr_hud_scale = hud_scale;
+}
+
+// Draw one eye's view of a batch into `fbo`.
+//
+// The vertex buffer, the CPU-side transform in xf.cpp and any render-to-texture results
+// are all shared between the eyes -- only the uniforms and the draw calls are repeated,
+// which is what makes stereo affordable here. Pass do_copies for the first eye only;
+// the second reuses what it produced. EFB copies to the XFB (the final present) are
+// skipped entirely, since an eye renders straight to its own target.
+bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
+    g_vr_active = true;
+    // In stereo, render_execute() never runs, so this is the only place the batch's
+    // textures and vertices reach the GPU. Both are shared by the eyes, so upload once
+    // on the first -- which is what makes the second eye cost only its draw calls.
+    if (do_copies) {
+        for (auto& t : b.new_textures) upload_texture(*t);
+        glBindVertexArray(g_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+        glBufferData(GL_ARRAY_BUFFER, b.verts.size() * sizeof(GpuVertex), b.verts.data(),
+                     GL_STREAM_DRAW);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
+    glViewport(0, 0, w, h);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(1, 1, 1, 1);
+    glDepthMask(GL_TRUE);
+    glClearColor(0, 0, 0, 1);
+    clear_depth(1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBindVertexArray(g_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+
+    uint32_t cur_state = UINT32_MAX;
+    int cur_prim = -1;
+    for (auto& c : b.cmds) {
+        switch (c.type) {
+        case CmdType::Draw: {
+            if (c.state != cur_state || c.prim != cur_prim) {
+                apply_state(b.states[c.state], c.prim);
+                // apply_state binds the EFB's scissor and viewport expectations; the
+                // eye target overrides both.
+                glViewport(0, 0, w, h);
+                glDisable(GL_SCISSOR_TEST);
+                cur_state = c.state;
+                cur_prim = c.prim;
+            }
+            static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
+            glDrawArrays(mode[c.prim], c.first, c.count);
+            break;
+        }
+        case CmdType::EfbCopy:
+            if (do_copies && !c.copy.to_xfb) {
+                // Render-to-texture has to happen against the EFB, not the eye target.
+                g_vr_active = false;
+                glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
+                glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
+                do_efb_copy(c.copy);
+                g_vr_active = true;
+                glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
+                glViewport(0, 0, w, h);
+            }
+            cur_state = UINT32_MAX;
+            break;
+        case CmdType::Present:
+            break;  // an eye renders straight to its own target
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    g_vr_active = false;
+    return true;
+}
+
 bool render_execute(Batch& b) {
     for (auto& t : b.new_textures) upload_texture(*t);
     glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);

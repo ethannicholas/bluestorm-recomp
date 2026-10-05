@@ -101,15 +101,34 @@ layout(location = 2) in vec4 a_col1;
 uniform vec4 u_vp_a;   // x: 2*(offx-342)/w - 1, y: 2*sx/w, z: 2*(offy-342)/h - 1, w: 2*sy/h
 uniform vec4 u_vp_b;   // x: 2*offz/16777215 - 1, y: 2*sz/16777215
 uniform float u_point_size;
+// VR. a_pos arrives in the game's view space, so an eye is just another transform in
+// front of the projection -- which is why both eyes can share one vertex buffer and
+// the CPU-side transform in xf.cpp runs once, not twice.
+//   0 = flat, the game's own projection and GX viewport transform
+//   1 = world geometry through the eye projection
+//   2 = a 2D element drawn as a flat overlay inside the eye
+uniform int u_vr;
+uniform mat4 u_view;       // eye transform, relative to the game's camera
+uniform float u_hud_scale; // shrinks the 2D overlay into a comfortable central area
 out vec4 v_col0;
 out vec4 v_col1;
 out vec3 v_tex[8];
 void main() {
-    vec4 clip = u_proj * vec4(a_pos, 1.0);
-    gl_Position.x = u_vp_a.x * clip.w + u_vp_a.y * clip.x;
-    gl_Position.y = -(u_vp_a.z * clip.w + u_vp_a.w * clip.y);
-    gl_Position.z = u_vp_b.x * clip.w + u_vp_b.y * clip.z;
-    gl_Position.w = clip.w;
+    if (u_vr == 1) {
+        // Straight to clip space: the eye's render target is the whole viewport, so
+        // the GX viewport transform does not apply. No Y negation either -- that
+        // exists only to cancel the flip the EFB blit does, and nothing blits here.
+        gl_Position = u_proj * (u_view * vec4(a_pos, 1.0));
+    } else {
+        vec4 clip = u_proj * vec4(a_pos, 1.0);
+        vec4 p;
+        p.x = u_vp_a.x * clip.w + u_vp_a.y * clip.x;
+        p.y = u_vp_a.z * clip.w + u_vp_a.w * clip.y;
+        p.z = u_vp_b.x * clip.w + u_vp_b.y * clip.z;
+        p.w = clip.w;
+        if (u_vr == 2) gl_Position = vec4(p.xy * u_hud_scale, p.z, p.w);
+        else           gl_Position = vec4(p.x, -p.y, p.z, p.w);
+    }
     gl_PointSize = u_point_size;
     v_col0 = a_col0;
     v_col1 = a_col1;

@@ -12,6 +12,7 @@
 #include "runtime.h"
 #include "platform.h"
 #include "input_script.h"
+#include "vr_config.h"
 #include "gx/render.h"
 #include "gx/render_gl.h"
 #include "gx/gl.h"
@@ -29,7 +30,9 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <cmath>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -118,16 +121,74 @@ struct Xr {
     XrSystemId system = XR_NULL_SYSTEM_ID;
     XrSession session = XR_NULL_HANDLE;
     XrSpace space = XR_NULL_HANDLE;
-    XrSwapchain swapchain = XR_NULL_HANDLE;
+    XrSwapchain swapchain = XR_NULL_HANDLE;          // the theater quad
     std::vector<XrSwapchainImageOpenGLESKHR> images;
     std::vector<GLuint> fbos;
+
+    // One swapchain per eye for the stereo projection layer.
+    struct Eye {
+        XrSwapchain handle = XR_NULL_HANDLE;
+        int32_t w = 0, h = 0;
+        std::vector<XrSwapchainImageOpenGLESKHR> images;
+        std::vector<GLuint> fbos;
+    } eyes[2];
+    GLuint eye_depth = 0;   // shared: the eyes render one after the other
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     bool running = false;
 
     XrActionSet action_set = XR_NULL_HANDLE;
     XrAction a_btn, b_btn, x_btn, y_btn, menu, trig_l, trig_r, grip_r, stick_l, stick_r;
+    XrAction toggle;   // right thumbstick click: force between theater and stereo
 };
 static Xr g_xr;
+static VrConfig g_vrcfg;
+
+// ---------------------------------------------------------------------------
+// Matrices, column-major for glUniformMatrix4fv with transpose = GL_FALSE.
+// ---------------------------------------------------------------------------
+static void mat_proj(const XrFovf& fov, float nearZ, float farZ, float* m) {
+    const float l = tanf(fov.angleLeft), r = tanf(fov.angleRight);
+    const float u = tanf(fov.angleUp), d = tanf(fov.angleDown);
+    const float w = r - l, h = u - d;
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = 2.0f / w;
+    m[5] = 2.0f / h;
+    m[8] = (r + l) / w;
+    m[9] = (u + d) / h;
+    m[10] = -(farZ + nearZ) / (farZ - nearZ);
+    m[11] = -1.0f;
+    m[14] = -(2.0f * farZ * nearZ) / (farZ - nearZ);
+}
+
+// World-to-eye for a view-space vertex. The game's camera is treated as the origin of
+// the reference space, so head rotation looks around from wherever the chase camera
+// is, and the eye offset gives the stereo separation. Positions are converted from
+// metres into game units on the way in.
+static void mat_view(const XrPosef& pose, const VrConfig& c, float* m) {
+    const XrQuaternionf& q = pose.orientation;
+    const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+    // R in column-major: r[col * 3 + row].
+    const float r[9] = {
+        1 - 2 * (yy + zz), 2 * (xy + wz),     2 * (xz - wy),
+        2 * (xy - wz),     1 - 2 * (xx + zz), 2 * (yz + wx),
+        2 * (xz + wy),     2 * (yz - wx),     1 - 2 * (xx + yy),
+    };
+    const float t[3] = {
+        pose.position.x * c.units_per_metre + c.offset_x,
+        pose.position.y * c.units_per_metre + c.offset_y,
+        pose.position.z * c.units_per_metre + c.offset_z,
+    };
+    // m = transpose(R) * translate(-t), i.e. the inverse of the eye's pose.
+    m[0] = r[0]; m[1] = r[3]; m[2] = r[6]; m[3] = 0;
+    m[4] = r[1]; m[5] = r[4]; m[6] = r[7]; m[7] = 0;
+    m[8] = r[2]; m[9] = r[5]; m[10] = r[8]; m[11] = 0;
+    m[12] = -(m[0] * t[0] + m[4] * t[1] + m[8] * t[2]);
+    m[13] = -(m[1] * t[0] + m[5] * t[1] + m[9] * t[2]);
+    m[14] = -(m[2] * t[0] + m[6] * t[1] + m[10] * t[2]);
+    m[15] = 1;
+}
 
 static bool xr_create_instance(android_app* app) {
     PFN_xrInitializeLoaderKHR xrInitializeLoaderKHR = nullptr;
@@ -228,7 +289,61 @@ static bool xr_create_swapchain() {
             LOGE("swapchain fbo %u incomplete", i);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    LOGI("swapchain %dx%d, %u images", SWAP_W, SWAP_H, n);
+    LOGI("quad swapchain %dx%d, %u images", SWAP_W, SWAP_H, n);
+
+    // Per-eye swapchains for the stereo projection layer, at whatever the runtime
+    // recommends for this headset.
+    uint32_t nv = 0;
+    xrEnumerateViewConfigurationViews(g_xr.instance, g_xr.system,
+                                      XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &nv, nullptr);
+    std::vector<XrViewConfigurationView> vcs(nv, {XR_TYPE_VIEW_CONFIGURATION_VIEW});
+    XR_TRY(xrEnumerateViewConfigurationViews(g_xr.instance, g_xr.system,
+                                             XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                             nv, &nv, vcs.data()));
+    if (nv < 2) { LOGE("expected 2 views, got %u", nv); return false; }
+
+    for (int e = 0; e < 2; e++) {
+        auto& eye = g_xr.eyes[e];
+        eye.w = (int32_t)vcs[e].recommendedImageRectWidth;
+        eye.h = (int32_t)vcs[e].recommendedImageRectHeight;
+        XrSwapchainCreateInfo ec{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        ec.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+        ec.format = chosen;
+        ec.sampleCount = 1;
+        ec.width = eye.w;
+        ec.height = eye.h;
+        ec.faceCount = 1;
+        ec.arraySize = 1;
+        ec.mipCount = 1;
+        XR_TRY(xrCreateSwapchain(g_xr.session, &ec, &eye.handle));
+
+        uint32_t en = 0;
+        xrEnumerateSwapchainImages(eye.handle, 0, &en, nullptr);
+        eye.images.assign(en, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+        XR_TRY(xrEnumerateSwapchainImages(eye.handle, en, &en,
+                                          (XrSwapchainImageBaseHeader*)eye.images.data()));
+        eye.fbos.resize(en);
+        glGenFramebuffers(en, eye.fbos.data());
+    }
+
+    // One depth buffer, shared: the eyes are rendered in sequence, and it is cleared
+    // for each. Both eyes use the same recommended size.
+    glGenRenderbuffers(1, &g_xr.eye_depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, g_xr.eye_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, g_xr.eyes[0].w, g_xr.eyes[0].h);
+    for (int e = 0; e < 2; e++) {
+        for (size_t i = 0; i < g_xr.eyes[e].fbos.size(); i++) {
+            glBindFramebuffer(GL_FRAMEBUFFER, g_xr.eyes[e].fbos[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                   g_xr.eyes[e].images[i].image, 0);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
+                                      g_xr.eye_depth);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+                LOGE("eye %d fbo %zu incomplete", e, i);
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    LOGI("eye swapchains %dx%d", g_xr.eyes[0].w, g_xr.eyes[0].h);
     return true;
 }
 
@@ -267,6 +382,7 @@ static bool xr_create_actions() {
     g_xr.grip_r  = make_action("grip_r", "Right grip", XR_ACTION_TYPE_FLOAT_INPUT);
     g_xr.stick_l = make_action("stick_l", "Left stick", XR_ACTION_TYPE_VECTOR2F_INPUT);
     g_xr.stick_r = make_action("stick_r", "Right stick", XR_ACTION_TYPE_VECTOR2F_INPUT);
+    g_xr.toggle  = make_action("view_toggle", "Toggle view", XR_ACTION_TYPE_BOOLEAN_INPUT);
 
     const XrActionSuggestedBinding binds[] = {
         {g_xr.a_btn,   xr_path("/user/hand/right/input/a/click")},
@@ -279,6 +395,8 @@ static bool xr_create_actions() {
         {g_xr.grip_r,  xr_path("/user/hand/right/input/squeeze/value")},
         {g_xr.stick_l, xr_path("/user/hand/left/input/thumbstick")},
         {g_xr.stick_r, xr_path("/user/hand/right/input/thumbstick")},
+        // Not bound to anything in the game, so it is free for switching views.
+        {g_xr.toggle,  xr_path("/user/hand/right/input/thumbstick/click")},
     };
     XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
     sb.interactionProfile = xr_path("/interaction_profiles/oculus/touch_controller");
@@ -399,6 +517,7 @@ void android_main(android_app* app) {
 
     const std::string dir = app->activity->externalDataPath ? app->activity->externalDataPath : "";
     const std::string iso = dir + "/game.iso";
+    g_vrcfg = vr_config_load(dir);
 
     if (!egl_init()) return;
     int glver = gl_load_with(gl_proc);
@@ -427,6 +546,8 @@ void android_main(android_app* app) {
 
     uint32_t xr_frames = 0, game_frames = 0, skipped = 0;
     bool have_content = false;
+    bool stereo = g_vrcfg.start_in_stereo, manual_override = false, toggle_was_down = false;
+    int busy_frames = 0;
     XrTime last_report = 0;
 
     while (!app->destroyRequested) {
@@ -451,10 +572,103 @@ void android_main(android_app* app) {
         input_script_apply(p);
         pad_set_state(0, p);
 
+        // Which view to present. The game's own frames decide: a race submits several
+        // hundred perspective draws, menus submit a handful. Held for a number of
+        // frames so a brief spike cannot flap the view back and forth. Clicking the
+        // right thumbstick pins it manually.
+        if (action_bool(g_xr.toggle)) {
+            if (!toggle_was_down) {
+                manual_override = true;
+                stereo = !stereo;
+                LOGI("view pinned to %s", stereo ? "stereo" : "theater");
+            }
+            toggle_was_down = true;
+        } else {
+            toggle_was_down = false;
+        }
+
+        // Take at most one game frame per display frame, before choosing a view: both
+        // the auto-switch and both render paths need it, and a backlog drawn and
+        // thrown away would be wasted work.
+        std::unique_ptr<gx::Batch> batch = gx::take_batch(0);
+        if (batch) {
+            game_frames++;
+            if (!manual_override) {
+                int persp = 0;
+                for (auto& c : batch->cmds)
+                    if (c.type == gx::CmdType::Draw &&
+                        (int)batch->states[c.state].proj[6] == 0) persp++;
+                const bool busy = persp >= g_vrcfg.stereo_draw_threshold;
+                busy_frames = busy ? busy_frames + 1 : 0;
+                if (busy && !stereo && busy_frames >= g_vrcfg.stereo_switch_frames) {
+                    stereo = true;
+                    LOGI("switching to stereo (%d perspective draws)", persp);
+                } else if (!busy && stereo && busy_frames == 0) {
+                    stereo = false;
+                    LOGI("switching to theater");
+                }
+            }
+        }
+
         std::vector<XrCompositionLayerBaseHeader*> layers;
         XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+        XrCompositionLayerProjection proj_layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+        XrCompositionLayerProjectionView proj_views[2]{};
 
-        if (fs.shouldRender) {
+        if (fs.shouldRender && stereo) {
+            // --- stereo: the world through each eye, as a projection layer ---
+            XrViewState vs{XR_TYPE_VIEW_STATE};
+            uint32_t nv = 0;
+            XrView views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+            XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};
+            li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+            li.displayTime = fs.predictedDisplayTime;
+            li.space = g_xr.space;
+            if (XR_SUCCEEDED(xrLocateViews(g_xr.session, &li, &vs, 2, &nv, views)) && nv == 2) {
+                // Both eyes share one batch: the CPU-side transform and the vertex
+                // buffer are produced once, only the uniforms and draws repeat.
+                gx::Batch* b = batch.get();
+                bool both_eyes = true;
+                for (int e = 0; e < 2; e++) {
+                    auto& eye = g_xr.eyes[e];
+                    uint32_t ei = 0;
+                    XrSwapchainImageAcquireInfo eai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+                    if (XR_FAILED(xrAcquireSwapchainImage(eye.handle, &eai, &ei))) {
+                        both_eyes = false;
+                        continue;
+                    }
+                    XrSwapchainImageWaitInfo ewi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+                    ewi.timeout = XR_INFINITE_DURATION;
+                    if (XR_SUCCEEDED(xrWaitSwapchainImage(eye.handle, &ewi))) {
+                        float P[16], V[16];
+                        const float n = g_vrcfg.near_m * g_vrcfg.units_per_metre;
+                        const float f = g_vrcfg.far_m * g_vrcfg.units_per_metre;
+                        mat_proj(views[e].fov, n, f, P);
+                        mat_view(views[e].pose, g_vrcfg, V);
+                        gx::render_set_vr_eye(P, V, g_vrcfg.hud_scale);
+                        if (b) gx::render_execute_eye(*b, eye.fbos[ei], eye.w, eye.h, e == 0);
+                        glFlush();
+                    }
+                    XrSwapchainImageReleaseInfo eri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                    xrReleaseSwapchainImage(eye.handle, &eri);
+
+                    proj_views[e] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+                    proj_views[e].pose = views[e].pose;
+                    proj_views[e].fov = views[e].fov;
+                    proj_views[e].subImage.swapchain = eye.handle;
+                    proj_views[e].subImage.imageRect = {{0, 0}, {eye.w, eye.h}};
+                    proj_views[e].subImage.imageArrayIndex = 0;
+                }
+                // A half-filled projection layer is invalid, so only submit when both
+                // eyes were acquired.
+                if (both_eyes) {
+                    proj_layer.space = g_xr.space;
+                    proj_layer.viewCount = 2;
+                    proj_layer.views = proj_views;
+                    layers.push_back((XrCompositionLayerBaseHeader*)&proj_layer);
+                }
+            }
+        } else if (fs.shouldRender) {
             uint32_t idx = 0;
             XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
             if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_xr.swapchain, &ai, &idx))) {
@@ -465,9 +679,7 @@ void android_main(android_app* app) {
                     // Consume at most one game frame per display frame; otherwise a
                     // backlog would be drawn and thrown away.
                     bool drew = false;
-                    if (auto b = gx::take_batch(0)) {
-                        if (gx::render_execute(*b)) { drew = true; game_frames++; }
-                    }
+                    if (batch && gx::render_execute(*batch)) drew = true;
                     // The compositor needs an image every display frame, and the game
                     // produces far fewer, so repaint the last one otherwise.
                     if (!drew) gx::render_repaint();
@@ -490,7 +702,7 @@ void android_main(android_app* app) {
         // told us not to render. Dropping the layer shows the user an empty frame,
         // which strobes against the frames that do carry it; re-submitting it just
         // re-displays the last released image.
-        if (have_content) {
+        if (have_content && !stereo) {
             quad.layerFlags = 0;
             quad.space = g_xr.space;
             quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
