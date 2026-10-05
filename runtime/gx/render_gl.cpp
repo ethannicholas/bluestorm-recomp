@@ -344,16 +344,13 @@ static void apply_state(const PixelState& st, int prim) {
     } else {
         P[0] = p[0]; P[12] = p[1]; P[5] = p[2]; P[13] = p[3]; P[10] = p[4]; P[14] = p[5]; P[15] = 1.0f;
     }
-    // A draw sampling a copy of the whole frame is screen-space -- here it is the water
-    // surface, composited over the scene. Placed in the world it is a billboard whose
-    // edge cuts across the view, so it is drawn flat across the whole eye instead. Its
-    // texture holds the flat render rather than this eye's, so the detail in it is only
-    // approximately where it belongs; an edge through the middle of the ocean is worse.
-    if (g_vr_active && perspective && samples_fullscreen_copy(st)) {
-        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, P);
-        glUniform1i(pr.u_vr, 2);
-        glUniform1f(pr.u_hud_scale, 1.0f);
-    } else if (g_vr_active && perspective) {
+    // Note: a draw sampling a copy of the whole frame (the water surface is one) must
+    // stay in the world, however tempting its screen-space origin makes the overlay path
+    // look. That path is in NDC and so is head-locked -- which is what the HUD wants and
+    // the ocean emphatically does not. Sending the water through it pinned the water, and
+    // the racer baked into the copy, to the viewer's face while the real racer went on
+    // moving in the world. The seam at the billboard's edge is the lesser problem.
+    if (g_vr_active && perspective) {
         // WR_EYE_GAMEPROJ keeps the game's own frustum and applies only the head
         // transform, which tells apart "the eye sees less than it should" from "the game
         // never drew anything out there".

@@ -40,6 +40,7 @@ bool write_png(const char* path, const uint8_t* rgba, int w, int h);
 // wrong place, missing render-to-texture results -- is a fault in the eye path.
 // ---------------------------------------------------------------------------
 static bool g_eye_mode = false;
+static float g_eye_yaw = 0.0f;  // --eye-yaw: degrees of head turn, for spotting head-locked draws
 static GLuint g_eye_fbo, g_eye_tex, g_eye_depth;
 static int g_eye_w = 960, g_eye_h = 720;
 
@@ -73,8 +74,15 @@ static void eye_matrices(float* proj, float* view) {
     proj[10] = -(f + n) / (f - n);
     proj[11] = -1.0f;
     proj[14] = -(2.0f * f * n) / (f - n);
+    // --eye-yaw turns the head. With the view left at identity nothing in the image can
+    // ever be seen to be head-locked, which is how a change that pinned the ocean and a
+    // copy of the racer to the viewer's face got through this harness looking correct.
+    // Dump the same frame at two yaws: whatever does not move with the world is locked.
+    const float a = g_eye_yaw * 3.14159265f / 180.0f;
     memset(view, 0, 16 * sizeof(float));
-    view[0] = view[5] = view[10] = view[15] = 1.0f;
+    view[0] = cosf(a);  view[2] = -sinf(a);
+    view[8] = sinf(a);  view[10] = cosf(a);
+    view[5] = view[15] = 1.0f;
 }
 
 static void eye_dump(const char* dir, uint32_t n) {
@@ -188,6 +196,7 @@ int main(int argc, char** argv) {
         else if (!strncmp(argv[i], "--frames=", 9)) frames_wanted = atoi(argv[i] + 9);
         else if (!strncmp(argv[i], "--seconds=", 10)) seconds = atoi(argv[i] + 10);
         else if (!strcmp(argv[i], "--eye")) g_eye_mode = true;
+        else if (!strncmp(argv[i], "--eye-yaw=", 10)) g_eye_yaw = (float)atof(argv[i] + 10);
         else if (!strncmp(argv[i], "--dump-dir=", 11)) gx::g_dump_dir = argv[i] + 11;
         else if (!strncmp(argv[i], "--dump-every=", 13)) gx::g_dump_every = atoi(argv[i] + 13);
         else if (argv[i][0] != '-') iso = argv[i];

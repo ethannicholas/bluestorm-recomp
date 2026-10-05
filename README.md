@@ -336,14 +336,20 @@ Two things make this work:
   measuring against the EFB matches nothing.
 
 Draws that sample a whole-frame copy are screen-space — in this game the water surface is one,
-composited over the scene. Placed in the world they are billboards whose edge cuts visibly across
-the ocean, so they are drawn flat across the whole eye instead. The texture holds the flat render
-rather than that eye's, so the detail in it is only approximately where it belongs, but an edge
-through the middle of the sea is worse. Dropping them is worse still: the seabed then shows
-through bare sand instead of blue-green water. `WR_EYE_SKIPCOMP=1` does that, for comparison.
+composited over the scene. They are left in the world, where the billboard's edge shows as a seam.
+The two alternatives are both worse. Dropping them leaves the seabed showing through bare sand
+instead of blue-green water (`WR_EYE_SKIPCOMP=1`, for comparison). Drawing them flat across the
+eye via the overlay path pins them to the viewer's face, ocean and all, along with the racer baked
+into the copy — the overlay path is in NDC and therefore head-locked, which is what the HUD wants
+and the sea emphatically does not.
 
-What remains visible at speed: the spray grabs are replayed as billboards too, and show as faint
-squares where they fall.
+What remains visible at speed: the seam at the billboard's edge, and the spray grabs, which are
+replayed as billboards too and show as faint squares with pieces of scene inside them.
+
+`--eye-yaw=N` turns the head N degrees. With the view left at identity nothing in the image can be
+seen to be head-locked, and a change that pinned the ocean and a copy of the racer to the viewer's
+face went through this harness looking perfectly correct. Dump a frame at two yaws: whatever does
+not move with the world is locked to the head, which only the HUD should be.
 
 `WR_EYELOG=1` prints each frame's split — every copy with its size, source rect, clear flag, the
 draws ahead of it and whether they were replayed — and is the quickest way to tell "the eye
