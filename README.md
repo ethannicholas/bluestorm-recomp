@@ -331,6 +331,119 @@ survived the on/off test but turned out to be a float that is merely never exact
 race. Only `0x806193BC` has exactly two transitions, and its boundaries line up with the countdown
 appearing and the race ending in dumped frames either side.
 
+Stereo is cheap here because of where `xf.cpp` stops. Vertices reach the renderer in the game's
+*view* space with the projection applied in the shader, so an eye is just another matrix in front
+of it: both eyes share one vertex buffer, one CPU-side transform and one set of render-to-texture
+results, and only the uniforms and draw calls repeat.
+
+#### Splitting a frame for the eyes
+
+A frame is not one pass. A race frame holds about a thousand draws and five EFB copies: three
+off-screen passes (a 480×480 reflection, a 128×128, a 320×240), then the main scene, then a
+640×480 copy of the finished image, then the display copy. Only the main scene may be re-projected
+per eye — the off-screen passes produce *textures* the scene samples, and re-aiming those at an eye
+corrupts them.
+
+Two things make this work:
+
+- **The first eye runs the whole frame flat into the EFB first**, scanout aside. An eye pass never
+  draws into the EFB, so without this every render-to-texture copy reads an empty one. That is
+  what left the ski untextured and put a black square on the water.
+- **A pass is skipped when its copy *clears* the EFB**, wherever that pass sits. The clear is what
+  marks a real off-screen pass: the next pass needs the buffer empty. A copy that does not clear
+  is a *grab* — the game lifting a piece of the live scene to texture with — and the draws in
+  front of it belong to whatever pass is still in progress.
+
+  Both halves of that matter, and each was learned the hard way. The off-screen passes are not all
+  up front: at speed the spray grabs some fifty 32×32 and 64×64 rects from scattered screen
+  positions *after* the main scene, so "the scene is whatever follows the last copy" drops the
+  entire scene the moment you get going. And treating every copy as ending a pass then throws away
+  whatever draws sit in front of the first grab — the water surface among them, so the ocean
+  vanished at speed instead.
+
+  The copy of the whole displayed frame is never an off-screen pass. "Whole frame" is measured
+  against the display copy in the same batch, since the frame is 640×480 while the EFB is 640×528;
+  measuring against the EFB matches nothing.
+
+Draws that sample a whole-frame copy are screen-space — in this game the water surface is one,
+composited over the scene. They are left in the world, where the billboard's edge shows as a seam.
+The two alternatives are both worse. Dropping them leaves the seabed showing through bare sand
+instead of blue-green water (`WR_EYE_SKIPCOMP=1`, for comparison). Drawing them flat across the
+eye via the overlay path pins them to the viewer's face, ocean and all, along with the racer baked
+into the copy — the overlay path is in NDC and therefore head-locked, which is what the HUD wants
+and the sea emphatically does not.
+
+What remains visible at speed: the seam at the billboard's edge, and the spray grabs, which are
+replayed as billboards too and show as faint squares with pieces of scene inside them.
+
+`--eye-yaw=N` turns the head N degrees. With the view left at identity nothing in the image can be
+seen to be head-locked, and a change that pinned the ocean and a copy of the racer to the viewer's
+face went through this harness looking perfectly correct. Dump a frame at two yaws: whatever does
+not move with the world is locked to the head, which only the HUD should be.
+
+`WR_EYELOG=1` prints each frame's split — every copy with its size, source rect, clear flag, the
+draws ahead of it and whether they were replayed — and is the quickest way to tell "the eye
+rendered the wrong part" from "the eye rendered nothing". `WR_DUMP_COPIES=20` dumps whenever a
+frame holds at least that many copies, which is how a frame thick with spray gets caught: the
+faults that only appear at speed are in exactly those frames, and a fixed dump interval almost
+never lands on one.
+
+#### Attributing part of the image to the draws that made it
+
+Not a VR problem but found through this harness, and the tools stay because the question recurs:
+*which draw put that there?* A race frame is ~390 draws in the flat path.
+
+- `WR_COMPLOG=1` logs every draw that samples a render-to-texture result, with its vertex count,
+  texgens and texture ids.
+- `WR_DRAWLOG=<frame>` lists every draw in one frame with its index, so geometry drawn twice shows
+  up as two draws with identical vertex counts and textures.
+- `WR_DRAW_SKIP=a-b` drops a range of draw indices, `WR_NO_COMP` / `WR_ONLY_COMP` drop or isolate
+  the draws sampling a whole-frame copy, and `WR_NO_EFBTEX` drops those sampling a partial one.
+
+One caution that has cost time twice: **the emulated timebase is wall-clock driven, so frame N is
+not the same moment in two runs.** Any A/B that compares frame N across runs is comparing different
+scenes. Either make the comparison inside one run, or pick a selector that is stable from frame to
+frame — "draws sampling the water copy" rather than "draws 256 to 273".
+
+#### Tracing what the compositor is shown
+
+`log_frames 1` in `vr.txt` logs the theater path one display frame at a time: which swapchain
+image was written, whether it got a new game frame or a repaint of the last one, and which game
+frame that is. The app runs on a headset nobody is wearing, so this can be captured without help:
+push a `wr_input.txt` script beside `vr.txt`, `am start` the activity, and read
+`adb logcat -s waverace`.
+
+`frame_marker 1` stamps sixteen same-coloured cells across the top of the image, the colour taken
+from the frame number. One blit writes every cell, so cells that disagree in a screenshot prove the
+displayed image was assembled from more than one frame.
+
+#### Finding a seam, and what it is not
+
+`WR_SEAM=1` dumps only frames containing a full-height vertical edge in the interior, and prints
+every draw in that frame with its screen-space extent and scissor rect. A fault that shows for a
+few frames somewhere in a long session will not be caught by a fixed dump interval; this looks for
+the fault itself. It finds the transition-screen seam reliably — about 90 frames in a two-minute
+session, always at the same x.
+
+What has been ruled out, each by measurement rather than argument:
+
+- **Not the compositor.** All sixteen `frame_marker` cells match in every headset capture of the
+  fault, so the displayed image is one frame. (A fence before releasing the swapchain image was
+  tried on the opposite theory and changed nothing, at about a tenth of the frame rate.)
+- **Not a draw's geometry.** No draw's extent ends near the seam; the full-screen overlay spans the
+  whole width.
+- **Not the scissor.** Three scissor rects appear in the frame and none has an edge there.
+- **Not an EFB copy's clear.** The copies on a seam frame are identical to those on a clean one.
+- **Not present while drawing.** Reading the seam's column back after every draw never shows the
+  discontinuity, yet it is there when the frame is presented.
+
+The last two are not yet reconciled, and that is where to pick this up.
+
+One thing this turned up but did not change: the scissor offset register reads 340, while the code
+treats the origin as the 342 that `GXSetScissorBoxOffset(0, 0)` implies. Reading the register
+shifts the whole picture two pixels right, and the constant is what has been checked against
+reference footage, so it stays — see `scissor_offset()`.
+
 ### Tuning VR (`vr.txt`)
 
 Some values cannot be known from the source. `a_pos` arrives in the game's own units and nothing
