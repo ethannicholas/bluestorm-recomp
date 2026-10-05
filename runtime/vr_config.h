@@ -32,14 +32,6 @@ struct VrConfig {
     // when rendering in stereo.
     float hud_scale = 0.55f;
 
-    // Perspective draws in a frame above which it is treated as in-world action and
-    // the view switches from the theater screen to stereo. A race submits several
-    // hundred; menus submit very few.
-    int stereo_draw_threshold = 300;
-
-    // Frames the threshold must hold before switching, to avoid flapping.
-    int stereo_switch_frames = 30;
-
     // Start in stereo rather than theater, for testing.
     bool start_in_stereo = false;
 };

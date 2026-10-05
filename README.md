@@ -297,96 +297,39 @@ The app presents the game two ways and switches between them automatically:
 - **Stereo** — the world rendered per eye as an `XrCompositionLayerProjection`, with the 2D
   elements kept flat as an overlay.
 
-The switch is driven by the game's own state: `0x80631FA4` is 1 from the moment the countdown
-starts until the race ends, and 0 through boot, the menus, course select, loading, the course
-overview flyover and the results screen. Being exact, it needs no hysteresis. Clicking the right
+The switch is driven by the game's own state: `0x806193BC` is non-zero from the moment the
+countdown starts until the race ends, and zero through boot, the menus, course select, loading,
+the course overview flyover, the pre-race rider cinematic and the results screen. It holds the
+course's wave height as a float — 3.0 on Dolphin Park — which is simply the race parameter that
+happens to be live exactly when a race is. Being exact, it needs no hysteresis. Clicking the right
 thumbstick pins the view manually, which is also the way to compare the two.
 
-It replaces counting a frame's perspective draws, which was wrong in both directions: the course
+It replaced counting a frame's perspective draws, which was wrong in both directions: the course
 overview is a full 3D flyover and cleared the threshold, so stereo began before the race, and a
-sparse view during a race dipped below it, so the view flapped. The draw count survives only as a
-fallback for a disc the address does not suit — if it ever reads anything but 0 or 1 it is not the
-flag, and the old heuristic takes over.
+sparse view during a race dipped below it, so the view flapped. **There is no fallback to that
+heuristic.** If the address reads anything but zero or a plausible wave height the app stops with
+a diagnostic, because guessing wrong does not degrade gracefully — it drops someone into stereo
+over a menu, or flips the view mid-race, and that is unpleasant enough in a headset to be worth
+refusing to run at all.
 
-The address came from diffing guest RAM against labelled screenshots: `WR_RAMSNAP=<dir>` makes
-`waverace_egl` write the low 8 MB of guest RAM beside a PNG every `WR_RAMSNAP_EVERY` frames, and
-the frames say which snapshot is a menu, the overview, a race or the results. Asking for the words
-that hold one value across every racing snapshot and a different single value across every
-non-racing one left exactly two candidates out of two million.
+#### Finding it, and why the first two answers were wrong
 
-Stereo is cheap here because of where `xf.cpp` stops. Vertices reach the renderer in the game's
-*view* space with the projection applied in the shader, so an eye is just another matrix in front
-of it: both eyes share one vertex buffer, one CPU-side transform and one set of render-to-texture
-results, and only the uniforms and draw calls repeat.
+`WR_RAMSNAP=<dir>` makes `waverace_egl` write the low 8 MB of guest RAM beside a PNG every
+`WR_RAMSNAP_EVERY` frames; the PNGs say which snapshot is a menu, the overview, a race or the
+results. Asking for words holding one value across every racing snapshot and a different single
+value across every non-racing one is then a few lines of numpy.
 
-#### Splitting a frame for the eyes
+Sampled every 150 frames that gave `0x80631FA4`, apparently a perfect 0/1 race flag. It is not:
+traced every frame with `WR_WATCH=<addr,...>` it drops to 0 for ten frames in every seventy-four,
+which would have flapped the view exactly as the draw count did. **Snapshots can only disprove a
+flag, never confirm one** — a blink shorter than the sampling interval is invisible, and seven
+samples landing on the steady phase of an 86%-duty signal is a coin toss, not evidence.
 
-A frame is not one pass. A race frame holds about a thousand draws and five EFB copies: three
-off-screen passes (a 480×480 reflection, a 128×128, a 320×240), then the main scene, then a
-640×480 copy of the finished image, then the display copy. Only the main scene may be re-projected
-per eye — the off-screen passes produce *textures* the scene samples, and re-aiming those at an eye
-corrupts them.
-
-Two things make this work:
-
-- **The first eye runs the whole frame flat into the EFB first**, scanout aside. An eye pass never
-  draws into the EFB, so without this every render-to-texture copy reads an empty one. That is
-  what left the ski untextured and put a black square on the water.
-- **A pass is skipped when its copy *clears* the EFB**, wherever that pass sits. The clear is what
-  marks a real off-screen pass: the next pass needs the buffer empty. A copy that does not clear
-  is a *grab* — the game lifting a piece of the live scene to texture with — and the draws in
-  front of it belong to whatever pass is still in progress.
-
-  Both halves of that matter, and each was learned the hard way. The off-screen passes are not all
-  up front: at speed the spray grabs some fifty 32×32 and 64×64 rects from scattered screen
-  positions *after* the main scene, so "the scene is whatever follows the last copy" drops the
-  entire scene the moment you get going. And treating every copy as ending a pass then throws away
-  whatever draws sit in front of the first grab — the water surface among them, so the ocean
-  vanished at speed instead.
-
-  The copy of the whole displayed frame is never an off-screen pass. "Whole frame" is measured
-  against the display copy in the same batch, since the frame is 640×480 while the EFB is 640×528;
-  measuring against the EFB matches nothing.
-
-Draws that sample a whole-frame copy are screen-space — in this game the water surface is one,
-composited over the scene. They are left in the world, where the billboard's edge shows as a seam.
-The two alternatives are both worse. Dropping them leaves the seabed showing through bare sand
-instead of blue-green water (`WR_EYE_SKIPCOMP=1`, for comparison). Drawing them flat across the
-eye via the overlay path pins them to the viewer's face, ocean and all, along with the racer baked
-into the copy — the overlay path is in NDC and therefore head-locked, which is what the HUD wants
-and the sea emphatically does not.
-
-What remains visible at speed: the seam at the billboard's edge, and the spray grabs, which are
-replayed as billboards too and show as faint squares with pieces of scene inside them.
-
-`--eye-yaw=N` turns the head N degrees. With the view left at identity nothing in the image can be
-seen to be head-locked, and a change that pinned the ocean and a copy of the racer to the viewer's
-face went through this harness looking perfectly correct. Dump a frame at two yaws: whatever does
-not move with the world is locked to the head, which only the HUD should be.
-
-`WR_EYELOG=1` prints each frame's split — every copy with its size, source rect, clear flag, the
-draws ahead of it and whether they were replayed — and is the quickest way to tell "the eye
-rendered the wrong part" from "the eye rendered nothing". `WR_DUMP_COPIES=20` dumps whenever a
-frame holds at least that many copies, which is how a frame thick with spray gets caught: the
-faults that only appear at speed are in exactly those frames, and a fixed dump interval almost
-never lands on one.
-
-#### Attributing part of the image to the draws that made it
-
-Not a VR problem but found through this harness, and the tools stay because the question recurs:
-*which draw put that there?* A race frame is ~390 draws in the flat path.
-
-- `WR_COMPLOG=1` logs every draw that samples a render-to-texture result, with its vertex count,
-  texgens and texture ids.
-- `WR_DRAWLOG=<frame>` lists every draw in one frame with its index, so geometry drawn twice shows
-  up as two draws with identical vertex counts and textures.
-- `WR_DRAW_SKIP=a-b` drops a range of draw indices, `WR_NO_COMP` / `WR_ONLY_COMP` drop or isolate
-  the draws sampling a whole-frame copy, and `WR_NO_EFBTEX` drops those sampling a partial one.
-
-One caution that has cost time twice: **the emulated timebase is wall-clock driven, so frame N is
-not the same moment in two runs.** Any A/B that compares frame N across runs is comparing different
-scenes. Either make the comparison inside one run, or pick a selector that is stable from frame to
-frame — "draws sampling the water copy" rather than "draws 256 to 273".
+Re-sampling every 25 frames left three candidates, and tracing those every frame killed two more:
+one dropped out mid-race, one never cleared. A fourth candidate from the first pass, `0x80619434`,
+survived the on/off test but turned out to be a float that is merely never exactly zero during a
+race. Only `0x806193BC` has exactly two transitions, and its boundaries line up with the countdown
+appearing and the race ending in dumped frames either side.
 
 ### Tuning VR (`vr.txt`)
 
@@ -404,8 +347,6 @@ offset_z 0
 near_m 0.1               # near/far planes in metres; too wide a ratio causes z-fighting
 far_m 2000
 hud_scale 0.55           # how much of the field of view the 2D overlay occupies
-stereo_draw_threshold 300  # perspective draws above which a frame counts as in-world
-stereo_switch_frames 30    # frames it must hold before switching
 start_in_stereo 0          # start in stereo rather than theater
 ```
 

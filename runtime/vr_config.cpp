@@ -27,16 +27,14 @@ VrConfig vr_config_load(const std::string& dir) {
         else if (!strcmp(key, "near_m")) c.near_m = (float)val;
         else if (!strcmp(key, "far_m")) c.far_m = (float)val;
         else if (!strcmp(key, "hud_scale")) c.hud_scale = (float)val;
-        else if (!strcmp(key, "stereo_draw_threshold")) c.stereo_draw_threshold = (int)val;
-        else if (!strcmp(key, "stereo_switch_frames")) c.stereo_switch_frames = (int)val;
         else if (!strcmp(key, "start_in_stereo")) c.start_in_stereo = val != 0;
         else __android_log_print(ANDROID_LOG_INFO, "waverace", "vr.txt: ignoring '%s'", key);
     }
     fclose(f);
     __android_log_print(ANDROID_LOG_INFO, "waverace",
                         "vr.txt: units_per_metre=%.1f offset=(%.1f,%.1f,%.1f) hud=%.2f "
-                        "threshold=%d frames=%d stereo_at_start=%d",
+                        "stereo_at_start=%d",
                         c.units_per_metre, c.offset_x, c.offset_y, c.offset_z, c.hud_scale,
-                        c.stereo_draw_threshold, c.stereo_switch_frames, (int)c.start_in_stereo);
+                        (int)c.start_in_stereo);
     return c;
 }

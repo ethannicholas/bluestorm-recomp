@@ -56,6 +56,9 @@ static Batch& batch() {
     return *g_batch;
 }
 
+// Frames since the race started; drives WR_MTXLOG.
+static uint32_t mtx_race_frames;
+
 static void flush_batch() {
     if (g_batch && !g_batch->cmds.empty()) submit_batch(std::move(g_batch));
     g_batch.reset();
@@ -447,6 +450,55 @@ void renderer_draw(const DrawCall& dc) {
     bool has_nrm = L.nrm_desc != 0;
     for (uint32_t i = 0; i < dc.count; i++) transform_vertex(g_in[i], g_out[i], has_nrm);
 
+    // WR_MTXLOG=<n> prints the position matrix and projection of every draw in the nth
+    // frame after the race starts. It keys off the game's own race flag rather than a
+    // frame number because the timebase is wall-clock driven, so frame N is a different
+    // moment in every run -- aiming at a frame number lands on a different scene.
+    //
+    // A reflection is a mirror about the water plane. Whether it is applied shows up here
+    // as a negative determinant, in the position matrix if the camera is mirrored or in
+    // the projection if the Y axis is flipped there instead.
+    static const uint32_t mtxlog = getenv("WR_MTXLOG") ? (uint32_t)atoi(getenv("WR_MTXLOG")) : 0;
+    static uint32_t mtx_draw;
+    static bool was_racing;
+    if (mtxlog) {
+        const bool racing = mem_r32(0x806193BC) != 0;
+        if (racing != was_racing)
+            fprintf(stderr, "[race] flag -> %d at frame %u\n", (int)racing, g_frame_counter);
+        // WR_WATCH=a,b,c prints those guest addresses every frame. Sparse snapshots cannot
+        // tell a steady flag from one that blinks: 0x80631FA4 looked perfect sampled every
+        // 150 frames and turned out to drop to 0 for ten frames in every seventy-four.
+        static const char* watch = getenv("WR_WATCH");
+        static uint32_t watch_last_frame = ~0u;
+        if (watch && g_frame_counter != watch_last_frame) {
+            watch_last_frame = g_frame_counter;
+            fprintf(stderr, "[watch] f%u", g_frame_counter);
+            for (const char* s = watch; s && *s;) {
+                const uint32_t a = (uint32_t)strtoul(s, nullptr, 0);
+                fprintf(stderr, " %#x=%08x", a, mem_r32(a));
+                const char* c = strchr(s, ',');
+                s = c ? c + 1 : nullptr;
+            }
+            fprintf(stderr, "\n");
+        }
+        if (racing && !was_racing) { mtx_race_frames = 0; mtx_draw = 0; }
+        was_racing = racing;
+    }
+    if (mtxlog && was_racing && mtx_race_frames == mtxlog) {
+        const uint32_t m = (g_in[0].pnmtx & 63) * 4;
+        fprintf(stderr, "[mtx] %3u n=%4u pnmtx=%2u | %8.3f %8.3f %8.3f %10.2f | %8.3f %8.3f %8.3f %10.2f"
+                " | %8.3f %8.3f %8.3f %10.2f | out0=%.1f,%.1f,%.1f\n",
+                mtx_draw, dc.count, g_in[0].pnmtx & 63,
+                xf_f(m + 0), xf_f(m + 1), xf_f(m + 2), xf_f(m + 3),
+                xf_f(m + 4), xf_f(m + 5), xf_f(m + 6), xf_f(m + 7),
+                xf_f(m + 8), xf_f(m + 9), xf_f(m + 10), xf_f(m + 11),
+                g_out[0].pos[0], g_out[0].pos[1], g_out[0].pos[2]);
+        fprintf(stderr, "[prj] %3u type=%d %9.4f %9.4f %9.4f %9.4f %9.4f %9.4f\n", mtx_draw,
+                (int)g_state.xf_regs[0x1026], xfr_f(0x20), xfr_f(0x21), xfr_f(0x22),
+                xfr_f(0x23), xfr_f(0x24), xfr_f(0x25));
+        mtx_draw++;
+    }
+
     Batch& b = batch();
     uint32_t state = snapshot_state();
     uint32_t first = (uint32_t)b.verts.size();
@@ -616,6 +668,7 @@ void renderer_efb_copy(uint32_t dest_addr, bool /*unused*/) {
     }
     if (cc.to_xfb) {
         g_frame_counter++;
+        mtx_race_frames++;
         texture_evict();
         g_frames_submitted++;
         g_have_last_state = false;

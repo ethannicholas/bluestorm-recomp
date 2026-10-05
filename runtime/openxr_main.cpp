@@ -14,10 +14,13 @@
 #include "input_script.h"
 #include "vr_config.h"
 
-// Set while the player is on the course: from the start of the countdown until the race
-// ends. Zero through boot, menus, course select, loading, the course overview flyover and
-// the results screen. Specific to the supported disc (see the Supported version section).
-static constexpr uint32_t kRaceActiveAddr = 0x80631FA4;
+// Non-zero while the player is on the course: set as the countdown starts and cleared
+// when the race ends. Zero through boot, the menus, course select, loading, the course
+// overview flyover, the pre-race rider cinematic and the results screen. It holds the
+// course's wave height as a float -- 3.0 on Dolphin Park -- which is simply the race
+// parameter that happens to be live exactly when a race is. Specific to the supported
+// disc (see the Supported version section).
+static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
 #include "gx/render.h"
 #include "gx/render_gl.h"
 #include "gx/gl.h"
@@ -552,8 +555,6 @@ void android_main(android_app* app) {
     uint32_t xr_frames = 0, game_frames = 0, skipped = 0;
     bool have_content = false;
     bool stereo = g_vrcfg.start_in_stereo, manual_override = false, toggle_was_down = false;
-    int busy_frames = 0;
-    bool race_flag_ok = true;
     // Kept across frames: a display frame with no new game frame re-submits these
     // rather than re-rendering. They carry the pose each image was rendered for, so
     // the compositor reprojects them for the current head pose.
@@ -616,28 +617,21 @@ void android_main(android_app* app) {
                 // during a race whenever the view is sparse, which is what made the view
                 // flap. That heuristic is kept only as a fallback for a disc this address
                 // does not suit: if it ever holds anything but 0 or 1, it is not the flag.
-                const uint32_t race_flag = mem_r32(kRaceActiveAddr);
-                bool want_stereo;
-                if (race_flag <= 1) {
-                    race_flag_ok = true;
-                    want_stereo = race_flag != 0;
-                } else {
-                    if (race_flag_ok) {
-                        race_flag_ok = false;
-                        LOGI("race flag at %#x reads %#x; falling back to draw counting",
-                             kRaceActiveAddr, race_flag);
-                    }
-                    int persp = 0;
-                    for (auto& c : batch->cmds)
-                        if (c.type == gx::CmdType::Draw &&
-                            (int)batch->states[c.state].proj[6] == 0) persp++;
-                    const bool busy = persp >= g_vrcfg.stereo_draw_threshold;
-                    if (busy) busy_frames = busy_frames < 0 ? 1 : busy_frames + 1;
-                    else      busy_frames = busy_frames > 0 ? -1 : busy_frames - 1;
-                    want_stereo = stereo;
-                    if (!stereo && busy_frames >= g_vrcfg.stereo_switch_frames) want_stereo = true;
-                    else if (stereo && -busy_frames >= g_vrcfg.stereo_switch_frames) want_stereo = false;
-                }
+                const uint32_t bits = mem_r32(kRaceActiveAddr);
+                float wave;
+                memcpy(&wave, &bits, 4);
+                // Zero, or a plausible wave height. Anything else means this is not that
+                // variable -- a different disc, or a layout change. There is deliberately
+                // no fallback: counting draws, which this replaced, does not work, and
+                // guessing wrong does not degrade gracefully. It drops someone into
+                // stereo over a menu or flips the view mid-race, which is unpleasant
+                // enough in a headset to be worth refusing to run at all.
+                if (bits != 0 && !(wave > 0.0f && wave < 100.0f))
+                    fatal("race-state variable at %#x reads %#010x (%g), which is neither "
+                          "zero nor a plausible wave height. This build only knows the "
+                          "disc named in README.md; refusing to guess which view to "
+                          "present.", kRaceActiveAddr, bits, (double)wave);
+                const bool want_stereo = bits != 0;
                 if (want_stereo != stereo) {
                     stereo = want_stereo;
                     LOGI("switching to %s", stereo ? "stereo" : "theater");
