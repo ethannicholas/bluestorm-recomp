@@ -62,6 +62,7 @@ static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
 // Copy of the EFB as it looked at the last present. The display copy is immediately
 // followed by an EFB clear, so repainting has to come from here, not the live EFB.
 static GLuint g_snap_fbo, g_snap_tex;
+static bool g_frame_marker = false;
 static GLuint g_vao, g_vbo;
 static GLuint g_copy_prog, g_copy_vao;
 static GLint g_copy_u_src, g_copy_u_rect, g_copy_u_mode, g_copy_u_depth;
@@ -622,6 +623,24 @@ static void blit_to_output(const EfbCopyCmd& c, GLuint src_tex) {
     glBindVertexArray(g_copy_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(g_vao);
+
+    // A row of cells across the top, all the same colour, that colour derived from the
+    // frame number. Every cell is written by the same blit, so in a screenshot they must
+    // all match. If they do not, the image the compositor showed was assembled from more
+    // than one frame, and the colours say which -- which settles whether a seam is
+    // something this renderer drew or something that happened after it.
+    if (g_frame_marker) {
+        const uint32_t n = g_present_count;
+        glEnable(GL_SCISSOR_TEST);
+        glClearColor(((n * 37) % 256) / 255.0f, ((n * 91) % 256) / 255.0f,
+                     ((n * 151) % 256) / 255.0f, 1.0f);
+        const int cells = 16, hgt = g_win_h / 48 > 4 ? g_win_h / 48 : 4;
+        for (int i = 0; i < cells; i++) {
+            glScissor(i * g_win_w / cells, g_win_h - hgt, g_win_w / cells - 2, hgt);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        glDisable(GL_SCISSOR_TEST);
+    }
 }
 
 static void present(const EfbCopyCmd& c) {
@@ -665,6 +684,7 @@ static void present(const EfbCopyCmd& c) {
 }
 void render_set_output_fbo(unsigned fbo) { g_output_fbo = (GLuint)fbo; }
 uint32_t present_count() { return g_present_count; }
+void render_set_frame_marker(bool on) { g_frame_marker = on; }
 
 bool render_repaint() {
     if (!g_have_present) return false;

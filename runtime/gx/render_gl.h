@@ -18,6 +18,11 @@ bool render_execute(Batch& b);
 // Frames presented so far, for tracing what a display frame is actually showing.
 uint32_t present_count();
 
+// Stamp a row of same-coloured cells across the top of the output, the colour derived
+// from the frame number. In a screenshot they must all match; cells that disagree mean
+// the displayed image was assembled from more than one frame.
+void render_set_frame_marker(bool on);
+
 // ---- VR ----
 // Set the eye projection and the eye's transform relative to the game's camera, plus
 // how much of the field of view the flat 2D elements are shrunk into.

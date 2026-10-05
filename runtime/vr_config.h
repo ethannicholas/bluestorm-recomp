@@ -35,6 +35,9 @@ struct VrConfig {
     // Trace the theater path one display frame at a time (adb logcat -s waverace).
     bool log_frames = false;
 
+    // Stamp a frame-number colour across the top of the image; see render_gl.h.
+    bool frame_marker = false;
+
     // Start in stereo rather than theater, for testing.
     bool start_in_stereo = false;
 };

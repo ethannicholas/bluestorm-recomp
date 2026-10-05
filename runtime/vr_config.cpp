@@ -28,6 +28,7 @@ VrConfig vr_config_load(const std::string& dir) {
         else if (!strcmp(key, "far_m")) c.far_m = (float)val;
         else if (!strcmp(key, "hud_scale")) c.hud_scale = (float)val;
         else if (!strcmp(key, "log_frames")) c.log_frames = val != 0;
+        else if (!strcmp(key, "frame_marker")) c.frame_marker = val != 0;
         else if (!strcmp(key, "start_in_stereo")) c.start_in_stereo = val != 0;
         else __android_log_print(ANDROID_LOG_INFO, "waverace", "vr.txt: ignoring '%s'", key);
     }

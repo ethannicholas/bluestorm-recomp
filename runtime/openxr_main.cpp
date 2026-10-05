@@ -154,26 +154,6 @@ static VrConfig g_vrcfg;
 // ---------------------------------------------------------------------------
 // Matrices, column-major for glUniformMatrix4fv with transpose = GL_FALSE.
 // ---------------------------------------------------------------------------
-// Wait until the GPU has actually finished writing the swapchain image, before handing
-// it back to the compositor.
-//
-// glFlush only guarantees the commands were issued, so the compositor could sample an
-// image still being written and show a frame with part of it missing along a tile
-// boundary. That is what the character-select flicker was: during the fade -- the most
-// expensive frame on that screen, the whole UI blended over the background -- the UI was
-// missing from the left half while the background behind it was complete. It never
-// appeared in the headless harness because there is no compositor there to race.
-static void finish_writes() {
-    GLsync s = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    if (!s) {
-        glFinish();
-        return;
-    }
-    // Flush on wait, and cap it: a lost fence must not wedge the frame loop.
-    glClientWaitSync(s, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull);  // 100 ms
-    glDeleteSync(s);
-}
-
 static void mat_proj(const XrFovf& fov, float nearZ, float farZ, float* m) {
     const float l = tanf(fov.angleLeft), r = tanf(fov.angleRight);
     const float u = tanf(fov.angleUp), d = tanf(fov.angleDown);
@@ -546,6 +526,7 @@ void android_main(android_app* app) {
     const std::string dir = app->activity->externalDataPath ? app->activity->externalDataPath : "";
     const std::string iso = dir + "/game.iso";
     g_vrcfg = vr_config_load(dir);
+    gx::render_set_frame_marker(g_vrcfg.frame_marker);
 
     if (!egl_init()) return;
     int glver = gl_load_with(gl_proc);
@@ -699,7 +680,7 @@ void android_main(android_app* app) {
                         mat_view(views[e].pose, g_vrcfg, V);
                         gx::render_set_vr_eye(P, V, g_vrcfg.hud_scale);
                         if (b) gx::render_execute_eye(*b, eye.fbos[ei], eye.w, eye.h, e == 0);
-                        finish_writes();
+                        glFlush();
                     }
                     XrSwapchainImageReleaseInfo eri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                     xrReleaseSwapchainImage(eye.handle, &eri);
@@ -746,7 +727,10 @@ void android_main(android_app* app) {
                         LOGI("[t] disp=%llu img=%u %s present=%u batch=%d",
                              (unsigned long long)disp_frames, idx, drew ? "drew" : "rept",
                              gx::present_count(), batch ? 1 : 0);
-                    finish_writes();
+                    // Issue the blit before handing the image back. A full fence wait
+                    // here was tried against the character-select flicker and changed
+                    // nothing, at about a tenth of the game's frame rate.
+                    glFlush();
                     have_content = true;
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
