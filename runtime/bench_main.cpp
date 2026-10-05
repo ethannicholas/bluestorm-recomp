@@ -15,6 +15,7 @@
 #include "runtime.h"
 #include "platform.h"
 #include "gx/render.h"
+#include "input_script.h"
 #include "hw/dtk.h"
 #include "hw/pad.h"
 #include <chrono>
@@ -27,17 +28,7 @@
 uint32_t boot_load(const char* iso_path);
 void debug_dump_threads();
 
-// ---------------------------------------------------------------------------
-// Stubs for the subsystems this target omits.
-// ---------------------------------------------------------------------------
-// The DSP HLE keeps mixing and handing us sample blocks; drop them on the floor.
-void audio_push_dma(const int16_t*, uint32_t) {}
-
-// DTK streaming state normally lives in audio.cpp, which needs SDL. The DI still
-// reads and writes it while servicing the game's audio-stream commands, so it has
-// to exist here.
-DtkState g_dtk;
-std::mutex g_dtk_mutex;
+// The audio subsystem this target omits is stubbed in audio_stub.cpp.
 
 // ---------------------------------------------------------------------------
 static void on_interrupt() {
@@ -80,6 +71,7 @@ int main(int argc, char** argv) {
 
     mem_init();
     timing_init();
+    input_script_init();
     uint32_t entry = boot_load(iso.c_str());
     threads_start_boot(entry);
 
@@ -105,6 +97,7 @@ int main(int argc, char** argv) {
         // state, and drain batches so the guest never blocks on a renderer.
         PadState p;
         p.connected = true;
+        input_script_apply(p);
         pad_set_state(0, p);
 
         if (auto b = gx::take_batch(5)) {

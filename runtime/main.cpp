@@ -2,6 +2,7 @@
 // batches produced by the guest thread.
 #include "runtime.h"
 #include "platform.h"
+#include "input_script.h"
 #include "gx/render_gl.h"
 #include "gx/gl.h"
 #include "hw/pad.h"
@@ -50,60 +51,6 @@ bool audio_open();
 // Input: keyboard + first game controller -> GC pad 1
 // ---------------------------------------------------------------------------
 static SDL_GameController* g_ctrl;
-
-// Scripted input for testing: WR_INPUT="frame:BUTTON[+BUTTON]:dur,..." where frame is the
-// presented-frame count at which to press, e.g. "900:START:10,1200:A:10". Stick: SL/SR/SU/SD.
-struct ScriptedPress { uint32_t at, dur; uint16_t buttons; int sx, sy; };
-static std::vector<ScriptedPress> g_script;
-extern std::atomic<uint32_t> g_vi_retrace_count;
-
-static void parse_script() {
-    const char* e = getenv("WR_INPUT");
-    if (!e) return;
-    std::string s = e;
-    size_t pos = 0;
-    while (pos < s.size()) {
-        size_t end = s.find(',', pos);
-        if (end == std::string::npos) end = s.size();
-        std::string item = s.substr(pos, end - pos);
-        pos = end + 1;
-        size_t c1 = item.find(':'), c2 = item.rfind(':');
-        if (c1 == std::string::npos || c2 == c1) continue;
-        ScriptedPress p{(uint32_t)atoi(item.c_str()), (uint32_t)atoi(item.c_str() + c2 + 1), 0, 0, 0};
-        std::string btns = item.substr(c1 + 1, c2 - c1 - 1);
-        size_t bp = 0;
-        while (bp <= btns.size()) {
-            size_t be = btns.find('+', bp);
-            if (be == std::string::npos) be = btns.size();
-            std::string b = btns.substr(bp, be - bp);
-            bp = be + 1;
-            if (b == "A") p.buttons |= PAD_A; else if (b == "B") p.buttons |= PAD_B;
-            else if (b == "X") p.buttons |= PAD_X; else if (b == "Y") p.buttons |= PAD_Y;
-            else if (b == "Z") p.buttons |= PAD_Z; else if (b == "L") p.buttons |= PAD_L;
-            else if (b == "R") p.buttons |= PAD_R; else if (b == "START") p.buttons |= PAD_START;
-            else if (b == "UP") p.buttons |= PAD_UP; else if (b == "DOWN") p.buttons |= PAD_DOWN;
-            else if (b == "LEFT") p.buttons |= PAD_LEFT; else if (b == "RIGHT") p.buttons |= PAD_RIGHT;
-            else if (b == "SL") p.sx = -100; else if (b == "SR") p.sx = 100;
-            else if (b == "SU") p.sy = 100; else if (b == "SD") p.sy = -100;
-        }
-        g_script.push_back(p);
-    }
-}
-
-static void apply_script(PadState& p) {
-    uint32_t vi = gx::g_frames_submitted.load();  // script time base: presented game frames
-    for (auto& s : g_script) {
-        if (vi >= s.at && vi < s.at + s.dur) {
-            if (getenv("WR_INPUT_LOG")) fprintf(stderr, "[input] frame %u press %04X held=%04X pressed=%04X\n", vi, s.buttons,
-                                                             mem_r32(0x80345F44), mem_r32(0x80345F64));
-            p.buttons |= s.buttons;
-            if (s.sx) p.stick_x = (uint8_t)(128 + s.sx);
-            if (s.sy) p.stick_y = (uint8_t)(128 + s.sy);
-            if (s.buttons & PAD_L) p.trig_l = 255;
-            if (s.buttons & PAD_R) p.trig_r = 255;
-        }
-    }
-}
 
 static uint8_t axis_to_u8(int v, bool invert) {
     float f = v / 32767.0f;
@@ -157,7 +104,7 @@ static void update_pad() {
         if (lt > 1000) { p.trig_l = (uint8_t)(lt * 255 / 32767); if (lt > 30000) p.buttons |= PAD_L; }
         if (rt > 1000) { p.trig_r = (uint8_t)(rt * 255 / 32767); if (rt > 30000) p.buttons |= PAD_R; }
     }
-    apply_script(p);
+    input_script_apply(p);
     pad_set_state(0, p);
 }
 
@@ -188,7 +135,7 @@ int main(int argc, char** argv) {
     }
     mem_init();
     timing_init();
-    parse_script();
+    input_script_init();
 
     if (headless) {
         uint32_t entry = boot_load(iso);
@@ -196,7 +143,7 @@ int main(int argc, char** argv) {
         for (;;) {
             PadState p;
             p.connected = true;
-            apply_script(p);
+            input_script_apply(p);
             pad_set_state(0, p);
             auto b = gx::take_batch(5);  // discard
             (void)b;
@@ -226,7 +173,7 @@ int main(int argc, char** argv) {
     SDL_GL_SetSwapInterval(0);
     // A legacy driver still "loads": it resolves the GL 1.1 exports and leaves every
     // 2.0+ entry point null, so check the version before handing off to the renderer.
-    int glver = gl_load();
+    int glver = gl_load_with(SDL_GL_GetProcAddress);
     if (glver < WR_GL_VERSION_MIN) {
         fatal("OpenGL %d.%d is too old (got \"%s\" / \"%s\")\n%s",
               glver / 10, glver % 10, glGetString(GL_VERSION) ? (const char*)glGetString(GL_VERSION) : "?",

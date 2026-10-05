@@ -1,4 +1,7 @@
-// OpenGL 3.3 core back end. Runs on the main thread.
+// GL back end for the GX pixel pipeline. Runs on the main thread.
+//
+// One source serves desktop OpenGL 3.3 core and OpenGL ES 3.2; where the two profiles
+// differ, the difference is confined to the small block of helpers below.
 #include "../runtime.h"
 #include "render.h"
 #include "render_gl.h"
@@ -11,6 +14,34 @@ bool write_png(const char* path, const uint8_t* rgba, int w, int h);
 namespace gx {
 
 static const int EFB_W = 640, EFB_H = 528;
+
+// Logic-op blending does not exist in GL ES: there is no GL_COLOR_LOGIC_OP, no
+// glLogicOp, and none of the GL_CLEAR..GL_SET enums. The game uses GX logic ops for
+// only a few effects, so on ES they are skipped -- the draw writes through with
+// blending off, which matches the common GX_LO_COPY case. Reproducing the rest would
+// mean reading the framebuffer in the generated TEV shader via
+// GL_EXT_shader_framebuffer_fetch.
+#ifdef WR_GL_ES
+static inline void set_logic_op_off() {}
+static inline void set_logic_op(uint32_t) {}
+// ES spells this with the float suffix; desktop GL 3.3 core only has the double form.
+static inline void clear_depth(float d) { glClearDepthf(d); }
+// ES has no sampler LOD bias. GX uses it to nudge mip selection, so skipping it can
+// pick a slightly different mip level than hardware would.
+static inline void set_lod_bias(GLuint, float) {}
+#else
+static const GLenum kLogicOp[16] = {GL_CLEAR, GL_AND, GL_AND_REVERSE, GL_COPY, GL_AND_INVERTED, GL_NOOP, GL_XOR, GL_OR,
+                                    GL_NOR, GL_EQUIV, GL_INVERT, GL_OR_REVERSE, GL_COPY_INVERTED, GL_OR_INVERTED, GL_NAND, GL_SET};
+static inline void set_logic_op_off() { glDisable(GL_COLOR_LOGIC_OP); }
+static inline void set_logic_op(uint32_t mode) {
+    glEnable(GL_COLOR_LOGIC_OP);
+    glLogicOp(kLogicOp[mode & 15]);
+}
+static inline void clear_depth(float d) { glClearDepth(d); }
+static inline void set_lod_bias(GLuint s, float bias) {
+    glSamplerParameterf(s, GL_TEXTURE_LOD_BIAS, bias);
+}
+#endif
 
 struct Program {
     GLuint prog;
@@ -168,7 +199,7 @@ void render_init(int internal_scale) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, g_efb_depth, 0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) fatal("EFB framebuffer incomplete");
     glClearColor(0, 0, 0, 1);
-    glClearDepth(1.0);
+    clear_depth(1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glGenVertexArrays(1, &g_vao);
@@ -198,7 +229,10 @@ void render_init(int internal_scale) {
     g_blit_u_rect = glGetUniformLocation(g_blit_prog, "u_rect");
     glGenVertexArrays(1, &g_copy_vao);
     glGenFramebuffers(1, &g_copy_fbo);
+#ifndef WR_GL_ES
+    // Desktop core profile needs this to honour gl_PointSize; ES always does.
     glEnable(GL_PROGRAM_POINT_SIZE);
+#endif
 }
 
 void render_set_window_size(int w, int h) { g_win_w = w; g_win_h = h; }
@@ -239,7 +273,7 @@ static GLuint get_sampler(uint32_t mode0, uint32_t mode1, uint32_t levels) {
     else mf = min_lin ? GL_LINEAR_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
     glSamplerParameteri(s, GL_TEXTURE_MIN_FILTER, mf);
     int8_t bias = (int8_t)((mode0 >> 9) & 0xFF);
-    glSamplerParameterf(s, GL_TEXTURE_LOD_BIAS, bias / 32.0f);
+    set_lod_bias(s, bias / 32.0f);
     glSamplerParameterf(s, GL_TEXTURE_MIN_LOD, (mode1 & 0xFF) / 16.0f);
     glSamplerParameterf(s, GL_TEXTURE_MAX_LOD, ((mode1 >> 8) & 0xFF) / 16.0f);
     g_samplers[key] = s;
@@ -259,9 +293,6 @@ static float fog_float(uint32_t v) {
 static const GLenum kBlendSrc[8] = {GL_ZERO, GL_ONE, GL_DST_COLOR, GL_ONE_MINUS_DST_COLOR, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA};
 static const GLenum kBlendDst[8] = {GL_ZERO, GL_ONE, GL_SRC_COLOR, GL_ONE_MINUS_SRC_COLOR, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA};
 static const GLenum kDepthFunc[8] = {GL_NEVER, GL_LESS, GL_EQUAL, GL_LEQUAL, GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS};
-static const GLenum kLogicOp[16] = {GL_CLEAR, GL_AND, GL_AND_REVERSE, GL_COPY, GL_AND_INVERTED, GL_NOOP, GL_XOR, GL_OR,
-                                    GL_NOR, GL_EQUIV, GL_INVERT, GL_OR_REVERSE, GL_COPY_INVERTED, GL_OR_INVERTED, GL_NAND, GL_SET};
-
 static void apply_state(const PixelState& st, int prim) {
     const uint32_t* bp = st.bp;
     ShaderKey key = make_shader_key(st);
@@ -347,21 +378,20 @@ static void apply_state(const PixelState& st, int prim) {
     bool blend = bm & 1, logic = (bm >> 1) & 1, sub = (bm >> 11) & 1;
     if (sub) {
         glEnable(GL_BLEND);
-        glDisable(GL_COLOR_LOGIC_OP);
+        set_logic_op_off();
         glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
         glBlendFunc(GL_ONE, GL_ONE);
     } else if (blend) {
         glEnable(GL_BLEND);
-        glDisable(GL_COLOR_LOGIC_OP);
+        set_logic_op_off();
         glBlendEquation(GL_FUNC_ADD);
         glBlendFunc(kBlendSrc[(bm >> 8) & 7], kBlendDst[(bm >> 5) & 7]);
     } else if (logic) {
         glDisable(GL_BLEND);
-        glEnable(GL_COLOR_LOGIC_OP);
-        glLogicOp(kLogicOp[(bm >> 12) & 15]);
+        set_logic_op(bm >> 12);
     } else {
         glDisable(GL_BLEND);
-        glDisable(GL_COLOR_LOGIC_OP);
+        set_logic_op_off();
     }
     bool has_alpha = (bp[0x43] & 7) == 1;
     GLboolean cw = (bm >> 3) & 1, aw = ((bm >> 4) & 1) && has_alpha;
@@ -408,7 +438,7 @@ static void apply_state(const PixelState& st, int prim) {
 static void do_efb_copy(const EfbCopyCmd& c) {
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
-    glDisable(GL_COLOR_LOGIC_OP);
+    set_logic_op_off();
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glColorMask(1, 1, 1, 1);
@@ -454,7 +484,7 @@ static void do_efb_copy(const EfbCopyCmd& c) {
         if (c.clear_z) { bits |= GL_DEPTH_BUFFER_BIT; glDepthMask(GL_TRUE); }
         glClearColor(((c.clear_rgba >> 24) & 0xFF) / 255.0f, ((c.clear_rgba >> 16) & 0xFF) / 255.0f,
                      ((c.clear_rgba >> 8) & 0xFF) / 255.0f, (c.clear_rgba & 0xFF) / 255.0f);
-        glClearDepth(c.clear_z_value / 16777215.0);
+        clear_depth(c.clear_z_value / 16777215.0f);
         if (bits) glClear(bits);
         glColorMask(1, 1, 1, 1);
     }
@@ -484,7 +514,7 @@ static void present(const EfbCopyCmd& c) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
-    glDisable(GL_COLOR_LOGIC_OP);
+    set_logic_op_off();
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glColorMask(1, 1, 1, 1);

@@ -217,11 +217,46 @@ SDL2, no GL and no renderer possible.
 
 ## Graphics
 
-The renderer needs an **OpenGL 3.3 core profile**. It uses nothing newer: samplers, VAOs, FBOs
-and explicit attribute locations are the whole requirement, so a 3.3 floor keeps the mapping
-layers that stop there usable. On macOS it links the system framework directly; elsewhere the
-entry points are resolved at runtime by a vendored [glad](https://gen.glad.sh/) loader
-(`runtime/gx/glad/`, regenerate with `glad --api gl:core=3.3 --extensions ""`).
+The renderer needs an **OpenGL 3.3 core profile**, or **OpenGL ES 3.2** when built with
+`-DWR_GL_ES=ON` (the default for Android). It uses nothing newer than GL 3.3 / ES 3.0:
+samplers, VAOs, FBOs and explicit attribute locations are the whole requirement, so a 3.3 floor
+keeps the mapping layers that stop there usable. One source serves both profiles; where they
+differ, the difference is confined to a small block of helpers at the top of
+`runtime/gx/render_gl.cpp`.
+
+On macOS the system framework is linked directly; elsewhere the entry points are resolved at
+runtime by a vendored [glad](https://gen.glad.sh/) loader (`runtime/gx/glad/` and
+`glad_es/`, regenerated with `glad --api gl:core=3.3 --extensions ""` and
+`--api gles2:core=3.2`).
+
+Two things GL ES cannot do, both accepted rather than emulated:
+
+- **Logic-op blending.** ES has no `GL_COLOR_LOGIC_OP`. GX logic ops are skipped, so such draws
+  write through with blending off. Reproducing them would mean reading the framebuffer in the
+  generated TEV shader via `GL_EXT_shader_framebuffer_fetch`.
+- **Sampler LOD bias.** ES has no `GL_TEXTURE_LOD_BIAS`, so mip selection can differ slightly.
+
+### Validating the ES renderer on a device
+
+`waverace_egl` (Android) runs the real renderer on a headless EGL pbuffer and writes frames as
+PNGs. No APK, no window, no OpenXR — it exists to check the ES back end on real hardware:
+
+```powershell
+.\build-android.ps1 -Render -Seconds 200 -DumpEvery 150 -InputScript "1050:START:12,1250:A:12,1450:A:12"
+```
+
+`-InputScript` sets `WR_INPUT`, which is how anything past the title screen is reached without a
+controller. Frames are pulled back to `build-android/frames/`.
+
+### Known performance problem on mobile GPUs
+
+The renderer applies one `PixelState` per draw call, and the game issues **~830 draws per frame**
+during a race. Each one does a `glUseProgram`, a full uniform re-upload and eight texture and
+sampler binds, for an average of only ~106 vertices. Desktop drivers absorb that; a tiled mobile
+GPU does not. Measured on a Quest 3 (Adreno 740) at `--scale=1`: menus run at ~30 fps, a race at
+**0.5–3 fps**. Texture uploads (1 new texture per frame) and EFB copies (1 per frame) are *not*
+the cause — it is state-change overhead. Deduplicating consecutive identical states and merging
+adjacent draws that share one would be the fix.
 
 If the game exits with `OpenGL 1.1 is too old (got "1.1.0" / "GDI Generic")`, the host has no
 OpenGL driver at all and Windows is falling back to its software 1.1 implementation. This is

@@ -77,28 +77,49 @@ option(WR_BENCH_ONLY "Build only the headless benchmark (no SDL2, no renderer)" 
 
 file(GLOB_RECURSE RUNTIME_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/runtime/*.cpp)
 
-# bench_main.cpp is an alternative entry point; it must not land in a target that
-# already has main.cpp.
-list(REMOVE_ITEM RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/bench_main.cpp)
+# Alternative entry points and the SDL-free audio stub: none of these may land in a
+# target that already has main.cpp or audio.cpp.
+list(REMOVE_ITEM RUNTIME_SOURCES
+  ${CMAKE_SOURCE_DIR}/runtime/bench_main.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/egl_main.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/audio_stub.cpp)
 
-# The benchmark drops the renderer and the SDL frontend. Everything it keeps -- the
-# CPU, OS, hardware and GX front end, including the batch queue in gx/xf.cpp -- is
-# free of both GL and SDL.
-set(BENCH_SOURCES ${RUNTIME_SOURCES})
-list(REMOVE_ITEM BENCH_SOURCES
+# Everything below the renderer and the SDL frontend -- the CPU, OS, hardware and GX
+# front end, including the batch queue in gx/xf.cpp -- is free of both GL and SDL.
+set(CORE_SOURCES ${RUNTIME_SOURCES})
+list(REMOVE_ITEM CORE_SOURCES
   ${CMAKE_SOURCE_DIR}/runtime/main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/audio.cpp
   ${CMAKE_SOURCE_DIR}/runtime/png.cpp
   ${CMAKE_SOURCE_DIR}/runtime/gx/render_gl.cpp
   ${CMAKE_SOURCE_DIR}/runtime/gx/gl_load.cpp
   ${CMAKE_SOURCE_DIR}/runtime/gx/shadergen.cpp)
-list(APPEND BENCH_SOURCES ${CMAKE_SOURCE_DIR}/runtime/bench_main.cpp)
+list(APPEND CORE_SOURCES ${CMAKE_SOURCE_DIR}/runtime/audio_stub.cpp)
 
-# GL entry points are resolved at runtime via a vendored glad loader (GL 3.3 core).
-# macOS links the system framework directly and needs neither.
-set(GLAD_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/runtime/gx/glad/include)
+set(BENCH_SOURCES ${CORE_SOURCES} ${CMAKE_SOURCE_DIR}/runtime/bench_main.cpp)
+
+# Render target: desktop OpenGL 3.3 core, or OpenGL ES 3.2 for Android and standalone
+# headsets. One renderer source serves both; see runtime/gx/gl.h.
+if(ANDROID)
+  set(_wr_gl_es_default ON)
+else()
+  set(_wr_gl_es_default OFF)
+endif()
+option(WR_GL_ES "Target OpenGL ES 3.2 instead of desktop OpenGL 3.3 core" ${_wr_gl_es_default})
+
+# GL entry points are resolved at runtime via a vendored glad loader. macOS links the
+# system framework directly and needs neither.
+if(WR_GL_ES)
+  set(GLAD_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/runtime/gx/glad_es/include)
+  set(GLAD_SOURCE ${CMAKE_SOURCE_DIR}/runtime/gx/glad_es/src/gles2.c)
+  set(WR_GL_DEFS WR_GL_ES)
+else()
+  set(GLAD_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/runtime/gx/glad/include)
+  set(GLAD_SOURCE ${CMAKE_SOURCE_DIR}/runtime/gx/glad/src/gl.c)
+  set(WR_GL_DEFS "")
+endif()
 if(NOT APPLE)
-  list(APPEND RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/gx/glad/src/gl.c)
+  list(APPEND RUNTIME_SOURCES ${GLAD_SOURCE})
 endif()
 
 # SDL2: pkg-config where it exists; on Windows there are no prebuilt ARM64 binaries,
@@ -155,6 +176,25 @@ if(HAVE_GAME_ISO)
   endif()
 endif()
 
+# Headless EGL frontend: the real renderer, offscreen, writing frames as PNGs. Android
+# only, and deliberately not an APK -- it validates the GL ES renderer on a device over
+# adb before there is any VR frontend to run it in.
+if(ANDROID AND HAVE_GAME_ISO)
+  set(EGL_SOURCES ${CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/runtime/egl_main.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/png.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/gx/render_gl.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/gx/shadergen.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/gx/gl_load.cpp
+    ${GLAD_SOURCE})
+  add_executable(waverace_egl ${EGL_SOURCES})
+  target_include_directories(waverace_egl PRIVATE
+    ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR} ${GLAD_INCLUDE_DIR})
+  target_link_libraries(waverace_egl PRIVATE game_recomp EGL log)
+  target_compile_options(waverace_egl PRIVATE ${WR_RUNTIME_WARNINGS})
+  target_compile_definitions(waverace_egl PRIVATE WR_DEFAULT_ISO="${GAME_ISO}" ${WR_GL_DEFS})
+endif()
+
 # Compile-only target: available even without a disc image, so the runtime and any
 # port work can be checked on its own. With an image present `waverace` already
 # compiles these sources, so keep it out of the default build rather than doubling
@@ -168,7 +208,7 @@ if(NOT WR_BENCH_ONLY)
   target_include_directories(runtime_check PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR} ${GLAD_INCLUDE_DIR})
   target_link_libraries(runtime_check PRIVATE ${WR_SDL_TARGET})
   target_compile_options(runtime_check PRIVATE ${WR_RUNTIME_WARNINGS})
-  target_compile_definitions(runtime_check PRIVATE WR_DEFAULT_ISO="${GAME_ISO}")
+  target_compile_definitions(runtime_check PRIVATE WR_DEFAULT_ISO="${GAME_ISO}" ${WR_GL_DEFS})
 endif()
 
 if(HAVE_GAME_ISO AND NOT WR_BENCH_ONLY)
@@ -176,5 +216,5 @@ if(HAVE_GAME_ISO AND NOT WR_BENCH_ONLY)
   target_include_directories(waverace PRIVATE ${GLAD_INCLUDE_DIR})
   target_link_libraries(waverace PRIVATE game_recomp ${WR_SDL_TARGET} ${WR_PLATFORM_LIBS})
   target_compile_options(waverace PRIVATE ${WR_RUNTIME_WARNINGS})
-  target_compile_definitions(waverace PRIVATE WR_DEFAULT_ISO="${GAME_ISO}")
+  target_compile_definitions(waverace PRIVATE WR_DEFAULT_ISO="${GAME_ISO}" ${WR_GL_DEFS})
 endif()

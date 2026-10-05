@@ -83,12 +83,21 @@ static std::string swizzle(const ShaderKey& k, uint32_t table) {
 static const char* kCompare[8] = {"false", "(%s < %s)", "(%s == %s)", "(%s <= %s)", "(%s > %s)", "(%s != %s)", "(%s >= %s)", "true"};
 
 std::string gen_vertex_shader() {
-    return WR_GLSL_VERSION R"(
+    std::string s = WR_GLSL_VERSION;
+    s += R"(
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec4 a_col0;
 layout(location = 2) in vec4 a_col1;
-layout(location = 3) in vec3 a_tex[8];
-uniform mat4 u_proj;
+)";
+    // GLSL ES does not allow arrays of vertex inputs ("cannot declare arrays of this
+    // qualifier"), though desktop GLSL does, so declare the eight texture coordinate
+    // sets individually. Locations 3..10 match the attribute setup in render_init().
+    char buf[96];
+    for (int i = 0; i < 8; i++) {
+        snprintf(buf, sizeof(buf), "layout(location = %d) in vec3 a_tex%d;\n", 3 + i, i);
+        s += buf;
+    }
+    s += R"(uniform mat4 u_proj;
 uniform vec4 u_vp_a;   // x: 2*(offx-342)/w - 1, y: 2*sx/w, z: 2*(offy-342)/h - 1, w: 2*sy/h
 uniform vec4 u_vp_b;   // x: 2*offz/16777215 - 1, y: 2*sz/16777215
 uniform float u_point_size;
@@ -104,17 +113,27 @@ void main() {
     gl_PointSize = u_point_size;
     v_col0 = a_col0;
     v_col1 = a_col1;
-    for (int i = 0; i < 8; i++) v_tex[i] = a_tex[i];
-}
 )";
+    for (int i = 0; i < 8; i++) {
+        snprintf(buf, sizeof(buf), "    v_tex[%d] = a_tex%d;\n", i, i);
+        s += buf;
+    }
+    s += "}\n";
+    return s;
 }
 
 std::string gen_pixel_shader(const ShaderKey& k) {
     std::string s;
     char buf[1024];
+    // The zero-argument case appends directly: handing a runtime format string to
+    // snprintf with no arguments trips -Wformat-security, and it is wasted work anyway.
     auto W = [&](const char* fmt, auto... args) {
-        snprintf(buf, sizeof(buf), fmt, args...);
-        s += buf;
+        if constexpr (sizeof...(args) == 0) {
+            s += fmt;
+        } else {
+            snprintf(buf, sizeof(buf), fmt, args...);
+            s += buf;
+        }
     };
     uint32_t nstages = ((k.genmode >> 10) & 15) + 1;
     uint32_t nind = (k.genmode >> 16) & 7;
