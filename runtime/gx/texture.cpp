@@ -228,6 +228,17 @@ static std::unordered_map<Key, CacheEntry, KeyHash> g_cache;
 static std::unordered_map<uint32_t, CacheEntry> g_efb_copies;  // by address
 
 uint32_t texture_register_efb_copy(uint32_t addr, uint32_t w, uint32_t h, uint32_t fmt) {
+    addr &= 0x03FFFFFF;
+    // A copy to the same place with the same geometry is the same target being redrawn,
+    // so it keeps its id and the renderer re-renders into the texture it already has.
+    // Minting a fresh id every frame instead stranded one GL texture per copy per frame
+    // -- around 2.5 MB a frame here, since EFB textures are exempt from eviction.
+    auto it = g_efb_copies.find(addr);
+    if (it != g_efb_copies.end() && it->second.efb_w == w && it->second.efb_h == h &&
+        it->second.efb_fmt == fmt) {
+        it->second.last_frame = g_frame_counter;
+        return it->second.tex->id;
+    }
     CacheEntry e{};
     e.tex = std::make_shared<TexData>();
     e.tex->id = g_next_tex_id++;
@@ -236,7 +247,7 @@ uint32_t texture_register_efb_copy(uint32_t addr, uint32_t w, uint32_t h, uint32
     e.efb = true;
     e.efb_w = w; e.efb_h = h; e.efb_fmt = fmt;
     e.last_frame = g_frame_counter;
-    g_efb_copies[addr & 0x03FFFFFF] = e;
+    g_efb_copies[addr] = e;
     return e.tex->id;
 }
 
@@ -302,6 +313,13 @@ void texture_evict() {
     if ((g_frame_counter & 63) != 0) return;
     for (auto it = g_cache.begin(); it != g_cache.end();) {
         if (g_frame_counter - it->second.last_frame > kIdleFrames) it = g_cache.erase(it);
+        else ++it;
+    }
+    // EFB copies too. Most are a fixed set of targets redrawn every frame, but the spray
+    // copies out around fifty 32x32 and 64x64 sprites a frame to addresses that rotate,
+    // so at speed this map grows without bound and takes a GL texture with each entry.
+    for (auto it = g_efb_copies.begin(); it != g_efb_copies.end();) {
+        if (g_frame_counter - it->second.last_frame > kIdleFrames) it = g_efb_copies.erase(it);
         else ++it;
     }
 }

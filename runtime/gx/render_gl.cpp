@@ -505,12 +505,23 @@ static void do_efb_copy(const EfbCopyCmd& c) {
     glDisable(GL_CULL_FACE);
     glColorMask(1, 1, 1, 1);
     if (!c.to_xfb && c.tex_id) {
+        // The same target redrawn each frame keeps its id, so reuse the texture it
+        // already has rather than allocating and freeing one per copy per frame.
         GlTex t{};
-        glGenTextures(1, &t.tex);
-        t.w = c.dst_w; t.h = c.dst_h; t.efb = true;
-        glBindTexture(GL_TEXTURE_2D, t.tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, c.dst_w * g_scale, c.dst_h * g_scale, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+        auto old = g_textures.find(c.tex_id);
+        const bool reuse = old != g_textures.end() && old->second.efb &&
+                           old->second.w == c.dst_w && old->second.h == c.dst_h;
+        if (reuse) {
+            t = old->second;
+            glBindTexture(GL_TEXTURE_2D, t.tex);
+        } else {
+            glGenTextures(1, &t.tex);
+            t.w = c.dst_w; t.h = c.dst_h; t.efb = true;
+            glBindTexture(GL_TEXTURE_2D, t.tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, c.dst_w * g_scale, c.dst_h * g_scale, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+        }
+        t.last_used = g_render_frame;
         glBindFramebuffer(GL_FRAMEBUFFER, g_copy_fbo);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.tex, 0);
         glViewport(0, 0, c.dst_w * g_scale, c.dst_h * g_scale);
@@ -530,8 +541,7 @@ static void do_efb_copy(const EfbCopyCmd& c) {
         glUniform1i(g_copy_u_mode, (int)c.format | (c.depth ? 32 : 0));
         glBindVertexArray(g_copy_vao);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        auto old = g_textures.find(c.tex_id);
-        if (old != g_textures.end()) glDeleteTextures(1, &old->second.tex);
+        if (!reuse && old != g_textures.end()) glDeleteTextures(1, &old->second.tex);
         g_textures[c.tex_id] = t;
         glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
         glBindVertexArray(g_vao);
@@ -666,18 +676,29 @@ static bool is_fullscreen_copy(const EfbCopyCmd& c, uint32_t dw, uint32_t dh) {
     return !c.to_xfb && c.dst_w >= dw && c.dst_h >= dh;
 }
 
-// Where the main scene starts in a batch. Each off-screen pass ends at the copy that
-// reads it out, so the main scene follows the last such copy. Full-frame copies don't
-// count: they come after the scene, not before it.
-static size_t main_scene_start(const Batch& b) {
+// Marks the commands an eye must not replay.
+//
+// Copies delimit passes, and a pass ending in a partial copy is drawing into an
+// off-screen target -- a reflection, the sprite sheet the spray uses. Its draws are in
+// that target's space, so re-aiming them at an eye is meaningless; the first eye has
+// already produced all of them against the EFB. Everything else -- the main scene, the
+// composite over it, the HUD -- is replayed.
+//
+// These passes are not all up front. The spray sheet is rendered *after* the main scene
+// once the racer is fast enough to throw spray, so taking the scene to be whatever
+// follows the last partial copy drops the entire scene the moment you get up to speed,
+// leaving the squares the spray is composited from on black.
+static void mark_offscreen_passes(const Batch& b, std::vector<uint8_t>& skip) {
     uint32_t dw, dh;
     display_size(b, dw, dh);
-    size_t start = 0;
-    for (size_t i = 0; i < b.cmds.size(); i++)
-        if (b.cmds[i].type == CmdType::EfbCopy && !b.cmds[i].copy.to_xfb &&
-            !is_fullscreen_copy(b.cmds[i].copy, dw, dh))
-            start = i + 1;
-    return start;
+    skip.assign(b.cmds.size(), 0);
+    size_t pass_start = 0;
+    for (size_t i = 0; i < b.cmds.size(); i++) {
+        if (b.cmds[i].type != CmdType::EfbCopy) continue;
+        if (!b.cmds[i].copy.to_xfb && !is_fullscreen_copy(b.cmds[i].copy, dw, dh))
+            for (size_t j = pass_start; j <= i; j++) skip[j] = 1;
+        pass_start = i + 1;
+    }
 }
 
 // Texture ids holding a copy of a whole frame.
@@ -728,7 +749,8 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
             if (!known) g_fullscreen_tex.push_back(c.copy.tex_id);
         }
     }
-    const size_t main_start = main_scene_start(b);
+    static std::vector<uint8_t> skip;
+    mark_offscreen_passes(b, skip);
     // WR_EYELOG=1 reports how a frame was split, which is the only way to tell a scene
     // rendered at the wrong field of view from a composite quad standing in for one.
     static const bool eyelog = getenv("WR_EYELOG") != nullptr;
@@ -736,13 +758,19 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     if (eyelog && do_copies) {
         uint32_t dw, dh;
         display_size(b, dw, dh);
-        fprintf(stderr, "[eye] f%u cmds=%zu main_start=%zu display=%ux%u\n", g_render_frame,
-                b.cmds.size(), main_start, dw, dh);
-        for (auto& c : b.cmds)
-            if (c.type == CmdType::EfbCopy)
-                fprintf(stderr, "[eye]   copy %ux%u xfb=%d tex=%u full=%d\n", c.copy.dst_w,
-                        c.copy.dst_h, (int)c.copy.to_xfb, c.copy.tex_id,
-                        (int)is_fullscreen_copy(c.copy, dw, dh));
+        fprintf(stderr, "[eye] f%u cmds=%zu display=%ux%u\n", g_render_frame, b.cmds.size(),
+                dw, dh);
+        size_t pass_start = 0;
+        for (size_t i = 0; i < b.cmds.size(); i++) {
+            if (b.cmds[i].type != CmdType::EfbCopy) continue;
+            int nd = 0;
+            for (size_t j = pass_start; j < i; j++) nd += b.cmds[j].type == CmdType::Draw;
+            const EfbCopyCmd& cc = b.cmds[i].copy;
+            fprintf(stderr, "[eye]   copy %ux%u xfb=%d tex=%u full=%d draws=%d %s\n", cc.dst_w,
+                    cc.dst_h, (int)cc.to_xfb, cc.tex_id, (int)is_fullscreen_copy(cc, dw, dh),
+                    nd, skip[i] ? "SKIP" : "replay");
+            pass_start = i + 1;
+        }
     }
 
     g_vr_active = true;
@@ -759,13 +787,14 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
 
     uint32_t cur_state = UINT32_MAX;
     int cur_prim = -1;
-    for (size_t i = main_start; i < b.cmds.size(); i++) {
+    for (size_t i = 0; i < b.cmds.size(); i++) {
         Cmd& c = b.cmds[i];
         // Copies and the present are the first eye's business, done against the EFB.
         if (c.type != CmdType::Draw) {
             cur_state = UINT32_MAX;
             continue;
         }
+        if (skip[i]) { n_skipped++; continue; }
         if (is_composite_draw(b.states[c.state])) { n_skipped++; continue; }
         n_drawn++;
         if (c.state != cur_state || c.prim != cur_prim) {
@@ -787,12 +816,18 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     return true;
 }
 
-// Release GL textures the game has stopped using. EFB copies are replaced explicitly
-// by do_efb_copy and are left alone here.
+// Release GL textures the game has stopped using.
+//
+// EFB copies are included. A copy to an address it already holds reuses its texture, so
+// the fixed targets never come through here, but the spray copies to rotating addresses
+// and would otherwise strand a texture per sprite per frame. They are given a longer
+// idle period than the guest-side cache so that an address is always forgotten there
+// first: a draw can then never reach an id whose texture has already gone.
 static void evict_textures() {
     if ((g_render_frame & 63) != 0) return;
     for (auto it = g_textures.begin(); it != g_textures.end();) {
-        if (!it->second.efb && g_render_frame - it->second.last_used > kTexIdleFrames) {
+        const uint32_t idle = it->second.efb ? 4 * kTexIdleFrames : kTexIdleFrames;
+        if (g_render_frame - it->second.last_used > idle) {
             glDeleteTextures(1, &it->second.tex);
             it = g_textures.erase(it);
         } else {

@@ -319,11 +319,16 @@ Two things make this work:
 - **The first eye runs the whole frame flat into the EFB first**, scanout aside. An eye pass never
   draws into the EFB, so without this every render-to-texture copy reads an empty one. That is
   what left the ski untextured and put a black square on the water.
-- **The main scene is what follows the last *partial* copy.** The copy that takes the whole
-  displayed frame comes after the scene, not before it, so it must not move the boundary. The
-  frame is 640×480 while the EFB is 640×528, so "whole frame" has to be measured against the
-  display copy in the same batch; measuring it against the EFB matches nothing, puts the boundary
-  past the entire scene and leaves the eye holding the ~50 HUD draws and nothing else.
+- **Every pass that ends in a *partial* copy is skipped**, wherever it sits. The copy that takes
+  the whole displayed frame is not one of those: it comes after the scene, not before it. "Whole
+  frame" has to be measured against the display copy in the same batch, since the frame is 640×480
+  while the EFB is 640×528 — measuring against the EFB matches nothing, and then every copy looks
+  like an off-screen pass.
+
+  The off-screen passes are not all up front. Once the racer is fast enough to throw spray the
+  game copies out around fifty 32×32 and 64×64 sprites *after* the main scene, so a rule phrased
+  as "the scene is whatever follows the last partial copy" drops the whole scene the moment you
+  get up to speed and leaves those sprites hanging on black. Hence per-pass, not a boundary.
 
 Draws that sample a whole-frame copy are screen-space, so in an eye they are flat billboards and
 leave a faint rectangular seam. They are still drawn: in this game the water surface is one of
@@ -394,6 +399,15 @@ fixed the frame rate as a side effect, and the race is playable in the headset.
 
 Two lessons for anyone measuring this again: check resident memory before trusting a frame rate,
 and prefer measuring in the app you actually ship over a headless harness.
+
+A second leak had the same shape and the same symptom — a grey compositor and an unresponsive
+headset part-way into a race. Every EFB copy was given a fresh texture id, so the renderer kept
+one GL texture per copy per frame forever. A copy to an address it already holds now keeps its id
+and re-renders into the texture it has. That is not enough on its own: at speed the spray copies
+out around fifty sprites a frame to addresses that rotate, so both caches evict EFB entries too,
+the renderer waiting four times as long as the guest so an address is always forgotten guest-side
+first and a draw can never reach an id whose texture has gone. Resident memory over two and a
+half minutes of racing at speed now oscillates between 145 and 274 MB with no upward trend.
 
 The draw-call shape is still worth knowing — ~830 draws per frame during a race, averaging ~106
 vertices each — and deduplicating `PixelState` by content would likely still help. But it is an
