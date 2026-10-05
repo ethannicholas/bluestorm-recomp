@@ -154,6 +154,26 @@ static VrConfig g_vrcfg;
 // ---------------------------------------------------------------------------
 // Matrices, column-major for glUniformMatrix4fv with transpose = GL_FALSE.
 // ---------------------------------------------------------------------------
+// Wait until the GPU has actually finished writing the swapchain image, before handing
+// it back to the compositor.
+//
+// glFlush only guarantees the commands were issued, so the compositor could sample an
+// image still being written and show a frame with part of it missing along a tile
+// boundary. That is what the character-select flicker was: during the fade -- the most
+// expensive frame on that screen, the whole UI blended over the background -- the UI was
+// missing from the left half while the background behind it was complete. It never
+// appeared in the headless harness because there is no compositor there to race.
+static void finish_writes() {
+    GLsync s = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (!s) {
+        glFinish();
+        return;
+    }
+    // Flush on wait, and cap it: a lost fence must not wedge the frame loop.
+    glClientWaitSync(s, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull);  // 100 ms
+    glDeleteSync(s);
+}
+
 static void mat_proj(const XrFovf& fov, float nearZ, float farZ, float* m) {
     const float l = tanf(fov.angleLeft), r = tanf(fov.angleRight);
     const float u = tanf(fov.angleUp), d = tanf(fov.angleDown);
@@ -679,7 +699,7 @@ void android_main(android_app* app) {
                         mat_view(views[e].pose, g_vrcfg, V);
                         gx::render_set_vr_eye(P, V, g_vrcfg.hud_scale);
                         if (b) gx::render_execute_eye(*b, eye.fbos[ei], eye.w, eye.h, e == 0);
-                        glFlush();
+                        finish_writes();
                     }
                     XrSwapchainImageReleaseInfo eri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                     xrReleaseSwapchainImage(eye.handle, &eri);
@@ -726,11 +746,7 @@ void android_main(android_app* app) {
                         LOGI("[t] disp=%llu img=%u %s present=%u batch=%d",
                              (unsigned long long)disp_frames, idx, drew ? "drew" : "rept",
                              gx::present_count(), batch ? 1 : 0);
-                    // Make sure the blit has actually been issued before handing the
-                    // image back. Without this the compositor can sample an image whose
-                    // writes are still queued and show whatever it held previously --
-                    // with a 3-image swapchain that reads as a hard strobe.
-                    glFlush();
+                    finish_writes();
                     have_content = true;
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
