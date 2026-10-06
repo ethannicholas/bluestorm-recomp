@@ -68,8 +68,9 @@ static void eye_init() {
 // of the harness is to show what the headset shows.
 static const float kHudDist = 400.0f;
 static const float kHudScale = 0.5f;
-static const float kHudHeight = 130.0f;
-static const float kHudPitch = -23.2f * 3.14159265f / 180.0f;
+static const float kHudHeight = -36.0f;
+static const float kHudPitch = 0.0f;
+static const float kWorldPitch = 23.2f * 3.14159265f / 180.0f;
 
 // Column-major, matching glUniformMatrix4fv with transpose = GL_FALSE. The game's view
 // space is -Z forward, so this is an ordinary GL perspective in game units.
@@ -239,7 +240,10 @@ int main(int argc, char** argv) {
     fflush(stdout);
 
     gx::render_init(scale);
-    if (g_eye_mode) eye_init();
+    if (g_eye_mode) {
+        eye_init();
+        gx::render_set_world_pitch(kWorldPitch);
+    }
     gx::render_set_window_size(640 * scale, 480 * scale);
 
     uint32_t entry = boot_load(iso.c_str());

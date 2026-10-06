@@ -28,6 +28,11 @@ void render_set_vr_eye(const float proj[16], const float view[16], const float h
 void render_hud_frame(float dist, float tan_half_fovy, float scale, float height,
                       float pitch_rad, float out[16]);
 
+// Rotate the world back by the game's chase-camera pitch, so the sea comes out level with
+// the room instead of sloping. Applies to world geometry only: the HUD frame is placed in
+// the headset's own space and stays where it is put. 0 renders what the game draws.
+void render_set_world_pitch(float pitch_rad);
+
 // Draw one eye's view of a batch into `fbo`. Both eyes share the vertex buffer, the
 // CPU-side transform and any render-to-texture results, so only uniforms and draw
 // calls are repeated. Pass do_copies for the first eye only.

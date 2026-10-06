@@ -57,6 +57,10 @@ static int g_scale = 2;
 // game's camera -- see render_hud_frame.
 static bool g_vr_active = false;
 static float g_vr_proj[16], g_vr_view[16];
+// The eye's view with the world's pitch taken out, for world geometry. The HUD frame uses
+// g_vr_view untouched -- it is placed in the headset's space, not the game's.
+static float g_vr_view_world[16];
+static float g_world_pitch = 0.0f;
 static float g_vr_hud[16];
 static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
 // Copy of the EFB as it looked at the last present. The display copy is immediately
@@ -382,7 +386,7 @@ static void apply_state(const PixelState& st, int prim) {
                     p[0], p[2]);
         }
         glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, game_proj ? P : g_vr_proj);
-        glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, g_vr_view);
+        glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, g_vr_view_world);
         glUniform1i(pr.u_vr, 1);
     } else if (g_vr_active) {
         // A HUD element in an eye. The game's own projection already puts its frame in
@@ -690,10 +694,26 @@ uint32_t present_count() { return g_present_count; }
 
 
 // Executes a batch. Returns true if it contained a Present.
+void render_set_world_pitch(float pitch_rad) { g_world_pitch = pitch_rad; }
+
 void render_set_vr_eye(const float proj[16], const float view[16], const float hud[16]) {
     memcpy(g_vr_proj, proj, sizeof(g_vr_proj));
     memcpy(g_vr_view, view, sizeof(g_vr_view));
     memcpy(g_vr_hud, hud, sizeof(g_vr_hud));
+    if (g_world_pitch == 0.0f) {
+        memcpy(g_vr_view_world, view, sizeof(g_vr_view_world));
+        return;
+    }
+    // The camera looks down by `pitch`, so the world's up arrives at (0, cos, sin) in the
+    // vertices' own frame. Rotating about X by -pitch takes it back to (0, 1, 0), which is
+    // the headset's up, and the sea with it.
+    const float c = cosf(g_world_pitch), s = sinf(g_world_pitch);
+    float R[16] = {0};
+    R[0] = 1.0f;
+    R[5] = c;  R[6] = -s;
+    R[9] = s;  R[10] = c;
+    R[15] = 1.0f;
+    mat4_mul(view, R, g_vr_view_world);
 }
 
 // The frame the HUD is painted on in stereo: a quad `dist` game units ahead of the game's

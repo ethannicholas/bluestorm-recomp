@@ -40,18 +40,30 @@ struct VrConfig {
     //   pitch       tilt about the frame's horizontal axis. 0 stands the frame vertical
     //               in the *room*; negative leans its top towards the viewer.
     //
-    // The pitch default is not a taste: the game's chase camera looks down 23.2 degrees,
-    // and vertices reach the renderer already in its view space, so the whole rendered
-    // world is tilted by that much against real gravity. A frame built square to the
-    // reference space is genuinely vertical in the room and reads as leaning back against
-    // that world, which is what wearing it showed. -23.2 makes it parallel to the game
-    // world's vertical instead, which is the one that counts when immersed. The height
-    // follows from the same angle: the world horizon sits 4*tan(23.2) = 1.7 m above the
-    // axis at 4 m, so 1.3 m puts the HUD a little below the horizon.
+    // These go with world_pitch_deg below, which levels the sea. With the world level,
+    // the game world's vertical is the room's, so the frame wants no tilt of its own, and
+    // the forward axis is the horizon, so a small negative height hangs the HUD just under
+    // it -- 5.2 degrees under, which is where it was tuned to sit while wearing it.
+    //
+    // Turning the levelling off (world_pitch_deg 0) puts the tilt back in the world, and
+    // the HUD has to lean to match it again: hud_pitch_deg -23.2 and hud_height_m 1.3.
     float hud_scale = 0.5f;
     float hud_distance_m = 4.0f;
-    float hud_height_m = 1.3f;
-    float hud_pitch_deg = -23.2f;
+    float hud_height_m = -0.36f;
+    float hud_pitch_deg = 0.0f;
+
+    // Degrees of the game's chase-camera pitch to take back out of the world in stereo.
+    // Vertices arrive in the camera's own frame and are handed to the headset as though
+    // that frame were gravity-aligned, so the sea is rendered as a slope of this angle and
+    // the horizon rides high. Rotating the world back by it puts the sea level with the
+    // room and leaves the viewer's own neck to supply the downward look -- at the cost of
+    // the ski sitting well below the forward axis, since the camera was aimed down at it.
+    //
+    // 0 renders what the game draws, tilt and all. Whether the honest horizon or the
+    // familiar framing is the better trade is a question for the headset, which is why
+    // this is a knob rather than a constant. Note it moves the world and not the HUD, so
+    // levelling the world wants hud_pitch_deg back at 0.
+    float world_pitch_deg = 23.2f;
 
     // Trace the theater path one display frame at a time (adb logcat -s waverace).
     bool log_frames = false;

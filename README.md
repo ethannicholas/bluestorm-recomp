@@ -54,23 +54,14 @@ Known limitations:
 In rough priority order. Everything here reproduces; where there is a lead it is written down so
 the next attempt does not start from nothing.
 
-1. **The rendered world is 23.2 degrees off real gravity.** The game's chase camera looks down by
-   that much and its view space is handed to the renderer as though it were the headset's
-   gravity-aligned reference space, so in stereo the sea is a 23-degree slope and the horizon rides
-   high. The HUD is dealt with — it is tilted to match (see
-   [Where the HUD goes](#where-the-hud-goes)) — but the world itself is not, and a tilted ocean is
-   the sort of thing that is felt rather than seen. Taking the camera's pitch out of the world and
-   letting the viewer's own neck supply it would put the sea level, let the HUD go back to square
-   with the room, and mean looking down at the ski the way one would in life. It would also change
-   how the whole thing feels to play, which is why it has not been done on a hunch.
-2. **World scale.** The racers look too small; `units_per_metre` in `vr.txt` is a guess.
-3. **Spray and rain that hit the camera render as squares** with pieces of scene in them. These are
+1. **World scale.** The racers look too small; `units_per_metre` in `vr.txt` is a guess.
+2. **Spray and rain that hit the camera render as squares** with pieces of scene in them. These are
    the screen-space grabs the spray is composited from, replayed as billboards in an eye. Same
    class as the water-surface billboard, which is kept because dropping it loses the ocean.
-4. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
+3. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
    bought about 15%; the next candidates are deduplicating `PixelState` by content and the triple
    scene render the stereo path does (one flat into the EFB, then one per eye).
-5. **No audio on Android.** `audio_stub.cpp` discards DSP output; the mixing in `audio.cpp` is
+4. **No audio on Android.** `audio_stub.cpp` discards DSP output; the mixing in `audio.cpp` is
    portable and only device output is SDL-bound. AAudio or Oboe would do it.
 
 ## Supported version
@@ -435,24 +426,13 @@ corner to corner. Four `vr.txt` keys place it: `hud_distance_m` and `hud_scale` 
 stands and how much of the field of view it fills, `hud_height_m` and `hud_pitch_deg` for how high
 its centre sits off the forward axis and how far its top leans.
 
-**The frame is not square to the room, and should not be.** The game's chase camera looks down
-**23.2 degrees**, and vertices reach the renderer already in its view space, so the whole rendered
-world is tilted by that much against real gravity — the sea included. A frame built square to the
-reference space is genuinely vertical in the room, and against that world it reads as leaning back,
-which is exactly what wearing it showed. `hud_pitch_deg -23.2` makes it parallel to the game
-world's vertical instead, which is the vertical that counts when immersed. The height comes from
-the same angle: the world horizon sits `4*tan(23.2) = 1.7 m` above the forward axis at 4 m, so
-`hud_height_m 1.3` puts the HUD a little below the horizon.
+The frame is square to the room, with `hud_pitch_deg` at 0, and that is only right because the sea
+is levelled first — see [Levelling the sea](#levelling-the-sea). Before it was, a frame square to
+the room read as leaning back against a world that was tilted, and it had to be leaned 23.2 degrees
+to look upright. `hud_height_m -0.36` hangs it 5.2 degrees under the horizon, which is where it was
+tuned to sit while wearing it.
 
-That 23.2 is measured, not fitted. GX position matrices are modelview, so for any scenery whose
-model is unrotated the matrix *is* the view matrix, and the dot of its second row with world up is
-`cos(pitch)` whatever the camera's yaw. Across a `WR_MTXLOG` frame the dominant rotation — 4800 of
-13274 draws in one frame, 4218 of 10942 in another taken a thousand frames later — gives
-**23.20°** and **23.27°**. Eyeballing it in the headset landed on 23, which is how the two were
-reconciled. Beware the horizon as a shortcut: on a course ringed by land the visible sea/sky line
-is the far shoreline, well below the true horizon, and reading it that way suggests about 7°.
-
-That axis is eye level only if the runtime fixed its `LOCAL` space while the headset was being
+The forward axis is eye level only if the runtime fixed its `LOCAL` space while the headset was being
 worn. Fix it with the headset on a desk — easy to do on a device that is usually driven over adb —
 and the frame hangs wherever the desk was, with nothing in its own geometry wrong. `log_frames 1`
 prints the head's height and pitch alongside the frame's placement once a second, which is the way
@@ -506,6 +486,40 @@ frame's own layout scaled by `hud_scale`. The three numbers between them say the
 game's layout faithfully, sits where the geometry says it should, and is anchored in the world
 rather than to the head. Whether four metres is a comfortable place to read it from is still a
 question only the headset can answer.
+
+#### Levelling the sea
+
+The game's chase camera looks down **23.2 degrees**, and vertices reach the renderer already in its
+view space, which is handed to the headset as though it were gravity-aligned. So the sea was
+rendered as a 23-degree slope with the horizon riding high, and everything square to the room
+leaned against it. `world_pitch_deg` rotates the world back by that angle before the eye transform,
+which puts the sea level with the room. It applies to world geometry only; the HUD frame is placed
+in the headset's own space and stays where it is put.
+
+The cost is that the ski ends up about 40 degrees below the forward axis, because the camera was
+aimed down at it and that aim is what has been taken out — the viewer's own neck supplies it now,
+which is what one does on a jet ski. It is a knob rather than a constant because that trade is a
+matter for the headset: 0 renders the tilt the game draws, and intermediate values split it.
+
+That 23.2 is measured, not fitted. GX position matrices are modelview, so for any scenery whose
+model is unrotated the matrix *is* the view matrix, and the dot of its second row with world up is
+`cos(pitch)` whatever the camera's yaw. Across a `WR_MTXLOG` frame the dominant rotation — 4800 of
+13274 draws in one frame, 4218 of 10942 in another a thousand frames later — gives **23.20°** and
+**23.27°**. The second cluster sits at exactly 180° minus that, which is the reflection pass:
+mirroring about the water plane negates the up component and takes the angle to its supplement, so
+the axis being measured against really is the water's normal.
+
+Two traps on the way, both paid for. The horizon is not a shortcut: on a course ringed by land the
+visible sea/sky line is the far shoreline, well below the true horizon, and reading it that way
+suggests about 7 degrees. And the same frame number in two runs is two different moments, since the
+timebase is wall-clock, so a feature cannot be compared across runs that way — the countdown rig
+can, being pinned in view space, and it put the flat and eye paths within a quarter degree of each
+other.
+
+Worth knowing that it was argued down from the other direction first. A 23-degree *pitch* of a
+seascape does not announce itself the way a roll would; it reads as a camera angled at the water,
+which is what the game looks like on a television. What gave it away was the HUD needing exactly
+23.2 degrees of lean to look upright — a panel aligned to the world rather than to the room.
 
 #### Attributing part of the image to the draws that made it
 
@@ -608,8 +622,9 @@ near_m 0.1               # near/far planes in metres; too wide a ratio causes z-
 far_m 2000
 hud_scale 0.5            # how much of the field of view the HUD's frame occupies
 hud_distance_m 4         # how far in front of the game's camera that frame stands, in metres
-hud_height_m 1.3         # how far above the forward axis the frame's centre sits
-hud_pitch_deg -23.2      # frame tilt; -23.2 is parallel to the game world's vertical
+hud_height_m -0.36       # how far above the forward axis the frame's centre sits
+hud_pitch_deg 0          # frame tilt; 0 is square to the room, which a levelled sea wants
+world_pitch_deg 23.2     # degrees of chase-camera pitch taken back out of the world; 0 keeps it
 start_in_stereo 0          # start in stereo rather than theater
 ```
 

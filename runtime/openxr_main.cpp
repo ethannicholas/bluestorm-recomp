@@ -552,6 +552,7 @@ void android_main(android_app* app) {
     const std::string dir = app->activity->externalDataPath ? app->activity->externalDataPath : "";
     const std::string iso = dir + "/game.iso";
     g_vrcfg = vr_config_load(dir);
+    gx::render_set_world_pitch(g_vrcfg.world_pitch_deg * 3.14159265f / 180.0f);
     static std::string dump_dir;
     if (g_vrcfg.dump_every > 0) {
         dump_dir = dir + "/frames";
