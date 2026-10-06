@@ -9,23 +9,11 @@ void render_set_window_size(int w, int h);
 // swapchain image. 0 restores the default.
 void render_set_output_fbo(unsigned fbo);
 
-// Re-blit the most recent frame to the current output. A VR compositor needs an image
-// every display frame, far more often than this game produces one. False if nothing
-// has been presented yet.
-bool render_repaint();
 bool render_execute(Batch& b);
 
 // Frames presented so far, for tracing what a display frame is actually showing.
 uint32_t present_count();
 
-// Stamp a row of same-coloured cells across the top of the output, the colour derived
-// from the frame number. In a screenshot they must all match; cells that disagree mean
-// the displayed image was assembled from more than one frame.
-void render_set_frame_marker(bool on);
-
-// Also dump what reaches the output after each blit, repaints included. In the headset
-// most display frames are repaints, and an EFB dump cannot see them at all.
-void render_set_dump_output(bool on);
 
 // ---- VR ----
 // Set the eye projection and the eye's transform relative to the game's camera, plus

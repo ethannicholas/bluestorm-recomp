@@ -35,8 +35,6 @@ struct VrConfig {
     // Trace the theater path one display frame at a time (adb logcat -s waverace).
     bool log_frames = false;
 
-    // Stamp a frame-number colour across the top of the image; see render_gl.h.
-    bool frame_marker = false;
 
     // Write the EFB to <files>/frames every N presented frames. The headless harness can
     // already dump, but it is a different frontend: when the two disagree about the same
@@ -44,8 +42,6 @@ struct VrConfig {
     // have the app dump it. 0 is off.
     int dump_every = 0;
 
-    // Also dump the swapchain image after every blit, repaints included.
-    bool dump_output = false;
 
     // Start in stereo rather than theater, for testing.
     bool start_in_stereo = false;

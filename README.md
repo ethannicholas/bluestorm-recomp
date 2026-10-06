@@ -414,45 +414,30 @@ frame — "draws sampling the water copy" rather than "draws 256 to 273".
 
 #### Tracing what the compositor is shown
 
-`log_frames 1` in `vr.txt` logs the theater path one display frame at a time: which swapchain
-image was written and which game frame went into it — only frames the game produced touch the
-swapchain at all. The app runs on a headset nobody is wearing, so this can be captured without help:
-push a `wr_input.txt` script beside `vr.txt`, `am start` the activity, and read
-`adb logcat -s waverace`.
+`log_frames 1` in `vr.txt` logs the theater path one display frame at a time: which swapchain image
+was written and which game frame went into it — only frames the game produced touch the swapchain
+at all. `dump_every N` makes the app write its own EFB to `<files>/frames`, which is the only way to
+see what the app rendered rather than what a different frontend renders from the same code.
 
-`frame_marker 1` stamps sixteen same-coloured cells across the top of the image, the colour taken
-from the frame number. One blit writes every cell, so cells that disagree in a screenshot prove the
-displayed image was assembled from more than one frame.
+The app runs on a headset nobody is wearing, so both can be captured without help: push a
+`wr_input.txt` script beside `vr.txt`, `am start` the activity, and read `adb logcat -s waverace`.
 
-#### Finding a seam, and what it is not
+**Capturing can destroy what you are capturing.** The character-select tear was timing-sensitive: it
+reproduced reliably on a clean build and vanished under per-frame image dumping, which shifts the
+phase between a ~38 fps game and a 72 Hz compositor without moving the average frame rate enough to
+notice. Check whether a fault survives the instrument before trusting a clean capture, and prefer
+CPU-side logging to anything that reads back the GPU.
 
-`WR_SEAM=1` dumps only frames containing a full-height vertical edge in the interior, and prints
-every draw in that frame with its screen-space extent and scissor rect. A fault that shows for a
-few frames somewhere in a long session will not be caught by a fixed dump interval; this looks for
-the fault itself. It finds the transition-screen seam reliably — about 90 frames in a two-minute
-session, always at the same x.
+Two further cautions, both paid for. A detector answers the question it was given: a hunt for
+"a hard vertical edge" spent a long investigation on the game's own mode panel for the course
+flyover, which has a deliberately sharp edge, before anyone asked whether the edge belonged there —
+checking the other platform settled it in one run. And a claim that the fault was Quest-only was an
+assumption about the Mac that nobody had tested; when tested, the Mac rendered the same thing.
 
-**The edge it finds on the course flyover is not a fault.** It is the game's own mode panel: a
-translucent blue panel filling the left of the screen behind "EXHIBITION / WAVE HEIGHT 3ft", with a
-deliberately sharp right edge at x≈203. `WR_QUADPROBE` reports it identically on desktop GL and on
-GLES — same extent, same 64×64 texture, same blend register, `changed=99.8%`, mean delta 60 — and
-the dumped frames from the two platforms match. A long investigation went into it before anyone
-asked whether the edge was supposed to be there, which is the lesson worth keeping: the detector
-answers "is there a hard vertical edge", and a correct image can contain one.
-
-So `WR_SEAM` is a search tool, not an oracle. Check a hit against the other platform with
-`WR_QUADPROBE` before treating it as a defect.
-
-Two claims made during that investigation were wrong and are recorded so they are not repeated. The
-seam was said to be "not present after any draw", on the strength of a probe that an editing mistake
-had left unreachable — it never ran, and its silence was read as a result; it now announces itself
-when it arms. And the fault was described as Quest-only, which was an assumption about the Mac that
-nobody had tested; when tested, the Mac rendered the same thing.
-
-One thing this turned up but did not change: the scissor offset register reads 340, while the code
-treats the origin as the 342 that `GXSetScissorBoxOffset(0, 0)` implies. Reading the register
-shifts the whole picture two pixels right, and the constant is what has been checked against
-reference footage, so it stays — see `scissor_offset()`.
+One thing that investigation turned up but did not change: the scissor offset register reads 340,
+while the code treats the origin as the 342 that `GXSetScissorBoxOffset(0, 0)` implies. Reading the
+register shifts the whole picture two pixels right, and the constant is what has been checked
+against reference footage, so it stays — see `scissor_offset()`.
 
 ### Tuning VR (`vr.txt`)
 
