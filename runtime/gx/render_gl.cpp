@@ -63,6 +63,8 @@ static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
 // followed by an EFB clear, so repainting has to come from here, not the live EFB.
 static GLuint g_snap_fbo, g_snap_tex;
 static bool g_frame_marker = false;
+static bool g_dump_output = false;
+static void dump_output(const char* kind);
 
 // Where each draw of the current frame landed on screen, for WR_SEAM. Recorded as the
 // frame is executed and printed only if that frame turns out to contain a seam, so the
@@ -740,24 +742,62 @@ static void present(const EfbCopyCmd& c) {
     glBlitFramebuffer(0, 0, fw, fh, 0, 0, fw, fh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     blit_to_output(c, g_efb_color);
-    if (g_dump_dir && getenv("WR_DUMP_WINDOW") && g_dump_every && g_present_count % g_dump_every == 0) {
-        std::vector<uint8_t> px((size_t)g_win_w * g_win_h * 4), fl(px.size());
-        glReadPixels(0, 0, g_win_w, g_win_h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-        for (int y = 0; y < g_win_h; y++) memcpy(&fl[(size_t)y * g_win_w * 4], &px[(size_t)(g_win_h - 1 - y) * g_win_w * 4], (size_t)g_win_w * 4);
-        for (size_t i = 3; i < fl.size(); i += 4) fl[i] = 255;
-        char path[512];
-        snprintf(path, sizeof(path), "%s/window_%05u.png", g_dump_dir, g_present_count);
-        write_png(path, fl.data(), g_win_w, g_win_h);
-        fprintf(stderr, "[win] %dx%d glError=%x\n", g_win_w, g_win_h, glGetError());
+    dump_output("p");
+}
+
+// Reads back whatever blit_to_output just wrote -- in the headset, the swapchain image
+// the compositor will sample.
+//
+// This is the only view of a *repaint*: present() runs just for the frames the game
+// produced, and in the headset more than half of all display frames are repaints of the
+// previous one. A fault that lives in those frames leaves no trace in an EFB dump, so
+// "the EFB is clean" says nothing about them. `kind` distinguishes the two.
+static void dump_output(const char* kind) {
+    if (!g_dump_dir || !g_dump_output) return;
+    // Writing a 1024x768 PNG on every display frame at 72 Hz would cost more than the
+    // game does and shift the timing being observed, so this samples a few scanlines,
+    // looks for a vertical edge, and only writes an image when it finds one.
+    static const int kRows = 8;
+    static std::vector<uint8_t> rows;
+    rows.resize((size_t)g_win_w * kRows * 4);
+    for (int i = 0; i < kRows; i++)
+        glReadPixels(0, g_win_h * (i + 1) / (kRows + 1), g_win_w, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                     &rows[(size_t)i * g_win_w * 4]);
+    // Compare across a four-pixel baseline, not adjacent columns: the EFB is upscaled
+    // 640 -> 1024 with linear filtering, which spreads a one-pixel step over two columns
+    // and would hide it from an adjacent-pixel test.
+    int best_x = -1, best_n = 0;
+    for (int x = 16; x < g_win_w - 17; x++) {
+        int n = 0;
+        for (int i = 0; i < kRows; i++) {
+            const uint8_t* a = &rows[((size_t)i * g_win_w + x - 2) * 4];
+            const uint8_t* b = &rows[((size_t)i * g_win_w + x + 2) * 4];
+            if (abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2]) > 40) n++;
+        }
+        if (n > best_n) { best_n = n; best_x = x; }
     }
+    if (best_n < kRows - 2) return;
+    static uint32_t seq = 0;
+    std::vector<uint8_t> px((size_t)g_win_w * g_win_h * 4), fl(px.size());
+    glReadPixels(0, 0, g_win_w, g_win_h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    const size_t stride = (size_t)g_win_w * 4;
+    for (int y = 0; y < g_win_h; y++)
+        memcpy(&fl[y * stride], &px[(size_t)(g_win_h - 1 - y) * stride], stride);
+    for (size_t i = 3; i < fl.size(); i += 4) fl[i] = 255;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/out_%05u_%s%05u_x%d.png", g_dump_dir, seq++, kind,
+             g_present_count, best_x);
+    write_png(path, fl.data(), g_win_w, g_win_h);
 }
 void render_set_output_fbo(unsigned fbo) { g_output_fbo = (GLuint)fbo; }
 uint32_t present_count() { return g_present_count; }
 void render_set_frame_marker(bool on) { g_frame_marker = on; }
+void render_set_dump_output(bool on) { g_dump_output = on; }
 
 bool render_repaint() {
     if (!g_have_present) return false;
     blit_to_output(g_last_present, g_snap_tex);
+    dump_output("r");
     return true;
 }
 

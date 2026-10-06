@@ -44,6 +44,9 @@ struct VrConfig {
     // have the app dump it. 0 is off.
     int dump_every = 0;
 
+    // Also dump the swapchain image after every blit, repaints included.
+    bool dump_output = false;
+
     // Start in stereo rather than theater, for testing.
     bool start_in_stereo = false;
 };

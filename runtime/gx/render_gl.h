@@ -23,6 +23,10 @@ uint32_t present_count();
 // the displayed image was assembled from more than one frame.
 void render_set_frame_marker(bool on);
 
+// Also dump what reaches the output after each blit, repaints included. In the headset
+// most display frames are repaints, and an EFB dump cannot see them at all.
+void render_set_dump_output(bool on);
+
 // ---- VR ----
 // Set the eye projection and the eye's transform relative to the game's camera, plus
 // how much of the field of view the flat 2D elements are shrunk into.
