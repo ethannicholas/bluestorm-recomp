@@ -518,7 +518,32 @@ static std::string read_script(const std::string& dir) {
     return s;
 }
 
+// A NativeActivity can be destroyed and re-created inside one process, and that calls
+// android_main a second time. Nothing here survives it: the EGL context, the OpenXR
+// instance and session, the recompiled game and the threads it booted are all global and
+// are built exactly once. The second call then deadlocks on the first call's leftovers,
+// which is what a hung launch is -- from outside it shows up as two log_pump pipes and
+// two threads parked in its read(fd, buf, 511).
+//
+// Unwinding all of that on the way out is not on offer: the game is a recompiled
+// executable with no shutdown path, and the runtime around it was written to be set up
+// once. So the process goes instead and the next launch gets a clean one, which is what
+// the system expects by the time the activity is gone. The memory card is safe to leave
+// this way -- it is rewritten at the end of every command that dirties it, so there is
+// nothing buffered to lose.
+[[noreturn]] static void app_exit(const char* why) {
+    LOGI("exiting: %s", why);
+    fflush(nullptr);
+    plat_exit_now(0);
+}
+
 void android_main(android_app* app) {
+    // Belt and braces for the same thing: if the glue ever starts a second android_main
+    // while the first is still in its loop, the process still only runs one.
+    static bool entered;
+    if (entered) app_exit("android_main re-entered; this process has already run a game");
+    entered = true;
+
     pthread_t t;
     pthread_create(&t, nullptr, log_pump, nullptr);
     pthread_detach(t);
@@ -536,19 +561,19 @@ void android_main(android_app* app) {
         LOGI("dumping every %d frames to %s", g_vrcfg.dump_every, dump_dir.c_str());
     }
 
-    if (!egl_init()) return;
+    if (!egl_init()) app_exit("EGL init failed");
     int glver = gl_load_with(gl_proc);
-    if (glver < WR_GL_VERSION_MIN) { LOGE("GL ES %d.%d too old", glver / 10, glver % 10); return; }
+    if (glver < WR_GL_VERSION_MIN) { LOGE("GL ES %d.%d too old", glver / 10, glver % 10); app_exit("GL too old"); }
     LOGI("GL %s / %s", (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
 
-    if (!xr_create_instance(app)) { LOGE("no OpenXR instance"); return; }
-    if (!xr_create_session()) return;
-    if (!xr_create_swapchain()) return;
-    if (!xr_create_actions()) return;
+    if (!xr_create_instance(app)) { LOGE("no OpenXR instance"); app_exit("no OpenXR instance"); }
+    if (!xr_create_session()) app_exit("no OpenXR session");
+    if (!xr_create_swapchain()) app_exit("no swapchain");
+    if (!xr_create_actions()) app_exit("no actions");
 
     if (!plat_readable(iso.c_str())) {
         LOGE("no game image at %s", iso.c_str());
-        return;
+        app_exit("no game image");
     }
 
     mem_init();
@@ -577,7 +602,7 @@ void android_main(android_app* app) {
         android_poll_source* src;
         while (ALooper_pollOnce(0, nullptr, &events, (void**)&src) >= 0) {
             if (src) src->process(app, src);
-            if (app->destroyRequested) return;
+            if (app->destroyRequested) app_exit("activity destroyed");
         }
         poll_xr_events();
         if (!g_xr.running) { usleep(10000); continue; }
@@ -786,4 +811,5 @@ void android_main(android_app* app) {
             last_report = fs.predictedDisplayTime;
         }
     }
+    app_exit("activity destroyed");
 }

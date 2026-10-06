@@ -472,6 +472,34 @@ before searching for a mirror again: the game mirrors the camera about the water
 negates view-space X, so the reflection passes have a positive determinant, and it un-flips X
 when it samples them.
 
+#### One launch per process
+
+`android_main` is entered again if the activity is destroyed and re-created inside a live process,
+which happens whenever the app is backgrounded and relaunched rather than force-stopped. Nothing in
+this app survives that. The EGL context, the OpenXR instance and session, the recompiled game and
+the threads it booted are all global and are built exactly once, so the second call deadlocks on
+the first call's leftovers — a launch that hangs with a black screen until the app is killed.
+
+The process therefore exits whenever `android_main` would return, and the next launch gets a clean
+one. Unwinding instead is not on offer: the game is a recompiled executable with no shutdown path.
+The memory card does not mind, since it is rewritten at the end of every command that dirties it.
+
+Worth knowing because it was slow to spot from inside the headset, where it looks like a random
+launch failure: **the signature is in `/proc`**. The app is `android:debuggable`, so its own uid can
+read what the shell cannot:
+
+```sh
+PID=$(adb shell pidof com.example.waverace)
+adb shell "run-as com.example.waverace sh -c 'for t in /proc/$PID/task/*; do cat \$t/syscall; done'"
+```
+
+Two threads parked in syscall 63 with a count of `0x1ff` are two copies of `log_pump` blocked in
+its `read(fd, buf, sizeof(buf) - 1)`, and two copies of `log_pump` mean two calls to
+`android_main`. `ls -l /proc/$PID/fd` through the same `run-as` shows the matching pair of pipes.
+Neither `kill -3` nor `debuggerd` works here — the first is refused across uids and the second
+wants root — and the traces the system does write land in `/data/anr`, which the shell cannot read
+either.
+
 ### Tuning VR (`vr.txt`)
 
 Some values cannot be known from the source. `a_pos` arrives in the game's own units and nothing
