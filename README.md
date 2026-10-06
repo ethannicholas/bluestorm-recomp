@@ -389,37 +389,54 @@ Re-sampling every 25 frames left three candidates, and tracing those every frame
 one dropped out mid-race, one never cleared. A fourth candidate from the first pass, `0x80619434`,
 survived the on/off test but turned out to be a float that is merely never exactly zero during a
 race. Only `0x806193BC` has exactly two transitions, and its boundaries line up with the countdown
-appearing and the race ending in dumped frames either side.
+appearing and the race ending in dumped frames either side — which is exactly as far as a session
+that always runs a race to the finish can take you. It is the wrong variable, and the next section
+is how that came out.
 
-#### Starting earlier than the race flag
+#### Why the wave height was the wrong variable, twice
 
-The flag is set as the countdown reaches the line, which is about a second *after* the starting
-lights are already on screen — dumped frames put the light rig in view from frame 2278 and the flag
-at 2312. That left the start of a race flat in the headset and popping into 3D once it was already
-underway.
+`0x806193BC` got the view wrong at both ends of a race.
 
-Two candidates for the earlier moment were rejected before the one that works. Counting the frame's
-**view-space perspective draws** looked ideal, since the countdown light rig is the game's one piece
-of view-space 3D — but traced over a session those draws run 2301–2381, which is *after* the lights
-appear, so the rig is ordinary world geometry and the view-space draws are something else. The
-**object block at `0x80631F30`** springs into existence at the right moment, but it is the slot the
-README above already caught blinking mid-race, so it is a recycled allocation and not a state.
+It comes up only as the countdown reaches the line, about a second *after* the starting lights are
+already on screen — dumped frames put the light rig in view at 2278 and the flag at 2312 — so a race
+began flat in the headset and popped into 3D once it was already under way. And it is never cleared
+on the quit path: traced every frame through a retire to the main menu it went to 3.0 at 2312 and
+was *still* 3.0 on the title screen 2,300 frames later, which left the headset in stereo over the
+menus until another race started. It is the course's wave height, and nothing resets it when the
+course is abandoned.
 
-`0x80625A54` is the start sequence's own state and has exactly three transitions in a 7,389-frame
-session: 0 through boot, the menus and everything else, 12 while the course intro flies over, 5 from
-the lights coming into view until shortly after the start, 0 again from there. Stereo now begins on
-`race flag != 0 || start state == 5`, which moves the switch from frame 2312 to 2288. Using
-`start state != 0` instead would begin at 1997 and take in the course intro flyover as well; that is
-a preference about where a 3D flyover belongs rather than a correctness question, so it is written
-down here rather than chosen.
+Two candidates for the earlier moment were rejected along the way, and both are worth recording.
+Counting the frame's **view-space perspective draws** looked ideal, the countdown rig being the
+game's one piece of view-space 3D — but traced over a session those draws run 2301–2381, *after*
+the lights appear, so they are something else. The **object block at `0x80631F30`** springs into
+existence at the right moment but is the slot caught blinking mid-race above: a recycled allocation,
+not a state. `0x80625A54`, the start sequence's own state, covers the lights but goes out at 2401,
+mid-race.
 
-Unlike the race flag, an unmeasured value here is ignored rather than fatal: it only ever widens the
-window, so being wrong about it costs the second back and nothing else.
+`0x80602160` is the flag that is actually wanted, and it replaces both. Traced every frame it has
+**exactly two transitions** in a 6,663-frame session that races to the finish (1 at 1996, 0 at 3797)
+and exactly two in a 5,837-frame session that retires to the main menu (1 at 1996, 0 at 3539,
+against a quit confirmed at 3520). It is zero through boot, the menus, course select, loading, the
+results screen and the title screen. Stereo is simply `0x80602160 != 0`.
 
-Both variables are written by the guest thread and read by the frame loop, so a sample can land on a
-transient — reading the race flag from that side caught it non-zero for a single frame twice before a
-race and three times on the results screen, each of which would have flashed stereo over a menu. The
-switch now wants one game frame of agreement before it acts.
+It comes up as the course intro begins, which put the headset into stereo the moment the track
+finished loading — the intro is a full 3D flyover and the flag is up for it. So the start
+sequence's own state at `0x80625A54` is AND-ed in to exclude that phase (12 over the intro, 5 from
+the lights, 0 for the rest of the race), which moves the switch from 1997 to 2288.
+
+The rig is still visible for about half a second before the switch: the lights come into view at
+2278 and `0x80625A54` leaves the intro phase at 2287, with a frame of debounce on top. Closing that
+last gap means a signal that fires with the lights rather than just after them — `0x806263C4` goes
+0 to 1 at exactly 2278, but it latches at 2 afterwards and never resets, so it cannot be used as it
+stands. Worth picking up if the half second starts to grate.
+
+Being a plain flag, anything but 0 or 1 is fatal rather than guessed at — the same stance as before,
+for the same reason: being wrong does not degrade gracefully.
+
+The flag is written by the guest thread and read by the frame loop, so a sample can land on a
+transient. Reading the old race flag from that side caught it non-zero for a single frame twice
+before a race and three times on the results screen, each of which would have flashed stereo over a
+menu, so the switch wants one game frame of agreement before it acts.
 
 Stereo is cheap here because of where `xf.cpp` stops. Vertices reach the renderer in the game's
 *view* space with the projection applied in the shader, so an eye is just another matrix in front

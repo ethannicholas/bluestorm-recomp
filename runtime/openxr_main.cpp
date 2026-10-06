@@ -15,30 +15,34 @@
 #include "vr_config.h"
 #include <sys/stat.h>
 
-// Non-zero while the player is on the course: set as the countdown starts and cleared
-// when the race ends. Zero through boot, the menus, course select, loading, the course
-// overview flyover, the pre-race rider cinematic and the results screen. It holds the
-// course's wave height as a float -- 3.0 on Dolphin Park -- which is simply the race
-// parameter that happens to be live exactly when a race is. Specific to the supported
-// disc (see the Supported version section).
-static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
+// Non-zero while the game is on a course: set as the course intro begins, and cleared
+// when the race ends -- or the moment the player quits out of one. Zero through boot, the
+// menus, course select, loading, the results screen and the title screen.
+//
+// Traced every frame it has exactly two transitions in a 6,663-frame session that races to
+// the finish (1 at 1996, 0 at 3797) and exactly two in a 5,837-frame session that retires
+// to the main menu (1 at 1996, 0 at 3539, against a quit confirmed at 3520).
+//
+// It replaces two variables that each got half of this wrong. 0x806193BC, the course's
+// wave height, came up only as the countdown reached the line -- about a second after the
+// starting lights are on screen, so a race began flat and popped into 3D once it was
+// already under way -- and, worse, it is never cleared on the quit path: it still read 3.0
+// back on the title screen, which left the headset stuck in stereo over the menus. The
+// start-sequence state at 0x80625A54 covered the lights but went out mid-race.
+//
+// This one is a plain flag, so anything but 0 or 1 means a disc or a mode this was not
+// measured on. That is fatal rather than guessed at, for the reason the draw-count
+// heuristic this all replaced was abandoned: being wrong does not degrade gracefully. It
+// drops someone into stereo over a menu or flips the view mid-race, and that is unpleasant
+// enough in a headset to be worth refusing to run at all.
+static constexpr uint32_t kOnCourseAddr = 0x80602160;
 
-// The start sequence's own state, which comes up well before the race flag does. Traced
-// every frame over a whole session it has exactly three transitions: 0 through boot, the
-// menus and everything else, 12 while the course intro flies over, 5 from the moment the
-// starting lights come into view until shortly after the start, and 0 again from there.
-//
-// The race flag is set only as the countdown reaches the line, about a second after the
-// lights are already on screen, which left the start of a race flat in the headset and
-// popping into 3D once it was underway. kStartCountdown covers that second.
-//
-// Any value outside the three measured ones means a disc or a mode this was not measured
-// on. That is ignored rather than guessed at -- the race flag alone then decides, which
-// is exactly what shipped before -- so being wrong here costs the second back and
-// nothing else. The race flag itself is fatal on a bad value because it decides the view
-// outright; this one only ever widens the window.
+// The start sequence's phase, used only to hold stereo off over the course intro. Traced
+// every frame it has three transitions a race: 0 until the course loads, 12 while the
+// intro flies over, 5 from the starting lights coming into view until shortly after the
+// start, 0 for the remainder. Only the intro value is tested, so an unmeasured value here
+// just means stereo starts where kOnCourseAddr says, which is the behaviour without it.
 static constexpr uint32_t kStartStateAddr = 0x80625A54;
-static constexpr uint32_t kStartCountdown = 5;
 static constexpr uint32_t kStartIntro = 12;
 #include "gx/render.h"
 #include "gx/render_gl.h"
@@ -709,51 +713,28 @@ void android_main(android_app* app) {
         if (batch) {
             game_frames++;
             if (!manual_override) {
-                // The game's own "on the course" flag: 1 from the moment the countdown
-                // starts until the race ends, 0 for everything else -- boot, menus,
-                // course select, loading, the course overview and the results screen.
-                // Found by diffing guest RAM across labelled snapshots; see the Tools
-                // section of README.md. It is exact, so no hysteresis is needed.
-                //
-                // Counting perspective draws instead, as this used to, puts the overview
-                // flyover over the threshold (it is a full 3D scene) and dips below it
-                // during a race whenever the view is sparse, which is what made the view
-                // flap. That heuristic is kept only as a fallback for a disc this address
-                // does not suit: if it ever holds anything but 0 or 1, it is not the flag.
-                const uint32_t bits = mem_r32(kRaceActiveAddr);
-                float wave;
-                memcpy(&wave, &bits, 4);
-                // Zero, or a plausible wave height. Anything else means this is not that
-                // variable -- a different disc, or a layout change. There is deliberately
-                // no fallback: counting draws, which this replaced, does not work, and
-                // guessing wrong does not degrade gracefully. It drops someone into
-                // stereo over a menu or flips the view mid-race, which is unpleasant
-                // enough in a headset to be worth refusing to run at all.
-                if (bits != 0 && !(wave > 0.0f && wave < 100.0f))
-                    fatal("race-state variable at %#x reads %#010x (%g), which is neither "
-                          "zero nor a plausible wave height. This build only knows the "
-                          "disc named in README.md; refusing to guess which view to "
-                          "present.", kRaceActiveAddr, bits, (double)wave);
-                // The starting lights are on screen about a second before the flag
-                // comes up; kStartStateAddr is what covers that. See its declaration for
-                // why an unmeasured value here is ignored rather than fatal.
+                // The game's own "on a course" flag; see kOnCourseAddr. Found by
+                // diffing guest RAM across labelled snapshots and then tracing every
+                // frame, which is the only way to tell a steady flag from one that
+                // blinks -- see the Tools section of README.md.
+                const uint32_t on_course = mem_r32(kOnCourseAddr);
+                if (on_course > 1)
+                    fatal("on-course flag at %#x reads %#010x, which is not 0 or 1. This "
+                          "build only knows the disc named in README.md; refusing to "
+                          "guess which view to present.", kOnCourseAddr, on_course);
+                // On a course, but not during the course intro: that flyover is a full 3D
+                // scene and the flag is up for it, which put the headset into stereo as
+                // soon as the track finished loading. The start sequence's own state says
+                // which phase it is -- 12 over the intro, 5 from the starting lights
+                // coming into view, 0 for the rest of the race -- so excluding 12 begins
+                // stereo with the lights and leaves the rest alone.
                 const uint32_t start_state = mem_r32(kStartStateAddr);
-                if (start_state != 0 && start_state != kStartCountdown &&
-                    start_state != kStartIntro) {
-                    static bool warned = false;
-                    if (!warned) {
-                        warned = true;
-                        LOGI("start-state variable at %#x reads %u, which is not one of "
-                             "the measured values; starting stereo on the race flag alone",
-                             kStartStateAddr, start_state);
-                    }
-                }
-                const bool want_stereo = bits != 0 || start_state == kStartCountdown;
-                // Both variables are written by the guest thread and read here, so a
-                // sample can land on a transient: tracing the race flag from this side
-                // caught it reading non-zero for a single frame on the results screen and
-                // twice before a race. One game frame of agreement is enough to drop
-                // those, and costs 33 ms on a switch that was a second late to begin with.
+                const bool want_stereo = on_course != 0 && start_state != kStartIntro;
+                // The flag is written by the guest thread and read here, so a sample can
+                // land on a transient: tracing the old race flag from this side caught it
+                // reading non-zero for a single frame on the results screen and twice
+                // before a race. One game frame of agreement drops those, and costs 33 ms
+                // on a switch that used to be a second late anyway.
                 static bool pending = false;
                 static int agree = 0;
                 if (want_stereo != stereo) {
