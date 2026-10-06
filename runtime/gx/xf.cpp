@@ -403,26 +403,55 @@ static PixelState g_last_state;
 static bool g_have_last_state;
 static uint32_t g_last_state_idx;
 
-// Whether position matrix `pnmtx` is the identity rotation, i.e. the game is handing the
-// hardware vertices that are already in view space. Only the rotation is tested: the
-// countdown rig is placed by a translation of (0, 30, -160), and something held a fixed
-// distance in front of the camera is as much a part of the HUD as something at the origin.
+// Whether position matrix `pnmtx` leaves the view-space Y axis alone -- it may turn the
+// object about that axis, but not tilt it -- which is how a thing the game has placed in
+// front of the camera is told from world geometry.
+//
+// Translation is not tested: the countdown rig is placed at (0, 30, -160), and something
+// held a fixed distance in front of the camera is as much a part of the HUD as something
+// at the origin.
+//
+// The rotation used to have to be the identity, which is true of the rig only once it has
+// finished arriving. It spins in about the vertical axis over ten frames -- cos running
+// 0.833 to 1 while it descends -- and for those ten frames it was read as world geometry,
+// drawn with the world's pitch taken out of it, and then snapped onto the HUD frame the
+// moment the spin stopped. Allowing the turn is what makes it arrive the way it does on a
+// television.
+//
+// Nothing in the world passes this. A frame's worth of matrices at the start of a race --
+// 6,464 of them over sixteen frames -- holds three that leave the Y axis alone: the two
+// 2D layers at the origin, and the rig. World geometry cannot, because its matrix carries
+// the camera, and this game's chase camera is pitched some 23 degrees down at all times.
 //
 // The matrix is taken from the draw's first vertex. A draw whose vertices indexed
 // different position matrices would be judged by that one; none in this game does.
-static bool pos_matrix_is_identity(uint8_t pnmtx) {
+static bool pos_matrix_is_view_space(uint8_t pnmtx) {
+    // WR_VS_YAW=0 goes back to demanding the identity rotation, which is what this did
+    // before it was taught to allow a turn. For telling apart "the rig is misplaced" from
+    // "something else was reclassified by the wider test".
+    static const bool allow_yaw = !(getenv("WR_VS_YAW") && atoi(getenv("WR_VS_YAW")) == 0);
     const uint32_t m = (pnmtx & 63) * 4;
-    const float r[9] = {xf_f(m + 0), xf_f(m + 1), xf_f(m + 2),
-                        xf_f(m + 4), xf_f(m + 5), xf_f(m + 6),
-                        xf_f(m + 8), xf_f(m + 9), xf_f(m + 10)};
-    for (int i = 0; i < 9; i++) {
-        const float want = (i % 4 == 0) ? 1.0f : 0.0f;
-        if (fabsf(r[i] - want) > 1e-4f) return false;
+    if (!allow_yaw) {
+        for (int i = 0; i < 9; i++) {
+            const float want = (i % 4 == 0) ? 1.0f : 0.0f;
+            if (fabsf(xf_f(m + (i / 3) * 4 + (i % 3)) - want) > 1e-4f) return false;
+        }
+        return true;
     }
-    return true;
+    const float m00 = xf_f(m + 0), m01 = xf_f(m + 1), m02 = xf_f(m + 2);
+    const float m10 = xf_f(m + 4), m11 = xf_f(m + 5), m12 = xf_f(m + 6);
+    const float m21 = xf_f(m + 9);
+    // The Y axis is untouched: no tilt in, and none out.
+    if (fabsf(m01) > 1e-4f || fabsf(m10) > 1e-4f || fabsf(m12) > 1e-4f ||
+        fabsf(m21) > 1e-4f || fabsf(m11 - 1.0f) > 1e-4f)
+        return false;
+    // And what is left is a rotation rather than a scale or a skew that happens to keep
+    // the Y axis, which no draw in this game produces but which would be read as a HUD
+    // element if it ever did.
+    return fabsf(m00 * m00 + m02 * m02 - 1.0f) < 1e-3f;
 }
 
-// `view_space` is pos_matrix_is_identity() for the draw: the game put these vertices in
+// `view_space` is pos_matrix_is_view_space() for the draw: the game put these vertices in
 // view space itself instead of placing them in the world. See PixelState.
 static uint32_t snapshot_state(bool view_space) {
     PixelState st;
@@ -522,9 +551,41 @@ void renderer_draw(const DrawCall& dc) {
     }
 
     Batch& b = batch();
+    // WR_PNMLOG=a-b lists the position matrices a frame actually uses, one line each time
+    // the matrix changes, over a window of frames. What it is for: an object the game
+    // places in front of the camera is told apart from world geometry by its rotation
+    // being identity, so anything camera-attached that *animates* is misread as world
+    // geometry for as long as it moves. This is how to see that happen.
+    static int pnm_lo = -1, pnm_hi = -1;
+    static bool pnm_parsed = false;
+    if (!pnm_parsed) {
+        pnm_parsed = true;
+        if (const char* r = getenv("WR_PNMLOG")) {
+            pnm_lo = atoi(r);
+            const char* dash = strchr(r, '-');
+            pnm_hi = dash ? atoi(dash + 1) : pnm_lo;
+        }
+    }
+    if (pnm_lo >= 0 && (int)g_frame_counter >= pnm_lo && (int)g_frame_counter <= pnm_hi &&
+        dc.count) {
+        const uint32_t m = (g_in[0].pnmtx & 63) * 4;
+        static float last[12];
+        static uint32_t last_frame = ~0u;
+        float cur[12];
+        for (int i = 0; i < 12; i++) cur[i] = xf_f(m + i);
+        if (g_frame_counter != last_frame || memcmp(cur, last, sizeof(cur)) != 0) {
+            memcpy(last, cur, sizeof(cur));
+            last_frame = g_frame_counter;
+            fprintf(stderr, "[pnm] f%u n=%4u id=%2u ident=%d | %7.3f %7.3f %7.3f %9.2f |"
+                            " %7.3f %7.3f %7.3f %9.2f | %7.3f %7.3f %7.3f %9.2f\n",
+                    g_frame_counter, dc.count, g_in[0].pnmtx & 63,
+                    (int)pos_matrix_is_view_space(g_in[0].pnmtx), cur[0], cur[1], cur[2], cur[3],
+                    cur[4], cur[5], cur[6], cur[7], cur[8], cur[9], cur[10], cur[11]);
+        }
+    }
     // The guard matters: a draw with no vertices reaches here, and the empty-vertex exit
     // is further down, past this.
-    uint32_t state = snapshot_state(dc.count && pos_matrix_is_identity(g_in[0].pnmtx));
+    uint32_t state = snapshot_state(dc.count && pos_matrix_is_view_space(g_in[0].pnmtx));
     uint32_t first = (uint32_t)b.verts.size();
     uint8_t prim = 0;
     auto push = [&](uint32_t i) { b.verts.push_back(g_out[i]); };

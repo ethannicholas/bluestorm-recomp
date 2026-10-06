@@ -651,6 +651,10 @@ Not a VR problem but found through this harness, and the tools stay because the 
   up as two draws with identical vertex counts and textures.
 - `WR_DRAW_SKIP=a-b` drops a range of draw indices, `WR_NO_COMP` / `WR_ONLY_COMP` drop or isolate
   the draws sampling a whole-frame copy, and `WR_NO_EFBTEX` drops those sampling a partial one.
+- `WR_PNMLOG=a-b` lists the position matrices a frame uses over a window of frames, one line each
+  time the matrix changes. It is what showed that the countdown rig does not tilt as it arrives — it
+  turns about the vertical axis while descending — and that of 6,464 matrices over sixteen frames
+  only three leave the view-space Y axis alone.
 - `WR_EYE_SPRAY=0` and `WR_EYE_RIPPLE=0` turn off the spray substitution and the conversion of its
   distortion, in that order of bluntness. Both select on content rather than draw index, so they
   are safe to A/B across runs. With `WR_EYELOG=1` the eye summary carries `spray=N`, the number of
