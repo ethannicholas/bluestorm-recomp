@@ -573,6 +573,17 @@ and the frame hangs wherever the desk was, with nothing in its own geometry wron
 prints the head's height and pitch alongside the frame's placement once a second, which is the way
 to tell those apart from inside the headset, where they look the same.
 
+Not everything the game places in view space belongs on that frame, though. A draw with a
+*perspective* frustum placed in view space is a 3D object held in front of the camera rather than a
+2D overlay — the countdown light rig is the only one in this game. The frame's Z column is zero, so
+every vertex it carries lands on one plane, which throws away such an object's own depth: the rig
+lost the occlusion that hides each lamp behind its lens and the lamps showed through as white
+squares on the glass. Those draws keep the eye's projection and stay 3D, and they take `g_vr_view`
+rather than `g_vr_view_world`, because the world pitch is taken out of the *world* to level the sea
+and applying it to something attached to the camera is what stood the rig over at 23 degrees.
+`WR_EYE_VS3D=0` puts them back on the frame. Across 4,871 frames the only view-space perspective
+geometry is the rig, so this reaches nothing else.
+
 Writing those elements straight into each eye's NDC — what this replaced — cannot work, and the
 reason is worth keeping. The headset's per-eye frustums are **asymmetric**, so one NDC position is
 a different direction in each eye. There is no depth at which the two images agree, so the HUD

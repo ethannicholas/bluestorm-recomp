@@ -438,7 +438,22 @@ static void apply_state(const PixelState& st, int prim) {
     float P[16] = {0};
     const float* p = st.proj;
     const bool perspective = (int)p[6] == 0;
-    const bool on_hud_frame = !perspective || st.view_space;
+    // Something the game placed in view space but drew with a perspective frustum is a 3D
+    // object held in front of the camera, not a 2D overlay. Painting it on the HUD frame
+    // flattens it -- that frame's Z column is zero, so every vertex lands on one plane --
+    // which throws away the object's own depth. The countdown rig lost the occlusion that
+    // hides the lamp behind its lens, and the lamps showed through as white squares.
+    //
+    // So it keeps the eye's projection and stays 3D. It takes g_vr_view rather than
+    // g_vr_view_world: the world pitch is taken out of the *world* to level the sea, and
+    // applying it to something attached to the camera is what tilted the rig by 23
+    // degrees. Without the correction it hangs in front of the viewer the way the game
+    // means it to, and the head still moves within that.
+    //
+    // WR_EYE_VS3D=0 puts it back on the HUD frame, which is where it was.
+    static const bool vs3d = !(getenv("WR_EYE_VS3D") && atoi(getenv("WR_EYE_VS3D")) == 0);
+    const bool view_space_3d = perspective && st.view_space && vs3d;
+    const bool on_hud_frame = (!perspective || st.view_space) && !view_space_3d;
     if (perspective) {
         P[0] = p[0]; P[8] = p[1]; P[5] = p[2]; P[9] = p[3]; P[10] = p[4]; P[14] = p[5]; P[11] = -1.0f;
     } else {
@@ -450,6 +465,9 @@ static void apply_state(const PixelState& st, int prim) {
     // copy, on a flat panel hanging in front of the camera while the real racer went on
     // moving in the world. The seam at the billboard's edge is the lesser problem.
     if (g_vr_active && !on_hud_frame) {
+        // A camera-placed 3D object is viewed with the head transform but without the
+        // world's pitch correction; see view_space_3d above.
+        const float* view = view_space_3d ? g_vr_view : g_vr_view_world;
         // WR_EYE_GAMEPROJ keeps the game's own frustum and applies only the head
         // transform, which tells apart "the eye sees less than it should" from "the game
         // never drew anything out there".
@@ -462,7 +480,7 @@ static void apply_state(const PixelState& st, int prim) {
                     p[0], p[2]);
         }
         glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, game_proj ? P : g_vr_proj);
-        glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, g_vr_view_world);
+        glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, view);
         glUniform1i(pr.u_vr, 1);
     } else if (g_vr_active) {
         // A HUD element in an eye. The game's own projection already puts its frame in
@@ -678,6 +696,17 @@ static void apply_state(const PixelState& st, int prim) {
     if (g_vr_active) {
         // The scissor rect is in EFB coordinates, which say nothing about an eye's
         // render target.
+        //
+        // WR_EYE_SCISSORLOG reports the draws whose rect is not the whole frame, which
+        // are the ones this is throwing away clipping for. Anything the game relies on
+        // the scissor to hide is drawn in full in an eye.
+        static const bool slog = getenv("WR_EYE_SCISSORLOG") != nullptr;
+        if (slog && (x0 > 0 || y0 > 0 || x1 < EFB_W || y1 < EFB_H)) {
+            static int shown;
+            if (shown++ < 40)
+                fprintf(stderr, "[scissor] f%u rect=%d,%d..%d,%d (frame is 0,0..%d,%d)\n",
+                        g_render_frame, x0, y0, x1, y1, EFB_W, EFB_H);
+        }
         glDisable(GL_SCISSOR_TEST);
         return;
     }
