@@ -71,6 +71,8 @@ static bool g_frame_marker = false;
 struct DrawExtent { int index; uint32_t verts; float x0, x1, y0, y1; bool ortho;
                     int sc_x0, sc_y0, sc_x1, sc_y1, off_x, off_y; };
 static std::vector<DrawExtent> g_draw_extents;
+static const Batch* g_seam_batch = nullptr;  // the draw the seam probe is reporting on
+static const Cmd* g_seam_cmd = nullptr;
 static int g_seam_x = -1, g_seam_y = -1;  // where the previous frame's seam was
 static bool g_seam_trace = false;  // trace the next frame draw by draw
 static GLuint g_vao, g_vbo;
@@ -708,6 +710,17 @@ static void present(const EfbCopyCmd& c) {
         if (best_rows > h * 6 / 10) {
             fprintf(stderr, "[seam] frame %u: x=%d spans %d of %d rows\n", g_present_count,
                     best_x, best_rows, h);
+            // Arm the per-command probe for the next frame, once, now that the seam's
+            // column is known. The detector reads a 640x480 window starting at EFB row
+            // (EFB_H - 480), so its x index is already an absolute EFB column.
+            static bool armed = false;
+            if (!armed) {
+                armed = true;
+                g_seam_x = best_x / g_scale;
+                g_seam_trace = true;
+                fprintf(stderr, "[seam] probing every command of the next frame at x=%d\n",
+                        g_seam_x);
+            }
             for (auto& d : g_draw_extents)
                 fprintf(stderr, "[seam]   draw %3d verts=%5u x=%6.1f..%-6.1f y=%6.1f..%-6.1f %s "
                         "sc=%d,%d..%d,%d off=%d,%d\n",
@@ -943,6 +956,96 @@ static void evict_textures() {
     }
 }
 
+// Reads back the column the previous frame's seam was on, and reports the first command
+// after which the discontinuity is present. Sampling only draws was not enough: the seam
+// was never there after any draw, which leaves the copies -- and the scissored clear each
+// one performs -- as the only remaining suspects.
+static void seam_probe(const char* what, int a, int bval) {
+    if (!g_seam_trace || g_seam_x <= 0) return;
+    const int sx = g_seam_x * g_scale, hh = EFB_H * g_scale;
+    static std::vector<uint8_t> col;
+    col.resize((size_t)hh * 2 * 4);
+    // The detector compares column x with x+1, so the probe has to read that same pair.
+    glReadPixels(sx, 0, 2, hh, GL_RGBA, GL_UNSIGNED_BYTE, col.data());
+    int rows = 0;
+    for (int y = 0; y < hh; y++) {
+        const uint8_t* p = &col[(size_t)y * 8];
+        if (abs(p[0] - p[4]) + abs(p[1] - p[5]) + abs(p[2] - p[6]) > 40) rows++;
+    }
+    if (!strcmp(what, "before-present"))
+        fprintf(stderr, "[seam] probe at x=%d before present: %d of %d rows differ\n", g_seam_x,
+                rows, hh);
+    if (rows > hh / 3) {
+        fprintf(stderr, "[seam] appears after %s(%d,%d) on %d of %d rows\n", what, a, bval, rows,
+                hh);
+        if (g_seam_batch && g_seam_cmd) {
+            // The raw inputs for the offending draw: what the game actually submitted,
+            // before this renderer's interpretation of it.
+            const Batch& bb = *g_seam_batch;
+            const Cmd& cc = *g_seam_cmd;
+            const PixelState& st = bb.states[cc.state];
+            fprintf(stderr, "[seam]   proj type=%d [%g %g %g %g %g %g]\n", (int)st.proj[6],
+                    st.proj[0], st.proj[1], st.proj[2], st.proj[3], st.proj[4], st.proj[5]);
+            fprintf(stderr, "[seam]   viewport sx=%g sy=%g ox=%g oy=%g\n", st.viewport[0],
+                    st.viewport[1], st.viewport[3], st.viewport[4]);
+            const uint32_t cmode0 = st.bp[0x41], genmode = st.bp[0x00], atest = st.bp[0xF3];
+            fprintf(stderr, "[seam]   cmode0=%06X blend=%d logic=%d src=%u dst=%u subtract=%d\n",
+                    cmode0, (int)(cmode0 & 1), (int)((cmode0 >> 1) & 1),
+                    (cmode0 >> 8) & 7, (cmode0 >> 5) & 7, (int)((cmode0 >> 11) & 1));
+            fprintf(stderr, "[seam]   genmode=%06X tevstages=%u texgens=%u  alpha=%06X\n", genmode,
+                    ((genmode >> 10) & 0xF) + 1, (genmode >> 4) & 0xF, atest);
+            for (int i = 0; i < 4; i++)
+                fprintf(stderr, "[seam]   tev_reg[%d]=%08X,%08X konst=%08X,%08X\n", i,
+                        st.tev_reg[i][0], st.tev_reg[i][1], st.tev_konst[i][0], st.tev_konst[i][1]);
+            // Write the sampled textures out so the alpha that drives the blend can be
+            // looked at rather than inferred. GLES has no glGetTexImage, so each one is
+            // attached to a scratch framebuffer and read back.
+            if (g_dump_dir) {
+                GLuint fbo = 0;
+                glGenFramebuffers(1, &fbo);
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                for (int i = 0; i < 8; i++) {
+                    auto it = g_textures.find(st.tex_id[i]);
+                    if (!st.tex_id[i] || it == g_textures.end()) continue;
+                    const int tw = it->second.w, th = it->second.h;
+                    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                           it->second.tex, 0);
+                    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+                        continue;
+                    std::vector<uint8_t> t((size_t)tw * th * 4);
+                    glReadPixels(0, 0, tw, th, GL_RGBA, GL_UNSIGNED_BYTE, t.data());
+                    char path[512];
+                    snprintf(path, sizeof(path), "%s/seamtex_%d_%u.png", g_dump_dir, i,
+                             st.tex_id[i]);
+                    write_png(path, t.data(), tw, th);
+                    fprintf(stderr, "[seam]   wrote %s (%dx%d)\n", path, tw, th);
+                }
+                glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
+                glDeleteFramebuffers(1, &fbo);
+            }
+            for (int i = 0; i < 8; i++) {
+                if (!st.tex_id[i]) continue;
+                auto it = g_textures.find(st.tex_id[i]);
+                fprintf(stderr, "[seam]   tex%d id=%u%s %s %ux%u\n", i, st.tex_id[i],
+                        st.tex_is_efb[i] ? " (efb copy)" : "",
+                        it == g_textures.end() ? "MISSING FROM THE GL CACHE" : "present",
+                        it == g_textures.end() ? 0 : it->second.w,
+                        it == g_textures.end() ? 0 : it->second.h);
+            }
+            for (uint32_t v = cc.first; v < cc.first + cc.count && v < bb.verts.size(); v++)
+                fprintf(stderr, "[seam]   vert %u pos=(%g, %g, %g)\n", v - cc.first,
+                        bb.verts[v].pos[0], bb.verts[v].pos[1], bb.verts[v].pos[2]);
+        }
+        if (!g_draw_extents.empty()) {
+            const DrawExtent& d = g_draw_extents.back();
+            fprintf(stderr, "[seam]   that draw: verts=%u x=%.1f..%.1f y=%.1f..%.1f %s "
+                    "scissor=%d,%d..%d,%d\n", d.verts, d.x0, d.x1, d.y0, d.y1,
+                    d.ortho ? "2D" : "3D", d.sc_x0, d.sc_y0, d.sc_x1, d.sc_y1);
+        }
+        g_seam_trace = false;
+    }
+}
+
 // Runs a batch into the EFB the way the hardware would. With do_present false the final
 // scanout is skipped but everything else -- including every render-to-texture copy -- still
 // happens, which is how the stereo path obtains the textures its eye passes sample.
@@ -1031,10 +1134,11 @@ static bool execute_batch(Batch& b, bool do_present) {
                     const float* q = b.verts[v].pos;
                     float cx, cy, cw;
                     if (ortho) {
-                        cx = p[0] * q[0] + p[1] * q[2] + 0.0f;
-                        cy = p[2] * q[1] + p[3] * q[2] + 0.0f;
+                        // apply_state builds P[0]=p[0], P[12]=p[1], P[5]=p[2], P[13]=p[3],
+                        // so with w=1 the translate is a plain add, not a z term.
+                        cx = p[0] * q[0] + p[1];
+                        cy = p[2] * q[1] + p[3];
                         cw = 1.0f;
-                        cx += p[1]; cy += p[3];  // ortho translate lives in the same slots
                     } else {
                         cx = p[0] * q[0] + p[1] * q[2];
                         cy = p[2] * q[1] + p[3] * q[2];
@@ -1089,33 +1193,21 @@ static bool execute_batch(Batch& b, bool do_present) {
             // after each draw and name the first draw that puts the discontinuity there.
             // Neither the geometry extents nor the scissor rects accounted for it, so the
             // only way left is to watch the pixels change.
-            if (g_seam_trace && g_seam_x > 0) {
-                // The whole column, not one pixel: the seam is broken up vertically, so a
-                // single row is as likely to miss it as to find it.
-                const int sx = g_seam_x * g_scale, hh = EFB_H * g_scale;
-                static std::vector<uint8_t> col;
-                col.resize((size_t)hh * 2 * 4);
-                glReadPixels(sx - 1, 0, 2, hh, GL_RGBA, GL_UNSIGNED_BYTE, col.data());
-                int rows = 0;
-                for (int y = 0; y < hh; y++) {
-                    const uint8_t* a = &col[(size_t)y * 8];
-                    if (abs(a[0] - a[4]) + abs(a[1] - a[5]) + abs(a[2] - a[6]) > 40) rows++;
-                }
-                if (rows > hh / 3) {
-                    fprintf(stderr, "[seam] appears at draw %d (verts=%u, %s) on %d of %d rows\n",
-                            this_draw, c.count,
-                            (int)b.states[c.state].proj[6] != 0 ? "2D" : "3D", rows, hh);
-                    g_seam_trace = false;
-                }
-            }
+            g_seam_batch = &b;
+            g_seam_cmd = &c;
+            seam_probe("draw", this_draw, (int)c.count);
+            g_seam_batch = nullptr;
+            g_seam_cmd = nullptr;
             break;
         }
         case CmdType::EfbCopy:
             do_efb_copy(c.copy);
             glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
+            seam_probe(c.copy.to_xfb ? "xfb-copy" : "copy", (int)c.copy.dst_w, (int)c.copy.dst_h);
             cur_state = UINT32_MAX;
             break;
         case CmdType::Present:
+            seam_probe("before-present", 0, 0);
             if (do_present) present(c.copy);
             presented = true;
             glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
