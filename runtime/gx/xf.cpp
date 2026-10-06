@@ -403,9 +403,31 @@ static PixelState g_last_state;
 static bool g_have_last_state;
 static uint32_t g_last_state_idx;
 
-static uint32_t snapshot_state() {
+// Whether position matrix `pnmtx` is the identity rotation, i.e. the game is handing the
+// hardware vertices that are already in view space. Only the rotation is tested: the
+// countdown rig is placed by a translation of (0, 30, -160), and something held a fixed
+// distance in front of the camera is as much a part of the HUD as something at the origin.
+//
+// The matrix is taken from the draw's first vertex. A draw whose vertices indexed
+// different position matrices would be judged by that one; none in this game does.
+static bool pos_matrix_is_identity(uint8_t pnmtx) {
+    const uint32_t m = (pnmtx & 63) * 4;
+    const float r[9] = {xf_f(m + 0), xf_f(m + 1), xf_f(m + 2),
+                        xf_f(m + 4), xf_f(m + 5), xf_f(m + 6),
+                        xf_f(m + 8), xf_f(m + 9), xf_f(m + 10)};
+    for (int i = 0; i < 9; i++) {
+        const float want = (i % 4 == 0) ? 1.0f : 0.0f;
+        if (fabsf(r[i] - want) > 1e-4f) return false;
+    }
+    return true;
+}
+
+// `view_space` is pos_matrix_is_identity() for the draw: the game put these vertices in
+// view space itself instead of placing them in the world. See PixelState.
+static uint32_t snapshot_state(bool view_space) {
     PixelState st;
     memset(&st, 0, sizeof(st));
+    st.view_space = view_space;
     memcpy(st.bp, g_state.bp, sizeof(st.bp));
     memcpy(st.tev_reg, g_tev_reg, sizeof(g_tev_reg));
     memcpy(st.tev_konst, g_tev_konst, sizeof(g_tev_konst));
@@ -500,7 +522,9 @@ void renderer_draw(const DrawCall& dc) {
     }
 
     Batch& b = batch();
-    uint32_t state = snapshot_state();
+    // The guard matters: a draw with no vertices reaches here, and the empty-vertex exit
+    // is further down, past this.
+    uint32_t state = snapshot_state(dc.count && pos_matrix_is_identity(g_in[0].pnmtx));
     uint32_t first = (uint32_t)b.verts.size();
     uint8_t prim = 0;
     auto push = [&](uint32_t i) { b.verts.push_back(g_out[i]); };

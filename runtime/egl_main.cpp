@@ -62,9 +62,18 @@ static void eye_init() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+// The HUD frame has no vr.txt to read here, so these match its defaults at the default
+// 100 game units per metre: 4 m out, 1.3 m up, leaned 23.2 degrees back towards the
+// viewer to sit parallel to the game world's vertical rather than the room's. The point
+// of the harness is to show what the headset shows.
+static const float kHudDist = 400.0f;
+static const float kHudScale = 0.5f;
+static const float kHudHeight = 130.0f;
+static const float kHudPitch = -23.2f * 3.14159265f / 180.0f;
+
 // Column-major, matching glUniformMatrix4fv with transpose = GL_FALSE. The game's view
 // space is -Z forward, so this is an ordinary GL perspective in game units.
-static void eye_matrices(float* proj, float* view) {
+static void eye_matrices(float* proj, float* view, float* hud) {
     const float fov = 1.0f;          // tan(45 deg): a 90 degree vertical field
     const float aspect = (float)g_eye_w / (float)g_eye_h;
     const float n = 10.0f, f = 500000.0f;
@@ -83,6 +92,10 @@ static void eye_matrices(float* proj, float* view) {
     view[0] = cosf(a);  view[2] = -sinf(a);
     view[8] = sinf(a);  view[10] = cosf(a);
     view[5] = view[15] = 1.0f;
+    // The HUD frame is anchored in front of the game's camera, not the head, so --eye-yaw
+    // swings it out of view exactly as turning to look away does in the headset. A HUD
+    // that sits still under a yaw is one that is still locked to the viewer's face.
+    gx::render_hud_frame(kHudDist, fov, kHudScale, kHudHeight, kHudPitch, hud);
 }
 
 static void eye_dump(const char* dir, uint32_t n) {
@@ -265,9 +278,9 @@ int main(int argc, char** argv) {
         }
         if (auto b = gx::take_batch(4)) {
             if (g_eye_mode) {
-                float P[16], V[16];
-                eye_matrices(P, V);
-                gx::render_set_vr_eye(P, V, 0.55f);
+                float P[16], V[16], H[16];
+                eye_matrices(P, V, H);
+                gx::render_set_vr_eye(P, V, H);
                 gx::render_execute_eye(*b, g_eye_fbo, g_eye_w, g_eye_h, true);
                 presented++;
                 // WR_DUMP_COPIES=N dumps whenever a frame holds at least N EFB copies,
@@ -279,7 +292,24 @@ int main(int argc, char** argv) {
                 int ncopies = 0;
                 if (want_copies)
                     for (auto& c : b->cmds) ncopies += c.type == gx::CmdType::EfbCopy;
-                if (gx::g_dump_dir &&
+                // WR_DUMP_RANGE=a-b narrows dumping to a window of frames, as it does in
+                // the flat path, so a short stretch can be caught every few frames
+                // without writing a gigabyte. Something that is only on screen for three
+                // seconds -- the countdown -- is otherwise missed by any interval coarse
+                // enough to run a whole race with.
+                static int range_lo = -1, range_hi = -1;
+                static bool range_parsed = false;
+                if (!range_parsed) {
+                    range_parsed = true;
+                    if (const char* r = getenv("WR_DUMP_RANGE")) {
+                        range_lo = atoi(r);
+                        const char* dash = strchr(r, '-');
+                        range_hi = dash ? atoi(dash + 1) : range_lo;
+                    }
+                }
+                const bool in_range = range_lo < 0 ||
+                                      ((int)presented >= range_lo && (int)presented <= range_hi);
+                if (gx::g_dump_dir && in_range &&
                     ((gx::g_dump_every && presented % gx::g_dump_every == 0) ||
                      (want_copies && ncopies >= want_copies)))
                     eye_dump(gx::g_dump_dir, presented);

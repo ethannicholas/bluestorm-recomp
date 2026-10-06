@@ -613,6 +613,49 @@ void android_main(android_app* app) {
         XrFrameBeginInfo fb{XR_TYPE_FRAME_BEGIN_INFO};
         xrBeginFrame(g_xr.session, &fb);
 
+        // Where the frame hangs is a question about the viewer, so `log_frames 1` reports
+        // the viewer: the frame sits on the forward axis of the LOCAL space, and that axis
+        // is eye level only if the runtime fixed the space while the headset was being
+        // worn. A head well above y=0 slides the frame down the view without anything in
+        // the frame's own geometry being wrong, and from inside the headset the two look
+        // identical. This runs wherever the app is -- a menu will do -- so the number does
+        // not cost a drive to the start line.
+        if (g_vrcfg.log_frames) {
+            static uint32_t nlog;
+            if ((nlog++ % 72) == 0) {
+                XrViewState lvs{XR_TYPE_VIEW_STATE};
+                uint32_t lnv = 0;
+                XrView lv[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+                XrViewLocateInfo lli{XR_TYPE_VIEW_LOCATE_INFO};
+                lli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+                lli.displayTime = fs.predictedDisplayTime;
+                lli.space = g_xr.space;
+                if (XR_SUCCEEDED(xrLocateViews(g_xr.session, &lli, &lvs, 2, &lnv, lv)) && lnv == 2) {
+                    const XrPosef& h = lv[0].pose;
+                    const float pitch = asinf(fmaxf(-1.0f, fminf(1.0f,
+                        2.0f * (h.orientation.w * h.orientation.x -
+                                h.orientation.y * h.orientation.z))));
+                    float tan_h = 0.0f;
+                    for (int e = 0; e < 2; e++) {
+                        tan_h = fmaxf(tan_h, fabsf(tanf(lv[e].fov.angleUp)));
+                        tan_h = fmaxf(tan_h, fabsf(tanf(lv[e].fov.angleDown)));
+                    }
+                    // The frame's half-height as an angle is the number to hold against
+                    // what it looks like: it is where the top edge of the HUD sits above
+                    // the forward axis, and the game's own top row is at 0.83 of that.
+                    const float half_m = g_vrcfg.hud_distance_m * tan_h * g_vrcfg.hud_scale;
+                    LOGI("head y=%.2fm pitch=%+.1fdeg | eye fov up=%+.1f down=%+.1f deg | "
+                         "frame %.2fm ahead %+.2fm up, half-height %.2fm = %.1fdeg, "
+                         "HUD top row %.1fdeg",
+                         h.position.y, pitch * 57.2958f,
+                         lv[0].fov.angleUp * 57.2958f, lv[0].fov.angleDown * 57.2958f,
+                         g_vrcfg.hud_distance_m, g_vrcfg.hud_height_m, half_m,
+                         atanf(half_m / g_vrcfg.hud_distance_m) * 57.2958f,
+                         atanf(0.83f * half_m / g_vrcfg.hud_distance_m) * 57.2958f);
+                }
+            }
+        }
+
         PadState p;
         p.connected = true;
         read_pad(p);
@@ -695,6 +738,20 @@ void android_main(android_app* app) {
                 // buffer are produced once, only the uniforms and draws repeat.
                 gx::Batch* b = batch.get();
                 bool both_eyes = true;
+                // One HUD frame for both eyes, built outside the loop. Each eye's own
+                // frustum is asymmetric and the two differ; sizing the frame per eye
+                // would give the viewer two different HUDs to fuse. The widest half-field
+                // either eye sees is what `hud_scale` is a fraction of.
+                float tan_half = 0.0f;
+                for (int e = 0; e < 2; e++) {
+                    tan_half = fmaxf(tan_half, fabsf(tanf(views[e].fov.angleUp)));
+                    tan_half = fmaxf(tan_half, fabsf(tanf(views[e].fov.angleDown)));
+                }
+                float H[16];
+                gx::render_hud_frame(g_vrcfg.hud_distance_m * g_vrcfg.units_per_metre,
+                                     tan_half, g_vrcfg.hud_scale,
+                                     g_vrcfg.hud_height_m * g_vrcfg.units_per_metre,
+                                     g_vrcfg.hud_pitch_deg * 3.14159265f / 180.0f, H);
                 for (int e = 0; e < 2; e++) {
                     auto& eye = g_xr.eyes[e];
                     uint32_t ei = 0;
@@ -711,7 +768,7 @@ void android_main(android_app* app) {
                         const float f = g_vrcfg.far_m * g_vrcfg.units_per_metre;
                         mat_proj(views[e].fov, n, f, P);
                         mat_view(views[e].pose, g_vrcfg, V);
-                        gx::render_set_vr_eye(P, V, g_vrcfg.hud_scale);
+                        gx::render_set_vr_eye(P, V, H);
                         if (b) gx::render_execute_eye(*b, eye.fbos[ei], eye.w, eye.h, e == 0);
                         glFlush();
                     }

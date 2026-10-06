@@ -47,17 +47,17 @@ struct Program {
     GLuint prog;
     GLint u_proj, u_vp_a, u_vp_b, u_point_size, u_tex, u_reg, u_konst, u_texsize, u_indmtx, u_indscale,
         u_alpharef, u_fog, u_fogcolor, u_indcoordscale;
-    GLint u_vr, u_view, u_hud_scale;
+    GLint u_vr, u_view;
 };
 
 static int g_scale = 2;
 
 // VR eye state. When active, perspective batches are re-projected for the eye and the
-// orthographic ones (the 2D HUD) become a flat overlay rather than being projected
-// into the world.
+// orthographic ones (the 2D HUD) are painted on a frame standing out in front of the
+// game's camera -- see render_hud_frame.
 static bool g_vr_active = false;
 static float g_vr_proj[16], g_vr_view[16];
-static float g_vr_hud_scale = 0.55f;
+static float g_vr_hud[16];
 static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
 // Copy of the EFB as it looked at the last present. The display copy is immediately
 // followed by an EFB clear, so repainting has to come from here, not the live EFB.
@@ -130,7 +130,6 @@ static const Program& get_program(const ShaderKey& k) {
     pr.u_point_size = glGetUniformLocation(p, "u_point_size");
     pr.u_vr = glGetUniformLocation(p, "u_vr");
     pr.u_view = glGetUniformLocation(p, "u_view");
-    pr.u_hud_scale = glGetUniformLocation(p, "u_hud_scale");
     pr.u_tex = glGetUniformLocation(p, "u_tex");
     pr.u_reg = glGetUniformLocation(p, "u_reg");
     pr.u_konst = glGetUniformLocation(p, "u_konst");
@@ -332,6 +331,16 @@ static void scissor_offset(const uint32_t* bp, int& xoff, int& yoff) {
     yoff = (int)((bp[0x59] >> 10) & 0x3FF) * 2;
 }
 
+// c = a * b, column-major, element (row r, column k) at m[k * 4 + r].
+static void mat4_mul(const float* a, const float* b, float* c) {
+    for (int k = 0; k < 4; k++)
+        for (int r = 0; r < 4; r++) {
+            float sum = 0;
+            for (int i = 0; i < 4; i++) sum += a[i * 4 + r] * b[k * 4 + i];
+            c[k * 4 + r] = sum;
+        }
+}
+
 static void apply_state(const PixelState& st, int prim) {
     int xoff, yoff;
     scissor_offset(st.bp, xoff, yoff);
@@ -341,11 +350,15 @@ static void apply_state(const PixelState& st, int prim) {
     glUseProgram(pr.prog);
 
     // Projection. In VR a perspective batch is world geometry and gets the eye's
-    // projection instead of the game's; an orthographic one is a 2D element and keeps
-    // the game's, drawn as an overlay.
+    // projection instead of the game's; an orthographic one is a 2D element and goes on
+    // the HUD frame -- and so does a perspective batch the game placed in view space
+    // itself, which is 3D but is no more part of the course than the lap counter is.
+    // That is the countdown light rig: left in the world it stands in the water between
+    // the viewer and the racer, because the game means it to hang in front of the camera.
     float P[16] = {0};
     const float* p = st.proj;
     const bool perspective = (int)p[6] == 0;
+    const bool on_hud_frame = !perspective || st.view_space;
     if (perspective) {
         P[0] = p[0]; P[8] = p[1]; P[5] = p[2]; P[9] = p[3]; P[10] = p[4]; P[14] = p[5]; P[11] = -1.0f;
     } else {
@@ -353,11 +366,10 @@ static void apply_state(const PixelState& st, int prim) {
     }
     // Note: a draw sampling a copy of the whole frame (the water surface is one) must
     // stay in the world, however tempting its screen-space origin makes the overlay path
-    // look. That path is in NDC and so is head-locked -- which is what the HUD wants and
-    // the ocean emphatically does not. Sending the water through it pinned the water, and
-    // the racer baked into the copy, to the viewer's face while the real racer went on
+    // look. Sending the water through it put the water, and the racer baked into the
+    // copy, on a flat panel hanging in front of the camera while the real racer went on
     // moving in the world. The seam at the billboard's edge is the lesser problem.
-    if (g_vr_active && perspective) {
+    if (g_vr_active && !on_hud_frame) {
         // WR_EYE_GAMEPROJ keeps the game's own frustum and applies only the head
         // transform, which tells apart "the eye sees less than it should" from "the game
         // never drew anything out there".
@@ -372,10 +384,29 @@ static void apply_state(const PixelState& st, int prim) {
         glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, game_proj ? P : g_vr_proj);
         glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, g_vr_view);
         glUniform1i(pr.u_vr, 1);
+    } else if (g_vr_active) {
+        // A HUD element in an eye. The game's own projection already puts its frame in
+        // [-1,1], so that is where the chain picks up -- for the perspective rig too,
+        // since the frame's matrix carries clip w through and the divide lands it on
+        // the plane just the same.
+        //
+        // GX's viewport transform is deliberately not in the chain: it places the frame
+        // within the 640x528 EFB, and an eye's render target is not the EFB -- the same
+        // reason the scissor rect is dropped below. Including it would map the EFB
+        // rather than the 480 lines the game displays, leaving the HUD a few per cent
+        // small and off centre.
+        //
+        // Every term is constant for the draw, so the whole chain folds into one matrix
+        // here and the shader is left with a single multiply.
+        float a[16], b[16], M[16];
+        mat4_mul(g_vr_hud, P, a);   // the game's 2D frame, placed in view space
+        mat4_mul(g_vr_view, a, b);  // that frame seen from this eye
+        mat4_mul(g_vr_proj, b, M);
+        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, M);
+        glUniform1i(pr.u_vr, 2);
     } else {
         glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, P);
-        glUniform1i(pr.u_vr, g_vr_active ? 2 : 0);
-        glUniform1f(pr.u_hud_scale, g_vr_hud_scale);
+        glUniform1i(pr.u_vr, 0);
     }
     const float* vp = st.viewport;  // sx, sy, sz, ox, oy, oz
     float vpa[4] = {2.0f * (vp[3] - xoff) / EFB_W - 1.0f, 2.0f * vp[0] / EFB_W, 2.0f * (vp[4] - yoff) / EFB_H - 1.0f, 2.0f * vp[1] / EFB_H};
@@ -475,6 +506,14 @@ static void apply_state(const PixelState& st, int prim) {
         glDisable(GL_DEPTH_TEST);
     }
     glDepthMask((zm >> 4) & 1);
+    // In an eye the HUD is a quad out in the world rather than something laid over the
+    // finished image, so the game's depth state no longer places it: the scene it is meant
+    // to sit over is mostly nearer than the frame, and every element of the HUD is on one
+    // plane. It is submitted last, so submission order is the layering.
+    if (g_vr_active && on_hud_frame) {
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+    }
     // Cull
     uint32_t cull = (bp[0x00] >> 14) & 3;
     static bool nocull = getenv("WR_NOCULL") != nullptr;
@@ -651,10 +690,44 @@ uint32_t present_count() { return g_present_count; }
 
 
 // Executes a batch. Returns true if it contained a Present.
-void render_set_vr_eye(const float proj[16], const float view[16], float hud_scale) {
+void render_set_vr_eye(const float proj[16], const float view[16], const float hud[16]) {
     memcpy(g_vr_proj, proj, sizeof(g_vr_proj));
     memcpy(g_vr_view, view, sizeof(g_vr_view));
-    g_vr_hud_scale = hud_scale;
+    memcpy(g_vr_hud, hud, sizeof(g_vr_hud));
+}
+
+// The frame the HUD is painted on in stereo: a quad `dist` game units ahead of the game's
+// camera, `scale` of the vertical field of view tall and 4:3 wide, with the game's own 2D
+// frame mapped onto it corner to corner. It is anchored to the camera rather than to the
+// head, so it frames the race while the viewer looks forward and stays where it is when
+// they turn to look at something else.
+//
+// `height` lifts its centre off the forward axis and `pitch_rad` leans the top away, both
+// because where a panel wants to hang is a question about a person and not about geometry.
+// At 0 and 0 the frame stands vertical and centred on the axis, which is where the eye was
+// at the moment the runtime fixed its LOCAL space.
+//
+// Writing NDC straight into the eye -- what this replaced -- cannot work in stereo. The
+// headset's per-eye frustums are asymmetric, so one NDC position is a different direction
+// in each eye; there is no depth at which the two images agree, and they never fuse.
+void render_hud_frame(float dist, float tan_half_fovy, float scale, float height,
+                      float pitch_rad, float out[16]) {
+    const float half_h = dist * tan_half_fovy * scale;
+    const float half_w = half_h * 4.0f / 3.0f;   // the game's frame is 4:3
+    const float c = cosf(pitch_rad), s = sinf(pitch_rad);
+    memset(out, 0, 16 * sizeof(float));
+    // X: the frame's own right, which the tilt leaves alone.
+    out[0] = half_w;
+    // Y: its up, leaned back by the pitch. GX clip space and view space both point Y up.
+    out[5] = half_h * c;
+    out[6] = -half_h * s;
+    // W: the centre, `height` up from the forward axis and `dist` down it (-Z forward).
+    out[13] = height;
+    out[14] = -dist;
+    out[15] = 1.0f;
+    // The Z column stays zero: every element lands on the plane of the frame. What that
+    // costs is the overlay's own depth ordering, which is why the eye path drops the
+    // depth test for these draws and lets submission order do the layering.
 }
 
 static bool execute_batch(Batch& b, bool do_present);
@@ -902,8 +975,19 @@ static bool execute_batch(Batch& b, bool do_present) {
             }
             if (drawlog && g_render_frame == drawlog) {
                 const PixelState& st = b.states[c.state];
-                fprintf(stderr, "[draw] %d verts=%u st=%u texgens=%u", draw_index, c.count,
-                        c.state, st.num_texgens);
+                // The projection type and the view-space depth are what decide a draw's
+                // fate in an eye: a perspective batch is re-projected as world geometry,
+                // anything else goes on the HUD frame. And a draw a few tens of units
+                // from the camera is in front of the viewer's face either way.
+                float zlo = 1e30f, zhi = -1e30f;
+                for (uint32_t v = 0; v < c.count; v++) {
+                    const float z = b.verts[c.first + v].pos[2];
+                    if (z < zlo) zlo = z;
+                    if (z > zhi) zhi = z;
+                }
+                fprintf(stderr, "[draw] %d verts=%u st=%u texgens=%u proj=%c z=%.0f..%.0f",
+                        draw_index, c.count, c.state, st.num_texgens,
+                        (int)st.proj[6] == 0 ? 'p' : 'o', zlo, zhi);
                 for (int i = 0; i < 8; i++)
                     if (st.tex_id[i]) fprintf(stderr, " t%d=%u%s", i, st.tex_id[i],
                                               st.tex_is_efb[i] ? "*" : "");

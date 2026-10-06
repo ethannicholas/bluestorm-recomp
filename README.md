@@ -54,12 +54,15 @@ Known limitations:
 In rough priority order. Everything here reproduces; where there is a lead it is written down so
 the next attempt does not start from nothing.
 
-1. **The HUD needs rework in stereo.** It is head-locked via the NDC overlay path, sits far too
-   close, and will not stereo-fuse because the Quest's per-eye frustums are asymmetric so a fixed
-   NDC position is not a consistent depth. It should be a world-anchored frame at a fixed position
-   relative to the world, framing the race when looking forward and staying put when the head
-   turns. The countdown lights are wrongly in-world 3D, sticking out of the water, and belong in
-   that frame.
+1. **The rendered world is 23.2 degrees off real gravity.** The game's chase camera looks down by
+   that much and its view space is handed to the renderer as though it were the headset's
+   gravity-aligned reference space, so in stereo the sea is a 23-degree slope and the horizon rides
+   high. The HUD is dealt with — it is tilted to match (see
+   [Where the HUD goes](#where-the-hud-goes)) — but the world itself is not, and a tilted ocean is
+   the sort of thing that is felt rather than seen. Taking the camera's pitch out of the world and
+   letting the viewer's own neck supply it would put the sea level, let the HUD go back to square
+   with the room, and mean looking down at the ski the way one would in life. It would also change
+   how the whole thing feels to play, which is why it has not been done on a hunch.
 2. **World scale.** The racers look too small; `units_per_metre` in `vr.txt` is a guess.
 3. **Spray and rain that hit the camera render as squares** with pieces of scene in them. These are
    the screen-space grabs the spray is composited from, replayed as billboards in an eye. Same
@@ -323,7 +326,7 @@ The app presents the game two ways and switches between them automatically:
 
 - **Theater** — the frame on a flat screen in space, as an `XrCompositionLayerQuad`.
 - **Stereo** — the world rendered per eye as an `XrCompositionLayerProjection`, with the 2D
-  elements kept flat as an overlay.
+  elements painted on a frame standing in front of the game's camera.
 
 The switch is driven by the game's own state: `0x806193BC` is non-zero from the moment the
 countdown starts until the race ends, and zero through boot, the menus, course select, loading,
@@ -396,10 +399,10 @@ Two things make this work:
 Draws that sample a whole-frame copy are screen-space — in this game the water surface is one,
 composited over the scene. They are left in the world, where the billboard's edge shows as a seam.
 The two alternatives are both worse. Dropping them leaves the seabed showing through bare sand
-instead of blue-green water (`WR_EYE_SKIPCOMP=1`, for comparison). Drawing them flat across the
-eye via the overlay path pins them to the viewer's face, ocean and all, along with the racer baked
-into the copy — the overlay path is in NDC and therefore head-locked, which is what the HUD wants
-and the sea emphatically does not.
+instead of blue-green water (`WR_EYE_SKIPCOMP=1`, for comparison). Sending them down the overlay
+path puts them on the HUD frame — a flat panel a few metres in front of the camera, ocean and all,
+along with the racer baked into the copy, while the real racer goes on moving in the world. That
+is where the HUD belongs and emphatically not where the sea does.
 
 What remains visible at speed: the seam at the billboard's edge, and the spray grabs, which are
 replayed as billboards too and show as faint squares with pieces of scene inside them.
@@ -407,7 +410,13 @@ replayed as billboards too and show as faint squares with pieces of scene inside
 `--eye-yaw=N` turns the head N degrees. With the view left at identity nothing in the image can be
 seen to be head-locked, and a change that pinned the ocean and a copy of the racer to the viewer's
 face went through this harness looking perfectly correct. Dump a frame at two yaws: whatever does
-not move with the world is locked to the head, which only the HUD should be.
+not move is locked to the head, and nothing in this game should be — not even the HUD, which is
+anchored to the game's camera rather than to the viewer.
+
+`WR_DUMP_RANGE=a-b` narrows dumping to a window of frames in both the flat and the eye path, so a
+short stretch can be caught every few frames without writing a gigabyte — anything that is only on
+screen for three seconds, the countdown among them, is missed by any interval coarse enough to run
+a whole race with.
 
 `WR_EYELOG=1` prints each frame's split — every copy with its size, source rect, clear flag, the
 draws ahead of it and whether they were replayed — and is the quickest way to tell "the eye
@@ -415,6 +424,88 @@ rendered the wrong part" from "the eye rendered nothing". `WR_DUMP_COPIES=20` du
 frame holds at least that many copies, which is how a frame thick with spray gets caught: the
 faults that only appear at speed are in exactly those frames, and a fixed dump interval almost
 never lands on one.
+
+#### Where the HUD goes
+
+The game's 2D elements — the race HUD, the mode panel over the course flyover, the results screen
+— reach the renderer as orthographic batches: an identity position matrix, a 640×480 ortho
+projection, vertices that are screen coordinates. In stereo they are painted on a **frame**: a quad
+standing a fixed distance in front of the game's camera with the game's own 2D frame mapped onto it
+corner to corner. Four `vr.txt` keys place it: `hud_distance_m` and `hud_scale` for how far out it
+stands and how much of the field of view it fills, `hud_height_m` and `hud_pitch_deg` for how high
+its centre sits off the forward axis and how far its top leans.
+
+**The frame is not square to the room, and should not be.** The game's chase camera looks down
+**23.2 degrees**, and vertices reach the renderer already in its view space, so the whole rendered
+world is tilted by that much against real gravity — the sea included. A frame built square to the
+reference space is genuinely vertical in the room, and against that world it reads as leaning back,
+which is exactly what wearing it showed. `hud_pitch_deg -23.2` makes it parallel to the game
+world's vertical instead, which is the vertical that counts when immersed. The height comes from
+the same angle: the world horizon sits `4*tan(23.2) = 1.7 m` above the forward axis at 4 m, so
+`hud_height_m 1.3` puts the HUD a little below the horizon.
+
+That 23.2 is measured, not fitted. GX position matrices are modelview, so for any scenery whose
+model is unrotated the matrix *is* the view matrix, and the dot of its second row with world up is
+`cos(pitch)` whatever the camera's yaw. Across a `WR_MTXLOG` frame the dominant rotation — 4800 of
+13274 draws in one frame, 4218 of 10942 in another taken a thousand frames later — gives
+**23.20°** and **23.27°**. Eyeballing it in the headset landed on 23, which is how the two were
+reconciled. Beware the horizon as a shortcut: on a course ringed by land the visible sea/sky line
+is the far shoreline, well below the true horizon, and reading it that way suggests about 7°.
+
+That axis is eye level only if the runtime fixed its `LOCAL` space while the headset was being
+worn. Fix it with the headset on a desk — easy to do on a device that is usually driven over adb —
+and the frame hangs wherever the desk was, with nothing in its own geometry wrong. `log_frames 1`
+prints the head's height and pitch alongside the frame's placement once a second, which is the way
+to tell those apart from inside the headset, where they look the same.
+
+Writing those elements straight into each eye's NDC — what this replaced — cannot work, and the
+reason is worth keeping. The headset's per-eye frustums are **asymmetric**, so one NDC position is
+a different direction in each eye. There is no depth at which the two images agree, so the HUD
+never fuses into one; it reads as two overlapping HUDs at whatever distance the eyes give up and
+settle on, which is far too close to focus on comfortably.
+
+Three details the frame depends on:
+
+- **The chain starts at the game's own clip space, not after GX's viewport transform.** That
+  transform places the frame inside the 640×528 EFB, and an eye's render target is not the EFB —
+  the same reason the scissor rect is dropped in an eye. Carrying it in maps the whole EFB instead
+  of the 480 lines the game displays, which leaves the HUD a few per cent small and off centre.
+- **Both eyes are given the same frame.** It is built once per frame, outside the per-eye loop,
+  from the wider half-field of the two eyes. Sizing it per eye would hand the viewer two different
+  HUDs to fuse, which is the original fault in a subtler form.
+- **The depth test goes off for these draws.** Every element of the HUD lands on one plane, so the
+  game's own depth state no longer orders them, and the scene is mostly nearer than the frame. The
+  HUD is submitted last, so submission order is the layering.
+
+The frame is anchored to the game's camera, not to the head. It frames the race while the viewer
+looks forward and stays where it is when they turn to look at something else — which is what
+`--eye-yaw` above checks: under a yaw the HUD swings with the scene instead of sitting still.
+
+One thing on the frame is not 2D. The countdown light rig is a 3D model, and the game places it in
+*view space*: its position matrix is the identity and a translation of (0, 30, -160), so it hangs a
+fixed distance in front of the camera and never moves with the course. Re-projected into an eye as
+world geometry it became a solid object standing in the water between the viewer and the racer, so
+it goes on the frame with the rest of the HUD — the frame's matrix carries clip `w` through, so a
+perspective batch lands on the plane the same way an orthographic one does.
+
+An identity position matrix is what tells those draws from the scene, and it is a sharp test rather
+than a threshold: GX position matrices carry the modelview, so world geometry can never have one.
+Two frames dumped with `WR_MTXLOG`, one during the countdown and one mid-race, say so exactly —
+the countdown frame has 327 perspective draws with an identity matrix, all of them the rig, in one
+contiguous block just before the 2D overlay, and the mid-race frame has **none at all**. Only the
+first vertex's matrix is tested, which no draw in this game disagrees with.
+
+A mono dump cannot show the thing that matters here — whether the HUD fuses — so the frame was
+checked by arithmetic instead, against the rig, whose view-space position is fixed and therefore
+identical in every frame of every run. Moving it onto the frame predicts a uniform 0.9527× shrink
+towards the centre of the image (the game's 60° vertical field against the harness's 90°, times
+`hud_scale`), and the lamp centres moved by 0.956×. Yawing the head 20° predicts them at
+(296.8, 258.1) and (348.7, 263.2) in a 960×720 dump, and they landed within a quarter of a pixel
+of both. Against a flat capture of the same moment, the lamps land within two pixels of the flat
+frame's own layout scaled by `hud_scale`. The three numbers between them say the frame carries the
+game's layout faithfully, sits where the geometry says it should, and is anchored in the world
+rather than to the head. Whether four metres is a comfortable place to read it from is still a
+question only the headset can answer.
 
 #### Attributing part of the image to the draws that made it
 
@@ -515,7 +606,10 @@ offset_y 0               #   x right, y up, z back
 offset_z 0
 near_m 0.1               # near/far planes in metres; too wide a ratio causes z-fighting
 far_m 2000
-hud_scale 0.55           # how much of the field of view the 2D overlay occupies
+hud_scale 0.5            # how much of the field of view the HUD's frame occupies
+hud_distance_m 4         # how far in front of the game's camera that frame stands, in metres
+hud_height_m 1.3         # how far above the forward axis the frame's centre sits
+hud_pitch_deg -23.2      # frame tilt; -23.2 is parallel to the game world's vertical
 start_in_stereo 0          # start in stereo rather than theater
 ```
 

@@ -33,6 +33,13 @@ struct PixelState {
     uint8_t tex_is_efb[8];     // texmap is an EFB copy (sampled from render target copy)
     uint8_t num_texgens;
     uint8_t num_colors;
+    // The draw's position matrix was the identity, so the game placed this geometry in
+    // view space itself rather than in the world. Here that means the countdown light
+    // rig, which is 3D but belongs to the HUD: it hangs a fixed distance in front of the
+    // camera and never moves with the course. Stereo has to tell the two apart --
+    // re-projected into an eye as world geometry, the rig becomes a solid object
+    // standing in the water between the viewer and the racer.
+    uint8_t view_space;
 };
 
 enum class CmdType : uint8_t { Draw, EfbCopy, Present };

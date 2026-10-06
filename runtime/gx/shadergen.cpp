@@ -106,10 +106,9 @@ uniform float u_point_size;
 // the CPU-side transform in xf.cpp runs once, not twice.
 //   0 = flat, the game's own projection and GX viewport transform
 //   1 = world geometry through the eye projection
-//   2 = a 2D element drawn as a flat overlay inside the eye
+//   2 = a 2D element, painted on the HUD frame out in front of the game's camera
 uniform int u_vr;
 uniform mat4 u_view;       // eye transform, relative to the game's camera
-uniform float u_hud_scale; // shrinks the 2D overlay into a comfortable central area
 out vec4 v_col0;
 out vec4 v_col1;
 out vec3 v_tex[8];
@@ -119,6 +118,13 @@ void main() {
         // the GX viewport transform does not apply. No Y negation either -- that
         // exists only to cancel the flip the EFB blit does, and nothing blits here.
         gl_Position = u_proj * (u_view * vec4(a_pos, 1.0));
+    } else if (u_vr == 2) {
+        // A 2D element in an eye. u_proj here is not the game's projection alone but the
+        // whole chain folded on the CPU: that projection, the frame the overlay is
+        // painted on, and the eye. GX's viewport transform is left out on purpose -- it
+        // places the frame in the EFB, which an eye does not render into. Every term is
+        // constant for the draw, so there is nothing left to do per vertex.
+        gl_Position = u_proj * vec4(a_pos, 1.0);
     } else {
         vec4 clip = u_proj * vec4(a_pos, 1.0);
         vec4 p;
@@ -126,12 +132,9 @@ void main() {
         p.y = u_vp_a.z * clip.w + u_vp_a.w * clip.y;
         p.z = u_vp_b.x * clip.w + u_vp_b.y * clip.z;
         p.w = clip.w;
-        // The overlay goes through GX's viewport transform, whose Y points down, so it
-        // needs the same negation the flat path applies -- an eye target is presented
-        // directly rather than through the blit, but the blit's flip is about texture
-        // orientation, not about this.
-        if (u_vr == 2) gl_Position = vec4(p.x * u_hud_scale, -p.y * u_hud_scale, p.z, p.w);
-        else           gl_Position = vec4(p.x, -p.y, p.z, p.w);
+        // GX's viewport transform points Y down and the EFB blit flips the image back,
+        // so the flat path negates Y here to cancel it.
+        gl_Position = vec4(p.x, -p.y, p.z, p.w);
     }
     gl_PointSize = u_point_size;
     v_col0 = a_col0;

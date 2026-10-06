@@ -28,9 +28,30 @@ struct VrConfig {
     float near_m = 0.1f;
     float far_m = 2000.0f;
 
-    // Fraction of the field of view the flat 2D elements (the HUD) are shrunk into
-    // when rendering in stereo.
-    float hud_scale = 0.55f;
+    // Where the frame the HUD is painted on hangs, and how big it is. The distance is
+    // what makes the HUD fuse: it gives the two eyes one thing at one depth to agree on,
+    // which a fixed position in each eye's own NDC never does. The rest is comfort, and
+    // comfort is only judgeable by wearing the headset -- hence four knobs rather than
+    // four constants.
+    //
+    //   scale       fraction of the vertical field of view the frame fills
+    //   distance    how far ahead of the game's camera it stands
+    //   height      how far above the forward axis its centre sits, in metres
+    //   pitch       tilt about the frame's horizontal axis. 0 stands the frame vertical
+    //               in the *room*; negative leans its top towards the viewer.
+    //
+    // The pitch default is not a taste: the game's chase camera looks down 23.2 degrees,
+    // and vertices reach the renderer already in its view space, so the whole rendered
+    // world is tilted by that much against real gravity. A frame built square to the
+    // reference space is genuinely vertical in the room and reads as leaning back against
+    // that world, which is what wearing it showed. -23.2 makes it parallel to the game
+    // world's vertical instead, which is the one that counts when immersed. The height
+    // follows from the same angle: the world horizon sits 4*tan(23.2) = 1.7 m above the
+    // axis at 4 m, so 1.3 m puts the HUD a little below the horizon.
+    float hud_scale = 0.5f;
+    float hud_distance_m = 4.0f;
+    float hud_height_m = 1.3f;
+    float hud_pitch_deg = -23.2f;
 
     // Trace the theater path one display frame at a time (adb logcat -s waverace).
     bool log_frames = false;
