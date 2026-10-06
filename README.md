@@ -55,8 +55,7 @@ Known limitations:
 In rough priority order. Everything here reproduces; where there is a lead it is written down so
 the next attempt does not start from nothing.
 
-1. **World scale.** The racers look too small; `units_per_metre` in `vr.txt` is a guess.
-2. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
+1. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
    bought about 15%; the next candidates are deduplicating `PixelState` by content and the triple
    scene render the stereo path does (one flat into the EFB, then one per eye).
 

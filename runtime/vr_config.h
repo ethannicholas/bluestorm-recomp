@@ -13,8 +13,11 @@
 
 struct VrConfig {
     // Game units per real-world metre. Scales both the interpupillary distance and
-    // head movement, so it sets the apparent size of the world.
-    float units_per_metre = 100.0f;
+    // head movement, so it sets the apparent size of the world: raising it makes the
+    // viewer bigger and the world smaller. 100 was a guess and left the racers looking
+    // about half the size they should; 50 is where it was judged from inside the headset,
+    // which is the only place the question can be answered.
+    float units_per_metre = 50.0f;
 
     // Where the viewpoint sits relative to the game's camera, in game units:
     // x right, y up, z back. The game's own chase camera is already over the
