@@ -54,28 +54,20 @@ Known limitations:
 In rough priority order. Everything here reproduces; where there is a lead it is written down so
 the next attempt does not start from nothing.
 
-1. **The racer's reflection is wrong.** The reflection in the water is drawn right side up and
-   stamped onto the surface rather than mirrored beneath the ski. The model is submitted twice per
-   frame — two groups of draws with identical vertex counts and textures — and a position-matrix
-   dump over a whole frame finds **no mirrored matrix anywhere**, so the mirror is not being
-   applied at all. Earlier it appeared upside down at the same coordinates, i.e. mirrored but
-   misplaced. Next step: check whether the mirror lives in the projection rather than the
-   modelview. `WR_MTXLOG=<n>` dumps every draw's position matrix and projection n frames into a
-   race; `WR_DRAWLOG`/`WR_DRAW_SKIP` attribute pixels to draws.
-2. **The HUD needs rework in stereo.** It is head-locked via the NDC overlay path, sits far too
+1. **The HUD needs rework in stereo.** It is head-locked via the NDC overlay path, sits far too
    close, and will not stereo-fuse because the Quest's per-eye frustums are asymmetric so a fixed
    NDC position is not a consistent depth. It should be a world-anchored frame at a fixed position
    relative to the world, framing the race when looking forward and staying put when the head
    turns. The countdown lights are wrongly in-world 3D, sticking out of the water, and belong in
    that frame.
-3. **World scale.** The racers look too small; `units_per_metre` in `vr.txt` is a guess.
-4. **Spray and rain that hit the camera render as squares** with pieces of scene in them. These are
+2. **World scale.** The racers look too small; `units_per_metre` in `vr.txt` is a guess.
+3. **Spray and rain that hit the camera render as squares** with pieces of scene in them. These are
    the screen-space grabs the spray is composited from, replayed as billboards in an eye. Same
    class as the water-surface billboard, which is kept because dropping it loses the ocean.
-5. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
+4. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
    bought about 15%; the next candidates are deduplicating `PixelState` by content and the triple
    scene render the stereo path does (one flat into the EFB, then one per eye).
-6. **No audio on Android.** `audio_stub.cpp` discards DSP output; the mixing in `audio.cpp` is
+5. **No audio on Android.** `audio_stub.cpp` discards DSP output; the mixing in `audio.cpp` is
    portable and only device output is SDL-bound. AAudio or Oboe would do it.
 
 ## Supported version
@@ -463,10 +455,22 @@ flyover, which has a deliberately sharp edge, before anyone asked whether the ed
 checking the other platform settled it in one run. And a claim that the fault was Quest-only was an
 assumption about the Mac that nobody had tested; when tested, the Mac rendered the same thing.
 
-One thing that investigation turned up but did not change: the scissor offset register reads 340,
-while the code treats the origin as the 342 that `GXSetScissorBoxOffset(0, 0)` implies. Reading the
-register shifts the whole picture two pixels right, and the constant is what has been checked
-against reference footage, so it stays — see `scissor_offset()`.
+One thing that investigation turned up and left alone was the real fault behind a different
+symptom. The scissor offset register reads 340, where the renderer assumed the 342 that
+`GXSetScissorBoxOffset(0, 0)` implies. The game sets the offset to (-2, -2) and moves every
+viewport by the same amount, so on hardware the two cancel; assuming 342 drew every pass two
+pixels up and left of where the game believes it is. The water surface looks its refraction up in
+a copy of the frame at screen coordinates the game computes itself, so it sampled that copy two
+pixels out of register and stood a water-tinted second copy of the racer beside the real one —
+long taken for a misplaced reflection. `scissor_offset()` now reads the register.
+
+The racer's actual reflection is a separate draw, and it was missing altogether: a 128×128 pass
+renders him mirrored, and a patch of water under the ski samples it through an indirect stage
+that adds the previous stage's coordinate. The shader generator carried over only the previous
+stage's *offset*, so the lookup landed in the texture's empty corner. Two things worth knowing
+before searching for a mirror again: the game mirrors the camera about the water plane *and*
+negates view-space X, so the reflection passes have a positive determinant, and it un-flips X
+when it samples them.
 
 ### Tuning VR (`vr.txt`)
 

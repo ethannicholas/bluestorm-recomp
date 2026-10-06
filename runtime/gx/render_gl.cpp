@@ -319,16 +319,17 @@ static bool samples_fullscreen_copy(const PixelState& st);
 
 // The origin that the scissor box and the viewport are both measured from, in EFB pixels.
 //
-// GX stores it halved, so GXSetScissorBoxOffset(0, 0) reads back as 342 -- which is where
-// the 342 hardcoded here comes from. Reading the register instead would be more faithful
-// in general, and both the scissor and the viewport would have to use it or geometry and
-// clipping disagree and nearly everything is scissored away. It is not done, because this
-// game's register reads 340 throughout, and switching to it shifts the whole picture two
-// pixels right with nothing to say which is correct. The constant is what has been
-// checked against reference footage, so it stays until there is a reason to move it.
-static void scissor_offset(const uint32_t*, int& xoff, int& yoff) {
-    xoff = 342;
-    yoff = 342;
+// GX stores it halved and biased by 342, so GXSetScissorBoxOffset(0, 0) reads back as 342.
+// This game sets (-2, -2) -- the register reads 340 -- and moves every viewport by the same
+// (-2, -2), so on hardware the two cancel and the picture sits at the EFB's origin.
+// Assuming 342 instead left every pass two pixels up and left of where the game believes
+// it is. That shows wherever the game samples a copy of the EFB at screen coordinates it
+// worked out itself: the water looked its refraction up two pixels out of register, which
+// stood a water-tinted second copy of the racer beside the real one, and the last two
+// columns and rows of every pass were never drawn.
+static void scissor_offset(const uint32_t* bp, int& xoff, int& yoff) {
+    xoff = (int)(bp[0x59] & 0x3FF) * 2;
+    yoff = (int)((bp[0x59] >> 10) & 0x3FF) * 2;
 }
 
 static void apply_state(const PixelState& st, int prim) {
@@ -489,7 +490,7 @@ static void apply_state(const PixelState& st, int prim) {
             glCullFace(back ? GL_BACK : GL_FRONT);
         }
     }
-    // Scissor (EFB coords, y down). See scissor_offset() for why 342 is not a constant.
+    // Scissor (EFB coords, y down), measured from the same origin as the viewport.
     int x0 = (int)(bp[0x20] >> 12 & 0x7FF) - xoff, y0 = (int)(bp[0x20] & 0x7FF) - yoff;
     int x1 = (int)(bp[0x21] >> 12 & 0x7FF) - xoff + 1, y1 = (int)(bp[0x21] & 0x7FF) - yoff + 1;
     if (x0 < 0) x0 = 0;

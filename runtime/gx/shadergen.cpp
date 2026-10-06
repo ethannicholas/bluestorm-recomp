@@ -98,7 +98,7 @@ layout(location = 2) in vec4 a_col1;
         s += buf;
     }
     s += R"(uniform mat4 u_proj;
-uniform vec4 u_vp_a;   // x: 2*(offx-342)/w - 1, y: 2*sx/w, z: 2*(offy-342)/h - 1, w: 2*sy/h
+uniform vec4 u_vp_a;   // x: 2*(offx-xoff)/w - 1, y: 2*sx/w, z: 2*(offy-yoff)/h - 1, w: 2*sy/h (scissor offset)
 uniform vec4 u_vp_b;   // x: 2*offz/16777215 - 1, y: 2*sz/16777215
 uniform float u_point_size;
 // VR. a_pos arrives in the game's view space, so an eye is just another transform in
@@ -191,7 +191,7 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     s += "  ivec4 tex = ivec4(0), ras = ivec4(0), konst = ivec4(0);\n";
     s += "  int alphabump = 0;\n";
     s += "  ivec4 snap = ivec4(0);\n";  // WR_SNAP target; unused unless WR_SHOW=snap
-    s += "  vec2 ind_prev = vec2(0.0);\n";
+    s += "  vec2 tc_prev = vec2(0.0);\n";
 
     // texcoords (projective divide)
     for (uint32_t i = 0; i < 8; i++) {
@@ -234,9 +234,11 @@ std::string gen_pixel_shader(const ShaderKey& k) {
                 W("    vec2 ioff = vec2(dot(vec3(u_indmtx[%u]), vec3(icrd)), dot(vec3(u_indmtx[%u]), vec3(icrd))) * exp2(float(u_indscale[%u])) / 1024.0;\n",
                   m * 2, m * 2 + 1, m);
             } else if (mid >= 5 && mid <= 7) {
-                W("    vec2 ioff = tc.xx * vec2(icrd.xy) / 256.0 * exp2(float(u_indscale[%u]));\n", mid - 5);
+                // Dynamic matrices: the stage's own coordinate scaled by one component of
+                // the indirect sample -- [s 0 0; t 0 0] for S, [0 s 0; 0 t 0] for T.
+                W("    vec2 ioff = tc * float(icrd.x) / 256.0 * exp2(float(u_indscale[%u]));\n", mid - 5);
             } else if (mid >= 9 && mid <= 11) {
-                W("    vec2 ioff = tc.yy * vec2(icrd.xy) / 256.0 * exp2(float(u_indscale[%u]));\n", mid - 9);
+                W("    vec2 ioff = tc * float(icrd.y) / 256.0 * exp2(float(u_indscale[%u]));\n", mid - 9);
             } else {
                 W("    vec2 ioff = vec2(0.0);\n");
             }
@@ -248,9 +250,12 @@ std::string gen_pixel_shader(const ShaderKey& k) {
         else if (sw) W("    tc.x = mod(tc.x, %.1f);\n", wrapsz[sw]);
         if (tw == 6) W("    tc.y = 0.0;\n");
         else if (tw) W("    tc.y = mod(tc.y, %.1f);\n", wrapsz[tw]);
-        if (fb) W("    ioff += ind_prev;\n");
-        W("    ind_prev = ioff;\n");
         W("    tc += ioff;\n");
+        // "Add previous" carries the previous stage's whole coordinate, not just its
+        // offset: a stage can zero its own coordinate with a wrap of 0 and look up at
+        // the stage before's plus a bump, which is how the racer's reflection is warped.
+        if (fb) W("    tc += tc_prev;\n");
+        W("    tc_prev = tc;\n");
         // ---- texture ----
         if (tex_en) {
             uint32_t tswap = (aenv >> 2) & 3;

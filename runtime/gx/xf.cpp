@@ -455,9 +455,9 @@ void renderer_draw(const DrawCall& dc) {
     // frame number because the timebase is wall-clock driven, so frame N is a different
     // moment in every run -- aiming at a frame number lands on a different scene.
     //
-    // A reflection is a mirror about the water plane. Whether it is applied shows up here
-    // as a negative determinant, in the position matrix if the camera is mirrored or in
-    // the projection if the Y axis is flipped there instead.
+    // Do not look for the reflection passes by a negative determinant: the game mirrors
+    // the camera about the water plane *and* negates view-space X, which keeps the winding
+    // and leaves the determinant positive. It undoes the X flip when it samples the result.
     static const uint32_t mtxlog = getenv("WR_MTXLOG") ? (uint32_t)atoi(getenv("WR_MTXLOG")) : 0;
     static uint32_t mtx_draw;
     static bool was_racing;
@@ -494,7 +494,7 @@ void renderer_draw(const DrawCall& dc) {
                 xf_f(m + 8), xf_f(m + 9), xf_f(m + 10), xf_f(m + 11),
                 g_out[0].pos[0], g_out[0].pos[1], g_out[0].pos[2]);
         fprintf(stderr, "[prj] %3u type=%d %9.4f %9.4f %9.4f %9.4f %9.4f %9.4f\n", mtx_draw,
-                (int)g_state.xf_regs[0x1026], xfr_f(0x20), xfr_f(0x21), xfr_f(0x22),
+                (int)g_state.xf_regs[0x26], xfr_f(0x20), xfr_f(0x21), xfr_f(0x22),
                 xfr_f(0x23), xfr_f(0x24), xfr_f(0x25));
         mtx_draw++;
     }
