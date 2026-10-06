@@ -418,10 +418,19 @@ and exactly two in a 5,837-frame session that retires to the main menu (1 at 199
 against a quit confirmed at 3520). It is zero through boot, the menus, course select, loading, the
 results screen and the title screen. Stereo is simply `0x80602160 != 0`.
 
-It comes up as the course intro begins, which put the headset into stereo the moment the track
-finished loading — the intro is a full 3D flyover and the flag is up for it. So the start
-sequence's own state at `0x80625A54` is AND-ed in to exclude that phase (12 over the intro, 5 from
-the lights, 0 for the rest of the race), which moves the switch from 1997 to 2288.
+No single variable spans a race at both ends, so three are used, one job each.
+
+`0x80602160` gates everything, being the only one that clears when a race is *quit*. On its own it
+comes up as the course intro begins, which put the headset into stereo the moment the track
+finished loading — the intro is a full 3D flyover and the flag is up for it — and it stays up for
+another 170 frames past the chequered flag, through the results. So within it, the start sequence's
+phase at `0x80625A54` brings stereo up with the starting lights (value 5, from 2287), and the wave
+height at `0x806193BC` carries it from there to the finish: `on_course && (race || countdown)`.
+That switches at 2288 and back at 3629, against 1997 and 3798 for the flag alone.
+
+Using `0x80602160` by itself was wrong in a way worth recording, because the test that missed it is
+an easy one to repeat: every trace behind it ended by *quitting*, so the 170-frame tail past a
+finish never showed up, and a finished race sat in stereo over the results screen.
 
 The rig is still visible for about half a second before the switch: the lights come into view at
 2278 and `0x80625A54` leaves the intro phase at 2287, with a frame of debounce on top. Closing that

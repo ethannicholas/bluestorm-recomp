@@ -37,13 +37,19 @@
 // enough in a headset to be worth refusing to run at all.
 static constexpr uint32_t kOnCourseAddr = 0x80602160;
 
-// The start sequence's phase, used only to hold stereo off over the course intro. Traced
-// every frame it has three transitions a race: 0 until the course loads, 12 while the
-// intro flies over, 5 from the starting lights coming into view until shortly after the
-// start, 0 for the remainder. Only the intro value is tested, so an unmeasured value here
-// just means stereo starts where kOnCourseAddr says, which is the behaviour without it.
+// The start sequence's phase: 0 until the course loads, 12 while the intro flies over, 5
+// from the starting lights coming into view until shortly after the start, 0 for the rest
+// of the race. It is what brings stereo up with the lights, before the race proper has
+// begun.
 static constexpr uint32_t kStartStateAddr = 0x80625A54;
-static constexpr uint32_t kStartIntro = 12;
+static constexpr uint32_t kStartCountdown = 5;
+
+// The course's wave height, non-zero from the countdown reaching the line until the race
+// ends. It cannot start stereo -- it comes up about a second after the lights -- and it
+// cannot end it either, because nothing resets it when a course is abandoned. What it does
+// know is when a race *finishes*: kOnCourseAddr stays up for another 170 frames past the
+// chequered flag, through the results, which is too long to sit in stereo.
+static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
 #include "gx/render.h"
 #include "gx/render_gl.h"
 #include "gx/gl.h"
@@ -727,14 +733,17 @@ void android_main(android_app* app) {
                     fatal("on-course flag at %#x reads %#010x, which is not 0 or 1. This "
                           "build only knows the disc named in README.md; refusing to "
                           "guess which view to present.", kOnCourseAddr, on_course);
-                // On a course, but not during the course intro: that flyover is a full 3D
-                // scene and the flag is up for it, which put the headset into stereo as
-                // soon as the track finished loading. The start sequence's own state says
-                // which phase it is -- 12 over the intro, 5 from the starting lights
-                // coming into view, 0 for the rest of the race -- so excluding 12 begins
-                // stereo with the lights and leaves the rest alone.
+                // Three variables, one job each, because no one of them spans a race at
+                // both ends. kOnCourseAddr is the only one that clears when a race is
+                // quit, so it gates everything. Within that, the countdown phase brings
+                // stereo up with the starting lights, and the race flag carries it from
+                // there to the chequered flag -- it is what notices a race *finishing*,
+                // which kOnCourseAddr does not do until 170 frames later, well into the
+                // results.
                 const uint32_t start_state = mem_r32(kStartStateAddr);
-                const bool want_stereo = on_course != 0 && start_state != kStartIntro;
+                const uint32_t racing = mem_r32(kRaceActiveAddr);
+                const bool want_stereo = on_course != 0 &&
+                                         (racing != 0 || start_state == kStartCountdown);
                 // The flag is written by the guest thread and read here, so a sample can
                 // land on a transient: tracing the old race flag from this side caught it
                 // reading non-zero for a single frame on the results screen and twice
