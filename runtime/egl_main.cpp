@@ -26,6 +26,7 @@
 #include <vector>
 
 uint32_t boot_load(const char* iso_path);
+bool audio_open();
 void debug_dump_threads();
 bool write_png(const char* path, const uint8_t* rgba, int w, int h);
 
@@ -245,6 +246,13 @@ int main(int argc, char** argv) {
         gx::render_set_world_pitch(kWorldPitch);
     }
     gx::render_set_window_size(640 * scale, 480 * scale);
+
+    // WR_AUDIO=1 opens the device here too. Off by default because this harness exists
+    // to be run over adb on a device somebody may be wearing, but it is the only way to
+    // exercise the audio path without the VR frontend -- and with WR_WAV it records what
+    // the device was handed, which is checkable afterwards rather than by listening.
+    if (getenv("WR_AUDIO") && !audio_open())
+        fprintf(stderr, "audio unavailable; continuing without sound\n");
 
     uint32_t entry = boot_load(iso.c_str());
     threads_start_boot(entry);

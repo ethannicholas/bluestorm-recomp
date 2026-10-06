@@ -85,7 +85,16 @@ list(REMOVE_ITEM RUNTIME_SOURCES
   ${CMAKE_SOURCE_DIR}/runtime/android_main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/openxr_main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/vr_config.cpp
-  ${CMAKE_SOURCE_DIR}/runtime/audio_stub.cpp)
+  ${CMAKE_SOURCE_DIR}/runtime/audio_stub.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/audio_sdl.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/audio_aaudio.cpp)
+
+# The desktop's audio device. Added back here rather than left in the glob so that the
+# two backends cannot both land in one target; the Android ones are listed above and
+# picked up by CORE_SOURCES_AUDIO instead.
+if(NOT ANDROID)
+  list(APPEND RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/audio_sdl.cpp)
+endif()
 
 # Everything below the renderer and the SDL frontend -- the CPU, OS, hardware and GX
 # front end, including the batch queue in gx/xf.cpp -- is free of both GL and SDL.
@@ -93,6 +102,7 @@ set(CORE_SOURCES ${RUNTIME_SOURCES})
 list(REMOVE_ITEM CORE_SOURCES
   ${CMAKE_SOURCE_DIR}/runtime/main.cpp
   ${CMAKE_SOURCE_DIR}/runtime/audio.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/audio_sdl.cpp
   ${CMAKE_SOURCE_DIR}/runtime/png.cpp
   ${CMAKE_SOURCE_DIR}/runtime/gx/render_gl.cpp
   ${CMAKE_SOURCE_DIR}/runtime/gx/gl_load.cpp
@@ -100,6 +110,15 @@ list(REMOVE_ITEM CORE_SOURCES
 list(APPEND CORE_SOURCES ${CMAKE_SOURCE_DIR}/runtime/audio_stub.cpp)
 
 set(BENCH_SOURCES ${CORE_SOURCES} ${CMAKE_SOURCE_DIR}/runtime/bench_main.cpp)
+
+# The same core with real audio instead of the stub, for the Android targets. The mix in
+# audio.cpp is portable; only the device belongs to a platform, so Android swaps the SDL
+# backend for the AAudio one and is otherwise the desktop's audio exactly.
+set(CORE_SOURCES_AUDIO ${CORE_SOURCES})
+list(REMOVE_ITEM CORE_SOURCES_AUDIO ${CMAKE_SOURCE_DIR}/runtime/audio_stub.cpp)
+list(APPEND CORE_SOURCES_AUDIO
+  ${CMAKE_SOURCE_DIR}/runtime/audio.cpp
+  ${CMAKE_SOURCE_DIR}/runtime/audio_aaudio.cpp)
 
 # Render target: desktop OpenGL 3.3 core, or OpenGL ES 3.2 for Android and standalone
 # headsets. One renderer source serves both; see runtime/gx/gl.h.
@@ -183,7 +202,7 @@ endif()
 # only, and deliberately not an APK -- it validates the GL ES renderer on a device over
 # adb before there is any VR frontend to run it in.
 if(ANDROID AND HAVE_GAME_ISO)
-  set(EGL_SOURCES ${CORE_SOURCES}
+  set(EGL_SOURCES ${CORE_SOURCES_AUDIO}
     ${CMAKE_SOURCE_DIR}/runtime/egl_main.cpp
     ${CMAKE_SOURCE_DIR}/runtime/png.cpp
     ${CMAKE_SOURCE_DIR}/runtime/gx/render_gl.cpp
@@ -193,7 +212,7 @@ if(ANDROID AND HAVE_GAME_ISO)
   add_executable(waverace_egl ${EGL_SOURCES})
   target_include_directories(waverace_egl PRIVATE
     ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR} ${GLAD_INCLUDE_DIR})
-  target_link_libraries(waverace_egl PRIVATE game_recomp EGL log)
+  target_link_libraries(waverace_egl PRIVATE game_recomp EGL log aaudio)
   target_compile_options(waverace_egl PRIVATE ${WR_RUNTIME_WARNINGS})
   target_compile_definitions(waverace_egl PRIVATE WR_DEFAULT_ISO="${GAME_ISO}" ${WR_GL_DEFS})
 
@@ -220,7 +239,7 @@ if(ANDROID AND HAVE_GAME_ISO)
   set(OPENXR_INCLUDE ${openxr_aar_SOURCE_DIR}/prefab/modules/headers/include)
   set(OPENXR_LIB ${openxr_aar_SOURCE_DIR}/prefab/modules/openxr_loader/libs/android.${ANDROID_ABI}/libopenxr_loader.so)
 
-  set(APP_SOURCES ${CORE_SOURCES}
+  set(APP_SOURCES ${CORE_SOURCES_AUDIO}
     ${CMAKE_SOURCE_DIR}/runtime/openxr_main.cpp
     ${CMAKE_SOURCE_DIR}/runtime/vr_config.cpp
     ${CMAKE_SOURCE_DIR}/runtime/png.cpp
@@ -231,7 +250,7 @@ if(ANDROID AND HAVE_GAME_ISO)
   add_library(waverace SHARED ${APP_SOURCES})
   target_include_directories(waverace PRIVATE
     ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR} ${GLAD_INCLUDE_DIR} ${OPENXR_INCLUDE})
-  target_link_libraries(waverace PRIVATE game_recomp native_app_glue ${OPENXR_LIB} EGL android log)
+  target_link_libraries(waverace PRIVATE game_recomp native_app_glue ${OPENXR_LIB} EGL android log aaudio)
   target_compile_options(waverace PRIVATE ${WR_RUNTIME_WARNINGS})
   target_compile_definitions(waverace PRIVATE WR_DEFAULT_ISO="" ${WR_GL_DEFS})
   # NativeActivity resolves this symbol by name; without it the linker drops the glue.

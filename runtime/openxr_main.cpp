@@ -68,6 +68,7 @@ static constexpr uint32_t kStartIntro = 12;
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 uint32_t boot_load(const char* iso_path);
+bool audio_open();
 
 // The quad's texture. 4:3 to match the game, large enough that the panel is legible.
 static constexpr int SWAP_W = 1024, SWAP_H = 768;
@@ -600,6 +601,11 @@ void android_main(android_app* app) {
     input_script_init(read_script(dir).c_str());
     gx::render_init(1);
     gx::render_set_window_size(SWAP_W, SWAP_H);
+
+    // Before the guest runs, so the AI DMA has somewhere to go from its first block.
+    // A device that will not open is not fatal: the game is still playable silently, and
+    // the backend says why in the log.
+    if (!audio_open()) LOGE("audio unavailable; continuing without sound");
 
     uint32_t entry = boot_load(iso.c_str());
     threads_start_boot(entry);

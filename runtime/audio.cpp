@@ -1,8 +1,12 @@
 // Host audio: mixes the AI DMA stream (32 kHz, from the AX HLE) with DVD streamed
-// music (48 kHz DTK ADPCM read from the disc) and feeds SDL at 48 kHz.
+// music (48 kHz DTK ADPCM read from the disc) into 48 kHz stereo.
+//
+// Everything here is portable. The device that pulls on it is not, so opening it lives
+// in a backend beside this file -- audio_sdl.cpp on the desktop, audio_aaudio.cpp on
+// Android -- each of which supplies audio_open() and calls audio_render() from whatever
+// callback its API hands it.
 #include "runtime.h"
 #include "hw/dtk.h"
-#include <SDL.h>
 #include <algorithm>
 #include <mutex>
 #include <vector>
@@ -15,7 +19,6 @@ void ai_stream_advance(uint32_t samples);
 
 static constexpr int OUT_RATE = 48000;
 void audio_wav_capture(const int16_t* s, int frames);
-static SDL_AudioDeviceID g_dev;
 
 // ---- AI DMA ring buffer (stereo L,R at 32 kHz) ----
 static constexpr int DMA_RATE = 32000;
@@ -92,10 +95,12 @@ static bool dtk_decode_block() {
     return true;
 }
 
-// ---- SDL callback ----
-static void audio_callback(void*, uint8_t* stream, int len) {
-    int16_t* out = (int16_t*)stream;
-    int frames = len / 4;
+// ---- Mix one buffer ----
+//
+// Called from the backend's device callback, so it runs on an audio thread with a
+// deadline: it takes two short locks and does no allocation beyond the DTK decode's
+// amortised growth.
+void audio_render(int16_t* out, int frames) {
     // DMA part: resample 32k -> 48k
     {
         std::lock_guard<std::mutex> lk(g_ring_mutex);
@@ -187,19 +192,8 @@ void audio_wav_capture(const int16_t* s, int frames) {
     wav_header(g_wav, g_wav_bytes);
 }
 
-bool audio_open() {
+// WR_WAV=<path> records exactly what went to the device. Opened here rather than in a
+// backend because it is the mix that is being captured, not the device.
+void audio_open_wav() {
     if (const char* p = getenv("WR_WAV")) { g_wav = fopen(p, "wb"); if (g_wav) wav_header(g_wav, 0); }
-    SDL_AudioSpec want{}, have{};
-    want.freq = OUT_RATE;
-    want.format = AUDIO_S16SYS;
-    want.channels = 2;
-    want.samples = 512;
-    want.callback = audio_callback;
-    g_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
-    if (!g_dev) {
-        LOG(LOG_AI, "audio: cannot open device: %s", SDL_GetError());
-        return false;
-    }
-    SDL_PauseAudioDevice(g_dev, 0);
-    return true;
 }
