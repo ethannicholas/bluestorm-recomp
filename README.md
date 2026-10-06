@@ -425,26 +425,22 @@ few frames somewhere in a long session will not be caught by a fixed dump interv
 the fault itself. It finds the transition-screen seam reliably — about 90 frames in a two-minute
 session, always at the same x.
 
-**It is a draw.** `WR_SEAM` reads the seam's column back after every command and names the first
-one after which the discontinuity is there. It is always the same draw: six vertices, orthographic,
-spanning x 0..206 and the full height, alpha blended SRCALPHA/INVSRCALPHA, one TEV stage sampling a
-64×64 soft round particle texture. A full-width 2D quad follows it a few draws later, so the left
-206 columns are covered twice and everything right of them once — which is exactly a band ending
-at the seam.
+**The edge it finds on the course flyover is not a fault.** It is the game's own mode panel: a
+translucent blue panel filling the left of the screen behind "EXHIBITION / WAVE HEIGHT 3ft", with a
+deliberately sharp right edge at x≈203. `WR_QUADPROBE` reports it identically on desktop GL and on
+GLES — same extent, same 64×64 texture, same blend register, `changed=99.8%`, mean delta 60 — and
+the dumped frames from the two platforms match. A long investigation went into it before anyone
+asked whether the edge was supposed to be there, which is the lesson worth keeping: the detector
+answers "is there a hard vertical edge", and a correct image can contain one.
 
-What that leaves is why the game submits it, and whether real hardware draws it the same. Its
-geometry is not mangled: the vertices arrive as a clean (0,0,-1) to (206,480,-1) rectangle under a
-plain 640×480 orthographic projection.
+So `WR_SEAM` is a search tool, not an oracle. Check a hit against the other platform with
+`WR_QUADPROBE` before treating it as a defect.
 
-Ruled out along the way: the compositor (all sixteen `frame_marker` cells match in every headset
-capture, so the displayed image is one frame — and a fence before releasing the swapchain image
-changed nothing, at about a tenth of the frame rate); the scissor (three rects in the frame, none
-with an edge there); and the EFB copies (identical on seam and clean frames).
-
-One earlier claim here was wrong and is worth recording: this section previously said the seam was
-"not present after any draw", on the strength of a probe that an editing mistake had left
-unreachable. It never ran. A measurement that cannot fail is not a measurement, and the probe now
-announces itself when it arms.
+Two claims made during that investigation were wrong and are recorded so they are not repeated. The
+seam was said to be "not present after any draw", on the strength of a probe that an editing mistake
+had left unreachable — it never ran, and its silence was read as a result; it now announces itself
+when it arms. And the fault was described as Quest-only, which was an assumption about the Mac that
+nobody had tested; when tested, the Mac rendered the same thing.
 
 One thing this turned up but did not change: the scissor offset register reads 340, while the code
 treats the origin as the 342 that `GXSetScissorBoxOffset(0, 0)` implies. Reading the register

@@ -38,6 +38,12 @@ struct VrConfig {
     // Stamp a frame-number colour across the top of the image; see render_gl.h.
     bool frame_marker = false;
 
+    // Write the EFB to <files>/frames every N presented frames. The headless harness can
+    // already dump, but it is a different frontend: when the two disagree about the same
+    // scene on the same device, the only way to see what the app itself rendered is to
+    // have the app dump it. 0 is off.
+    int dump_every = 0;
+
     // Start in stereo rather than theater, for testing.
     bool start_in_stereo = false;
 };

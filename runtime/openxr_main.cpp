@@ -13,6 +13,7 @@
 #include "platform.h"
 #include "input_script.h"
 #include "vr_config.h"
+#include <sys/stat.h>
 
 // Non-zero while the player is on the course: set as the countdown starts and cleared
 // when the race ends. Zero through boot, the menus, course select, loading, the course
@@ -527,6 +528,14 @@ void android_main(android_app* app) {
     const std::string iso = dir + "/game.iso";
     g_vrcfg = vr_config_load(dir);
     gx::render_set_frame_marker(g_vrcfg.frame_marker);
+    static std::string dump_dir;
+    if (g_vrcfg.dump_every > 0) {
+        dump_dir = dir + "/frames";
+        mkdir(dump_dir.c_str(), 0777);
+        gx::g_dump_dir = dump_dir.c_str();
+        gx::g_dump_every = g_vrcfg.dump_every;
+        LOGI("dumping every %d frames to %s", g_vrcfg.dump_every, dump_dir.c_str());
+    }
 
     if (!egl_init()) return;
     int glver = gl_load_with(gl_proc);
