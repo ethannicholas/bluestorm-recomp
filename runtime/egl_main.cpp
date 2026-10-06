@@ -240,6 +240,7 @@ int main(int argc, char** argv) {
            (const char*)glGetString(GL_VENDOR));
     fflush(stdout);
 
+    gx::render_set_shader_cache("shaders.bin");
     gx::render_init(scale);
     if (g_eye_mode) {
         eye_init();

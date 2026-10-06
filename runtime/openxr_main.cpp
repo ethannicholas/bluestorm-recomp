@@ -645,6 +645,8 @@ void android_main(android_app* app) {
     mem_init();
     timing_init();
     input_script_init(read_script(dir).c_str());
+    static const std::string shader_cache = dir + "/shaders.bin";
+    gx::render_set_shader_cache(shader_cache.c_str());
     gx::render_init(g_vrcfg.start_in_stereo ? g_vrcfg.stereo_scale : g_vrcfg.theater_scale);
     gx::render_set_window_size(g_swap_w, g_swap_h);
 

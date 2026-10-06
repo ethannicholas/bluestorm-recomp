@@ -250,6 +250,28 @@ Two things GL ES cannot do, both accepted rather than emulated:
   generated TEV shader via `GL_EXT_shader_framebuffer_fetch`.
 - **Sampler LOD bias.** ES has no `GL_TEXTURE_LOD_BIAS`, so mip selection can differ slightly.
 
+### Shader cache
+
+Each TEV configuration becomes a generated fragment shader, compiled the first time a draw
+uses it -- on the render thread, mid-frame. A race through a course meets around eighty of
+them, and they do not arrive one at a time: the race start brings in nine at once (the spray,
+the wake, the speed effects), and on this machine's compiler that frame took 60 ms against a
+4 ms norm. A mobile driver takes tens of milliseconds per program, so the same burst is a
+visible hitch at a fixed spot in the course, on every fresh launch.
+
+So every key compiled is appended to a file (`saves/shaders.bin` on desktop, `shaders.bin` in
+the app's files directory on a headset), and the next run builds all of them in `render_init`,
+before the game boots. Where the driver hands back program binaries (GL ES 3.0 does; macOS
+reports no binary formats) those are stored too, and the run after that loads rather than
+compiles. A binary is only trusted with the same driver and the same generated source -- the
+file carries the GL strings and each record a hash of its GLSL -- and anything stale falls back
+to compiling and rewrites the file. Deleting the file is always safe; the first run just pays
+the compiles at first use again. The startup line reports what happened:
+
+```
+[shaders] 80 programs from cache (0 from binaries, 80 compiled) in 138 ms
+```
+
 ### Validating the ES renderer on a device
 
 `waverace_egl` (Android) runs the real renderer on a headless EGL pbuffer and writes frames as
@@ -1017,6 +1039,26 @@ Escape quits.
 Debugging environment variables used during development include `WR_INPUT` (scripted
 controller input), `WR_GXSTATS`, `WR_TRACE_FRAME`, `WR_WAV` (record audio output) and
 `WR_PEEK`. See the source for details.
+
+`WR_FRAMETIME=1` prints a line per frame from each thread: the guest's interval between
+presents and how much of it the GX front end took (vertex decode, transform and lighting,
+texture hashing and decoding), the batch's shape -- GX draw commands before and after merging,
+vertices, pixel states, textures decoded -- and the submission queue's depth, which is non-zero
+only when the guest is waiting on the renderer; then the renderer's time to issue the batch,
+split out into texture and vertex-buffer uploads, with the number of full state applications
+and of shader programs so far. A long frame identifies itself: a jump in programs is a shader
+compile, a texture burst is a load, and a long interval with a short front end is the game
+itself.
+
+A deterministic route to Ocean City Harbor, the course that has been the performance
+benchmark, is `WR_INPUT='600:START:10,800:START:10,1000:START:10,1200:A:10,1400:DOWN:10,
+1500:A:10,1700:A:10,1900:A:10,2250:RIGHT:5,2350:RIGHT:5,2450:RIGHT:5,2600:A:10,3000:A:4000'`
+(title, memory card, Time Attack / Normal, the default rider, three courses to the right, then
+hold the throttle). The first three presses are the three logo screens; the frame counts are
+loose because the menus fade in on wall-clock time, so a press that lands during a transition
+is lost. Course select cycles Lost Temple Lagoon, Southern Island, Aspen Lake, Ocean City
+Harbor; the three RIGHTs assume it opens on the first of those, as it did here, so check a
+frame dump if a different save opens it elsewhere.
 
 ### Which guest function did that?
 

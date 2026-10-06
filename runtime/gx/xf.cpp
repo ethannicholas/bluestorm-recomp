@@ -5,6 +5,7 @@
 #include "render.h"
 #include "texture.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <mutex>
 #include <condition_variable>
@@ -15,6 +16,20 @@ namespace gx {
 std::atomic<uint32_t> g_frames_submitted{0};
 static std::unique_ptr<Batch> g_batch;
 static uint32_t g_tev_reg[4][2], g_tev_konst[4][2];
+
+// WR_FRAMETIME=1 prints one line per presented frame with where the guest thread's time
+// went: the interval since the last present, how much of it was the GX front end (vertex
+// decode, transform and lighting, texture hashing and decoding), the batch's shape, and
+// how full the submission queue was -- a full queue means the guest was waiting on the
+// renderer, not the other way round. The renderer prints its own line per batch.
+static const bool g_frametime = getenv("WR_FRAMETIME") != nullptr;
+static double g_fe_ms, g_tex_ms;
+static uint32_t g_fe_draws;
+static std::chrono::steady_clock::time_point g_last_present;
+static inline double ms_since(std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+}
+size_t queue_depth();
 
 // ---------------------------------------------------------------------------
 // Submission queue
@@ -40,6 +55,11 @@ void submit_batch(std::unique_ptr<Batch> b) {
     }
     g_queue.push_back(std::move(b));
     g_q_cv.notify_all();
+}
+
+size_t queue_depth() {
+    std::lock_guard<std::mutex> lk(g_q_mutex);
+    return g_queue.size();
 }
 
 std::unique_ptr<Batch> take_batch(int timeout_ms) {
@@ -394,7 +414,9 @@ static void resolve_texture(PixelState& st, int map) {
     p.levels = levels;
     p.tlut_off = (tlut & 0x3FF) << 9;
     p.tlut_fmt = (tlut >> 10) & 3;
+    const auto t0 = g_frametime ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     TexLookup r = texture_lookup(p, batch().new_textures);
+    if (g_frametime) g_tex_ms += ms_since(t0);
     st.tex_id[map] = r.id;
     st.tex_is_efb[map] = r.efb;
 }
@@ -491,7 +513,17 @@ static uint32_t snapshot_state(bool view_space) {
 static std::vector<InVertex> g_in;
 static std::vector<GpuVertex> g_out;
 
+static void draw_impl(const DrawCall& dc);
+
 void renderer_draw(const DrawCall& dc) {
+    if (!g_frametime) { draw_impl(dc); return; }
+    const auto t0 = std::chrono::steady_clock::now();
+    draw_impl(dc);
+    g_fe_ms += ms_since(t0);
+    g_fe_draws++;
+}
+
+static void draw_impl(const DrawCall& dc) {
     if (dc.count == 0) return;
     Layout L = make_layout(dc.vat);
     g_in.resize(dc.count);
@@ -757,6 +789,20 @@ void renderer_efb_copy(uint32_t dest_addr, bool /*unused*/) {
         }
     }
     if (cc.to_xfb) {
+        if (g_frametime) {
+            const Batch& bb = batch();
+            size_t decoded = 0;
+            for (auto& t : bb.new_textures)
+                for (auto& l : t->levels) decoded += l.size() * 4;
+            const auto now = std::chrono::steady_clock::now();
+            const double interval = g_last_present.time_since_epoch().count() ? ms_since(g_last_present) : 0.0;
+            fprintf(stderr, "[ft] f%u guest %6.2fms  fe %6.2fms (tex %5.2f)  draws %4u/%4zu  verts %6zu  states %4zu  newtex %3zu (%zuKB)  queue %zu\n",
+                    g_frame_counter, interval, g_fe_ms, g_tex_ms, g_fe_draws, bb.cmds.size(), bb.verts.size(),
+                    bb.states.size(), bb.new_textures.size(), decoded / 1024, queue_depth());
+            g_last_present = now;
+            g_fe_ms = g_tex_ms = 0;
+            g_fe_draws = 0;
+        }
         g_frame_counter++;
         mtx_race_frames++;
         texture_evict();

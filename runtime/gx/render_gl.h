@@ -7,6 +7,10 @@ namespace gx {
 // is 5120x4224, past anything either view has a use for.
 constexpr int kMaxInternalScale = 8;
 
+// Where compiled shaders are remembered between runs, so that the next run builds them
+// all before the game starts instead of at the moment each is first needed. Set before
+// render_init; nullptr (the default) builds every shader on first use.
+void render_set_shader_cache(const char* path);
 void render_init(int internal_scale);
 
 // Re-scale the EFB between frames. Call only when a whole frame is about to be drawn:

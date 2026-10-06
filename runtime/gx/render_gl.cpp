@@ -7,6 +7,7 @@
 #include "render_gl.h"
 #include "shadergen.h"
 #include "gl.h"
+#include <chrono>
 #include <unordered_map>
 
 bool write_png(const char* path, const uint8_t* rgba, int w, int h);
@@ -14,6 +15,15 @@ bool write_png(const char* path, const uint8_t* rgba, int w, int h);
 namespace gx {
 
 static const int EFB_W = 640, EFB_H = 528;
+
+// The renderer's half of WR_FRAMETIME (see xf.cpp): one line per batch with the time
+// spent uploading textures, uploading the vertex buffer, and issuing the frame, plus how
+// many times the full pixel state had to be re-applied. CPU time only: the GPU runs
+// behind, so a long frame here is driver and submission cost, not fill.
+static const bool g_frametime = getenv("WR_FRAMETIME") != nullptr;
+static inline double ms_since(std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+}
 
 // Logic-op blending does not exist in GL ES: there is no GL_COLOR_LOGIC_OP, no
 // glLogicOp, and none of the GL_CLEAR..GL_SET enums. The game uses GX logic ops for
@@ -130,16 +140,123 @@ static GLuint link(GLuint vs, GLuint fs) {
     return p;
 }
 
-static const Program& get_program(const ShaderKey& k) {
-    auto it = g_programs.find(k);
-    if (it != g_programs.end()) return it->second;
-    std::string src = gen_pixel_shader(k);
+// ---------------------------------------------------------------------------
+// Shader cache
+//
+// A TEV configuration is compiled the first time a draw uses it, on the render thread, in
+// the middle of a frame. The race start brings in nine at once (spray, wake, the speed
+// effects) and later stretches of a course add more: on this machine's compiler that
+// frame took 60 ms against a 4 ms norm, and a mobile driver takes tens of milliseconds
+// per program, so a burst of them is a visible hitch at a fixed spot in the course.
+//
+// So every key that gets compiled is written to a file, and the next run builds all of
+// them in render_init before the game starts. Where the driver can hand back program
+// binaries (GL ES 3.0 can; macOS reports no binary formats) those are stored too, which
+// turns the second run's startup from compiling into loading. A binary is only trusted
+// with the same driver and the same generated source: the file carries the GL strings
+// and each record a hash of the GLSL its key generates, and either changing drops back
+// to compiling that record and rewriting the file.
+// ---------------------------------------------------------------------------
+#if defined(WR_GL_ES) || defined(__APPLE__)
+#define WR_HAVE_PROGRAM_BINARY 1
+#else
+// The desktop glad loader stops at 3.3; program binaries are 4.1.
+#define WR_HAVE_PROGRAM_BINARY 0
+#endif
+
+static std::string g_shader_cache_path;
+static bool g_binaries_supported = false;
+static constexpr uint32_t kCacheMagic = 0x43535257;  // "WRSC"
+static constexpr uint32_t kCacheVersion = 1;
+
+static uint64_t hash_str(const char* s, uint64_t h = 1469598103934665603ull) {
+    for (; s && *s; s++) h = (h ^ (uint8_t)*s) * 1099511628211ull;
+    return h;
+}
+
+// Identifies the driver whose binaries the file holds.
+static uint64_t driver_id() {
+    uint64_t h = hash_str((const char*)glGetString(GL_VENDOR));
+    h = hash_str((const char*)glGetString(GL_RENDERER), h);
+    return hash_str((const char*)glGetString(GL_VERSION), h);
+}
+
+static void shader_cache_write_record(FILE* f, const ShaderKey& k, uint64_t src_hash, GLuint prog) {
+    fwrite(&k, sizeof(k), 1, f);
+    fwrite(&src_hash, sizeof(src_hash), 1, f);
+    uint32_t fmt = 0, len = 0;
+#if WR_HAVE_PROGRAM_BINARY
+    std::vector<uint8_t> bin;
+    if (g_binaries_supported) {
+        GLint n = 0;
+        glGetProgramiv(prog, GL_PROGRAM_BINARY_LENGTH, &n);
+        if (n > 0) {
+            bin.resize((size_t)n);
+            GLenum e = 0;
+            GLsizei got = 0;
+            glGetProgramBinary(prog, n, &got, &e, bin.data());
+            if (got > 0) { fmt = (uint32_t)e; len = (uint32_t)got; }
+        }
+    }
+    fwrite(&fmt, sizeof(fmt), 1, f);
+    fwrite(&len, sizeof(len), 1, f);
+    if (len) fwrite(bin.data(), len, 1, f);
+#else
+    (void)prog;
+    fwrite(&fmt, sizeof(fmt), 1, f);
+    fwrite(&len, sizeof(len), 1, f);
+#endif
+}
+
+static void shader_cache_write_header(FILE* f) {
+    const uint32_t magic = kCacheMagic, ver = kCacheVersion;
+    const uint64_t drv = driver_id();
+    fwrite(&magic, sizeof(magic), 1, f);
+    fwrite(&ver, sizeof(ver), 1, f);
+    fwrite(&drv, sizeof(drv), 1, f);
+}
+
+// Compiles a program from source, or restores it from a binary when one is given and
+// the driver accepts it. Returns 0 if the binary was refused.
+static GLuint build_program(const ShaderKey& k, const std::string& src, const uint8_t* bin, uint32_t fmt, uint32_t len) {
+#if WR_HAVE_PROGRAM_BINARY
+    if (bin && len && g_binaries_supported) {
+        GLuint p = glCreateProgram();
+        glProgramBinary(p, (GLenum)fmt, bin, (GLsizei)len);
+        GLint ok = 0;
+        glGetProgramiv(p, GL_LINK_STATUS, &ok);
+        if (ok) return p;
+        glDeleteProgram(p);
+        return 0;
+    }
+#else
+    (void)bin; (void)fmt; (void)len;
+#endif
     if (getenv("WR_DUMP_SHADERS")) fprintf(stderr, "---- shader %zu ----\n%s\n", g_programs.size(), src.c_str());
     GLuint fs = compile(GL_FRAGMENT_SHADER, src);
-    Program pr{};
-    pr.prog = link(g_vs, fs);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, g_vs);
+    glAttachShader(p, fs);
+    glBindAttribLocation(p, 0, "a_pos");
+#if WR_HAVE_PROGRAM_BINARY
+    if (g_binaries_supported) glProgramParameteri(p, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+#endif
+    glLinkProgram(p);
+    GLint ok;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[4096];
+        glGetProgramInfoLog(p, sizeof(log), nullptr, log);
+        fatal("program link failed: %s", log);
+    }
     glDeleteShader(fs);
-    GLuint p = pr.prog;
+    (void)k;
+    return p;
+}
+
+static const Program& register_program(const ShaderKey& k, GLuint p) {
+    Program pr{};
+    pr.prog = p;
     pr.u_proj = glGetUniformLocation(p, "u_proj");
     pr.u_vp_a = glGetUniformLocation(p, "u_vp_a");
     pr.u_vp_b = glGetUniformLocation(p, "u_vp_b");
@@ -163,6 +280,92 @@ static const Program& get_program(const ShaderKey& k) {
     GLint units[8] = {0, 1, 2, 3, 4, 5, 6, 7};
     glUniform1iv(pr.u_tex, 8, units);
     return g_programs.emplace(k, pr).first->second;
+}
+
+void render_set_shader_cache(const char* path) { g_shader_cache_path = path ? path : ""; }
+
+// Builds every program the file remembers. Called once from render_init.
+static void shader_cache_load() {
+    if (g_shader_cache_path.empty()) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<uint8_t> data;
+    if (FILE* f = fopen(g_shader_cache_path.c_str(), "rb")) {
+        fseek(f, 0, SEEK_END);
+        long n = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (n > 0) {
+            data.resize((size_t)n);
+            if (fread(data.data(), 1, (size_t)n, f) != (size_t)n) data.clear();
+        }
+        fclose(f);
+    }
+    if (data.empty()) return;
+    const uint8_t* p = data.data();
+    const uint8_t* end = p + data.size();
+    auto take = [&](void* dst, size_t n) {
+        if ((size_t)(end - p) < n) return false;
+        memcpy(dst, p, n);
+        p += n;
+        return true;
+    };
+    uint32_t magic = 0, ver = 0;
+    uint64_t drv = 0;
+    if (!take(&magic, 4) || !take(&ver, 4) || !take(&drv, 8) || magic != kCacheMagic || ver != kCacheVersion) {
+        fprintf(stderr, "[shaders] ignoring unrecognised cache %s\n", g_shader_cache_path.c_str());
+        return;
+    }
+    const bool same_driver = drv == driver_id();
+    int from_binary = 0, compiled = 0;
+    bool stale = !same_driver;
+    while (p < end) {
+        ShaderKey k;
+        uint64_t src_hash;
+        uint32_t fmt, len;
+        if (!take(&k, sizeof(k)) || !take(&src_hash, 8) || !take(&fmt, 4) || !take(&len, 4)) { stale = true; break; }
+        const uint8_t* bin = p;
+        if ((size_t)(end - p) < len) { stale = true; break; }
+        p += len;
+        if (g_programs.count(k)) { stale = true; continue; }  // a duplicate, written by a crash mid-append
+        std::string src = gen_pixel_shader(k);
+        const bool bin_ok = same_driver && len && hash_str(src.c_str()) == src_hash;
+        GLuint prog = bin_ok ? build_program(k, src, bin, fmt, len) : 0;
+        if (prog) from_binary++;
+        else { prog = build_program(k, src, nullptr, 0, 0); compiled++; stale = true; }
+        register_program(k, prog);
+    }
+    // Anything that could not be used as stored is replaced: the whole file is rewritten
+    // from the programs now in hand, with fresh binaries where the driver gives them.
+    if (stale || (g_binaries_supported && from_binary == 0 && compiled > 0)) {
+        if (FILE* f = fopen(g_shader_cache_path.c_str(), "wb")) {
+            shader_cache_write_header(f);
+            for (auto& kv : g_programs) shader_cache_write_record(f, kv.first, hash_str(gen_pixel_shader(kv.first).c_str()), kv.second.prog);
+            fclose(f);
+        }
+    }
+    fprintf(stderr, "[shaders] %d programs from cache (%d from binaries, %d compiled) in %.0f ms\n",
+            from_binary + compiled, from_binary, compiled, ms_since(t0));
+}
+
+static const Program& get_program(const ShaderKey& k) {
+    auto it = g_programs.find(k);
+    if (it != g_programs.end()) return it->second;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::string src = gen_pixel_shader(k);
+    GLuint p = build_program(k, src, nullptr, 0, 0);
+    const Program& pr = register_program(k, p);
+    if (g_frametime) fprintf(stderr, "[shaders] compiled program %zu in %.1f ms\n", g_programs.size(), ms_since(t0));
+    if (!g_shader_cache_path.empty()) {
+        // Appended rather than rewritten, so a crash later in the run keeps what was
+        // learned so far. A missing or truncated file gets a header first.
+        FILE* f = fopen(g_shader_cache_path.c_str(), "ab");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            if (ftell(f) == 0) shader_cache_write_header(f);
+            shader_cache_write_record(f, k, hash_str(src.c_str()), p);
+            fclose(f);
+        }
+    }
+    return pr;
 }
 
 static const char* kCopyVS = WR_GLSL_VERSION R"(
@@ -220,6 +423,14 @@ void render_init(int internal_scale) {
                                  : (internal_scale > kMaxInternalScale ? kMaxInternalScale
                                                                        : internal_scale);
     g_vs = compile(GL_VERTEX_SHADER, gen_vertex_shader());
+#if WR_HAVE_PROGRAM_BINARY
+    {
+        GLint n = 0;
+        glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &n);
+        g_binaries_supported = n > 0;
+    }
+#endif
+    shader_cache_load();
 
     glGenFramebuffers(1, &g_efb_fbo);
     glGenTextures(1, &g_efb_color);
@@ -1206,12 +1417,16 @@ static void evict_textures() {
 static bool execute_batch(Batch& b, bool do_present) {
     g_render_frame++;
     evict_textures();
+    const auto t_start = std::chrono::steady_clock::now();
     for (auto& t : b.new_textures) upload_texture(*t);
+    const double ms_tex = g_frametime ? ms_since(t_start) : 0.0;
     glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
     glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
     glBindVertexArray(g_vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     glBufferData(GL_ARRAY_BUFFER, b.verts.size() * sizeof(GpuVertex), b.verts.data(), GL_STREAM_DRAW);
+    const double ms_vbo = g_frametime ? ms_since(t_start) - ms_tex : 0.0;
+    uint32_t n_apply = 0;
     note_fullscreen_copies(b);
     static const bool batchlog = getenv("WR_EYELOG") != nullptr;
     if (batchlog) {
@@ -1310,6 +1525,7 @@ static bool execute_batch(Batch& b, bool do_present) {
                 apply_state(b.states[c.state], c.prim);
                 cur_state = c.state;
                 cur_prim = c.prim;
+                n_apply++;
             }
             static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
             glDrawArrays(mode[c.prim], c.first, c.count);
@@ -1329,6 +1545,9 @@ static bool execute_batch(Batch& b, bool do_present) {
             break;
         }
     }
+    if (g_frametime)
+        fprintf(stderr, "[rt] f%u render %6.2fms (tex %5.2f vbo %5.2f)  applies %4u  programs %zu\n",
+                g_render_frame, ms_since(t_start), ms_tex, ms_vbo, n_apply, g_programs.size());
     return presented;
 }
 

@@ -180,6 +180,9 @@ int main(int argc, char** argv) {
               glGetString(GL_RENDERER) ? (const char*)glGetString(GL_RENDERER) : "?", kGLHelp);
     }
     LOG(LOG_GX, "GL: %s / %s", glGetString(GL_RENDERER), glGetString(GL_VERSION));
+    // Beside the memory card: both are state this machine accumulates for this game.
+    plat_make_dirs("saves");
+    gx::render_set_shader_cache("saves/shaders.bin");
     gx::render_init(scale);
 
     audio_open();
