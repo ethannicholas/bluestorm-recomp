@@ -1046,6 +1046,69 @@ static void seam_probe(const char* what, int a, int bval) {
     }
 }
 
+// WR_QUADPROBE=1 reports every full-height orthographic quad and, crucially, whether it
+// changed any pixels: the framebuffer under it is read back before and after the draw.
+//
+// It exists to compare two platforms without assuming they do the same thing. The same
+// source renders this game correctly on desktop GL and with a hard vertical band on GLES,
+// and the band's edge is one of these quads. Whether that quad is submitted at all, what
+// it samples, and whether it has any visible effect are three separate questions, and all
+// three are answered here in a form that can be diffed between machines.
+struct QuadProbe {
+    bool pending = false;
+    int x = 0, y = 0, w = 0, h = 0;
+    uint32_t tex = 0, texw = 0, texh = 0, cmode = 0;
+    float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+    std::vector<uint8_t> before, after;
+};
+static QuadProbe g_qp;
+
+static void quad_probe_begin(const DrawExtent& e, const PixelState& st) {
+    g_qp.pending = false;
+    if (!e.ortho || e.verts != 6 || (e.y1 - e.y0) < 400.0f) return;
+    int x = (int)floorf(e.x0), y_top = (int)floorf(e.y0);
+    int w = (int)ceilf(e.x1) - x, h = (int)ceilf(e.y1) - y_top;
+    if (x < 0) { w += x; x = 0; }
+    if (y_top < 0) { h += y_top; y_top = 0; }
+    if (x + w > EFB_W) w = EFB_W - x;
+    if (y_top + h > EFB_H) h = EFB_H - y_top;
+    if (w <= 0 || h <= 0) return;
+    g_qp.x = x * g_scale;
+    g_qp.y = (EFB_H - y_top - h) * g_scale;  // glReadPixels counts rows from the bottom
+    g_qp.w = w * g_scale;
+    g_qp.h = h * g_scale;
+    g_qp.x0 = e.x0; g_qp.x1 = e.x1; g_qp.y0 = e.y0; g_qp.y1 = e.y1;
+    g_qp.cmode = st.bp[0x41];
+    g_qp.tex = st.tex_id[0];
+    auto it = g_textures.find(g_qp.tex);
+    g_qp.texw = it == g_textures.end() ? 0 : it->second.w;
+    g_qp.texh = it == g_textures.end() ? 0 : it->second.h;
+    g_qp.before.resize((size_t)g_qp.w * g_qp.h * 4);
+    glReadPixels(g_qp.x, g_qp.y, g_qp.w, g_qp.h, GL_RGBA, GL_UNSIGNED_BYTE, g_qp.before.data());
+    g_qp.pending = true;
+}
+
+static void quad_probe_end() {
+    if (!g_qp.pending) return;
+    g_qp.pending = false;
+    g_qp.after.resize(g_qp.before.size());
+    glReadPixels(g_qp.x, g_qp.y, g_qp.w, g_qp.h, GL_RGBA, GL_UNSIGNED_BYTE, g_qp.after.data());
+    size_t changed = 0;
+    long long sum = 0;
+    for (size_t i = 0; i + 3 < g_qp.before.size(); i += 4) {
+        const int d = abs(g_qp.before[i] - g_qp.after[i]) + abs(g_qp.before[i + 1] - g_qp.after[i + 1]) +
+                      abs(g_qp.before[i + 2] - g_qp.after[i + 2]);
+        if (d > 2) changed++;
+        sum += d;
+    }
+    const size_t px = g_qp.before.size() / 4;
+    fprintf(stderr, "[quad] f%u x=%.0f..%.0f y=%.0f..%.0f tex=%u(%ux%u) cmode=%06X "
+            "changed=%zu/%zu (%.1f%%) meandelta=%.2f\n",
+            g_render_frame, g_qp.x0, g_qp.x1, g_qp.y0, g_qp.y1, g_qp.tex, g_qp.texw, g_qp.texh,
+            g_qp.cmode, changed, px, px ? 100.0 * (double)changed / (double)px : 0.0,
+            px ? (double)sum / (double)px : 0.0);
+}
+
 // Runs a batch into the EFB the way the hardware would. With do_present false the final
 // scanout is skipped but everything else -- including every render-to-texture copy -- still
 // happens, which is how the stereo path obtains the textures its eye passes sample.
@@ -1079,7 +1142,8 @@ static bool execute_batch(Batch& b, bool do_present) {
     static const bool no_comp = getenv("WR_NO_COMP") != nullptr;
     static const bool only_comp = getenv("WR_ONLY_COMP") != nullptr;
     static const bool complog = getenv("WR_COMPLOG") != nullptr;
-    static const bool seam_record = getenv("WR_SEAM") != nullptr;
+    static const bool quadprobe = getenv("WR_QUADPROBE") != nullptr;
+    static const bool seam_record = getenv("WR_SEAM") != nullptr || quadprobe;
     if (seam_record) g_draw_extents.clear();
     int draw_index = 0;
     for (auto& c : b.cmds) {
@@ -1151,6 +1215,7 @@ static bool execute_batch(Batch& b, bool do_present) {
                     e.y0 = fminf(e.y0, sy); e.y1 = fmaxf(e.y1, sy);
                 }
                 if (e.x0 < 1e8f) g_draw_extents.push_back(e);
+                if (quadprobe && e.x0 < 1e8f) quad_probe_begin(e, st);
             }
             if (skip_lo >= 0 && this_draw >= skip_lo && this_draw <= skip_hi) break;
             // WR_NO_EFBTEX drops draws that sample a partial EFB copy -- here, the copy of
@@ -1193,6 +1258,7 @@ static bool execute_batch(Batch& b, bool do_present) {
             // after each draw and name the first draw that puts the discontinuity there.
             // Neither the geometry extents nor the scissor rects accounted for it, so the
             // only way left is to watch the pixels change.
+            quad_probe_end();
             g_seam_batch = &b;
             g_seam_cmd = &c;
             seam_probe("draw", this_draw, (int)c.count);
