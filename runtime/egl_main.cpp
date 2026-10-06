@@ -271,7 +271,24 @@ int main(int argc, char** argv) {
                                                ? atoi(getenv("WR_RAMSNAP_EVERY")) : 150;
         // The low 8 MB: enough to hold the game's own state without writing 24 MB a shot.
         static const uint32_t snap_bytes = 8u << 20;
-        if (ramsnap && presented && presented % snap_every == 0 && presented != last_snap) {
+        // WR_RAMSNAP_RANGE=a-b bounds it to a window of frames. A transition that takes a
+        // second needs a snapshot every few frames to bracket, and a whole run at that
+        // interval is gigabytes; the states either side of one boundary are all that a
+        // diff for that boundary needs.
+        static int snap_lo = -1, snap_hi = -1;
+        static bool snap_range_parsed = false;
+        if (!snap_range_parsed) {
+            snap_range_parsed = true;
+            if (const char* r = getenv("WR_RAMSNAP_RANGE")) {
+                snap_lo = atoi(r);
+                const char* dash = strchr(r, '-');
+                snap_hi = dash ? atoi(dash + 1) : snap_lo;
+            }
+        }
+        const bool snap_in_range = snap_lo < 0 ||
+                                   ((int)presented >= snap_lo && (int)presented <= snap_hi);
+        if (ramsnap && snap_in_range && presented && presented % snap_every == 0 &&
+            presented != last_snap) {
             last_snap = presented;
             char path[512];
             snprintf(path, sizeof(path), "%s/ram_%05u.bin", ramsnap, presented);

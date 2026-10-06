@@ -335,7 +335,9 @@ refusing to run at all.
 
 `WR_RAMSNAP=<dir>` makes `waverace_egl` write the low 8 MB of guest RAM beside a PNG every
 `WR_RAMSNAP_EVERY` frames; the PNGs say which snapshot is a menu, the overview, a race or the
-results. Asking for words holding one value across every racing snapshot and a different single
+results. `WR_RAMSNAP_RANGE=a-b` bounds it to a window of frames: a transition that takes a second
+needs a snapshot every few frames to bracket, and a whole run at that interval is gigabytes, while
+the states either side of one boundary are all a diff for that boundary needs. Asking for words holding one value across every racing snapshot and a different single
 value across every non-racing one is then a few lines of numpy.
 
 Sampled every 150 frames that gave `0x80631FA4`, apparently a perfect 0/1 race flag. It is not:
@@ -349,6 +351,36 @@ one dropped out mid-race, one never cleared. A fourth candidate from the first p
 survived the on/off test but turned out to be a float that is merely never exactly zero during a
 race. Only `0x806193BC` has exactly two transitions, and its boundaries line up with the countdown
 appearing and the race ending in dumped frames either side.
+
+#### Starting earlier than the race flag
+
+The flag is set as the countdown reaches the line, which is about a second *after* the starting
+lights are already on screen — dumped frames put the light rig in view from frame 2278 and the flag
+at 2312. That left the start of a race flat in the headset and popping into 3D once it was already
+underway.
+
+Two candidates for the earlier moment were rejected before the one that works. Counting the frame's
+**view-space perspective draws** looked ideal, since the countdown light rig is the game's one piece
+of view-space 3D — but traced over a session those draws run 2301–2381, which is *after* the lights
+appear, so the rig is ordinary world geometry and the view-space draws are something else. The
+**object block at `0x80631F30`** springs into existence at the right moment, but it is the slot the
+README above already caught blinking mid-race, so it is a recycled allocation and not a state.
+
+`0x80625A54` is the start sequence's own state and has exactly three transitions in a 7,389-frame
+session: 0 through boot, the menus and everything else, 12 while the course intro flies over, 5 from
+the lights coming into view until shortly after the start, 0 again from there. Stereo now begins on
+`race flag != 0 || start state == 5`, which moves the switch from frame 2312 to 2288. Using
+`start state != 0` instead would begin at 1997 and take in the course intro flyover as well; that is
+a preference about where a 3D flyover belongs rather than a correctness question, so it is written
+down here rather than chosen.
+
+Unlike the race flag, an unmeasured value here is ignored rather than fatal: it only ever widens the
+window, so being wrong about it costs the second back and nothing else.
+
+Both variables are written by the guest thread and read by the frame loop, so a sample can land on a
+transient — reading the race flag from that side caught it non-zero for a single frame twice before a
+race and three times on the results screen, each of which would have flashed stereo over a menu. The
+switch now wants one game frame of agreement before it acts.
 
 Stereo is cheap here because of where `xf.cpp` stops. Vertices reach the renderer in the game's
 *view* space with the projection applied in the shader, so an eye is just another matrix in front

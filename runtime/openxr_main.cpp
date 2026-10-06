@@ -22,6 +22,24 @@
 // parameter that happens to be live exactly when a race is. Specific to the supported
 // disc (see the Supported version section).
 static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
+
+// The start sequence's own state, which comes up well before the race flag does. Traced
+// every frame over a whole session it has exactly three transitions: 0 through boot, the
+// menus and everything else, 12 while the course intro flies over, 5 from the moment the
+// starting lights come into view until shortly after the start, and 0 again from there.
+//
+// The race flag is set only as the countdown reaches the line, about a second after the
+// lights are already on screen, which left the start of a race flat in the headset and
+// popping into 3D once it was underway. kStartCountdown covers that second.
+//
+// Any value outside the three measured ones means a disc or a mode this was not measured
+// on. That is ignored rather than guessed at -- the race flag alone then decides, which
+// is exactly what shipped before -- so being wrong here costs the second back and
+// nothing else. The race flag itself is fatal on a bad value because it decides the view
+// outright; this one only ever widens the window.
+static constexpr uint32_t kStartStateAddr = 0x80625A54;
+static constexpr uint32_t kStartCountdown = 5;
+static constexpr uint32_t kStartIntro = 12;
 #include "gx/render.h"
 #include "gx/render_gl.h"
 #include "gx/gl.h"
@@ -710,10 +728,38 @@ void android_main(android_app* app) {
                           "zero nor a plausible wave height. This build only knows the "
                           "disc named in README.md; refusing to guess which view to "
                           "present.", kRaceActiveAddr, bits, (double)wave);
-                const bool want_stereo = bits != 0;
+                // The starting lights are on screen about a second before the flag
+                // comes up; kStartStateAddr is what covers that. See its declaration for
+                // why an unmeasured value here is ignored rather than fatal.
+                const uint32_t start_state = mem_r32(kStartStateAddr);
+                if (start_state != 0 && start_state != kStartCountdown &&
+                    start_state != kStartIntro) {
+                    static bool warned = false;
+                    if (!warned) {
+                        warned = true;
+                        LOGI("start-state variable at %#x reads %u, which is not one of "
+                             "the measured values; starting stereo on the race flag alone",
+                             kStartStateAddr, start_state);
+                    }
+                }
+                const bool want_stereo = bits != 0 || start_state == kStartCountdown;
+                // Both variables are written by the guest thread and read here, so a
+                // sample can land on a transient: tracing the race flag from this side
+                // caught it reading non-zero for a single frame on the results screen and
+                // twice before a race. One game frame of agreement is enough to drop
+                // those, and costs 33 ms on a switch that was a second late to begin with.
+                static bool pending = false;
+                static int agree = 0;
                 if (want_stereo != stereo) {
-                    stereo = want_stereo;
-                    LOGI("switching to %s", stereo ? "stereo" : "theater");
+                    agree = (want_stereo == pending) ? agree + 1 : 1;
+                    pending = want_stereo;
+                    if (agree >= 2) {
+                        stereo = want_stereo;
+                        agree = 0;
+                        LOGI("switching to %s", stereo ? "stereo" : "theater");
+                    }
+                } else {
+                    agree = 0;
                 }
             }
         }
