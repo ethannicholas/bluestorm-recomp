@@ -49,6 +49,35 @@ Known limitations:
 - Runs at the game's native 30 fps (the simulation advances a fixed 1/30 s per frame).
 - Accuracy is still being validated. Expect visual and audio differences from real hardware.
 
+### Open issues
+
+In rough priority order. Everything here reproduces; where there is a lead it is written down so
+the next attempt does not start from nothing.
+
+1. **The racer's reflection is wrong.** The reflection in the water is drawn right side up and
+   stamped onto the surface rather than mirrored beneath the ski. The model is submitted twice per
+   frame — two groups of draws with identical vertex counts and textures — and a position-matrix
+   dump over a whole frame finds **no mirrored matrix anywhere**, so the mirror is not being
+   applied at all. Earlier it appeared upside down at the same coordinates, i.e. mirrored but
+   misplaced. Next step: check whether the mirror lives in the projection rather than the
+   modelview. `WR_MTXLOG=<n>` dumps every draw's position matrix and projection n frames into a
+   race; `WR_DRAWLOG`/`WR_DRAW_SKIP` attribute pixels to draws.
+2. **The HUD needs rework in stereo.** It is head-locked via the NDC overlay path, sits far too
+   close, and will not stereo-fuse because the Quest's per-eye frustums are asymmetric so a fixed
+   NDC position is not a consistent depth. It should be a world-anchored frame at a fixed position
+   relative to the world, framing the race when looking forward and staying put when the head
+   turns. The countdown lights are wrongly in-world 3D, sticking out of the water, and belong in
+   that frame.
+3. **World scale.** The racers look too small; `units_per_metre` in `vr.txt` is a guess.
+4. **Spray and rain that hit the camera render as squares** with pieces of scene in them. These are
+   the screen-space grabs the spray is composited from, replayed as billboards in an eye. Same
+   class as the water-surface billboard, which is kept because dropping it loses the ocean.
+5. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
+   bought about 15%; the next candidates are deduplicating `PixelState` by content and the triple
+   scene render the stereo path does (one flat into the EFB, then one per eye).
+6. **No audio on Android.** `audio_stub.cpp` discards DSP output; the mixing in `audio.cpp` is
+   portable and only device output is SDL-bound. AAudio or Oboe would do it.
+
 ## Supported version
 
 Only the North American release is supported:
