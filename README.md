@@ -388,15 +388,29 @@ Two things make this work:
   measuring against the EFB matches nothing.
 
 Draws that sample a whole-frame copy are screen-space — in this game the water surface is one,
-composited over the scene. They are left in the world, where the billboard's edge shows as a seam.
-The two alternatives are both worse. Dropping them leaves the seabed showing through bare sand
-instead of blue-green water (`WR_EYE_SKIPCOMP=1`, for comparison). Sending them down the overlay
-path puts them on the HUD frame — a flat panel a few metres in front of the camera, ocean and all,
-along with the racer baked into the copy, while the real racer goes on moving in the world. That
-is where the HUD belongs and emphatically not where the sea does.
+refracting by looking the finished frame up at the screen position the game computed for each of
+its vertices. Those positions belong to the flat view, and so does the copy, so an eye re-projecting
+them sampled off the edge of the copy wherever it could see water beyond the game's own 60-degree
+frustum. Clamping smeared the scene down the sea in streaks — the start banner, the shoreline and
+the racer among them, painted across the water.
 
-What remains visible at speed: the seam at the billboard's edge, and the spray grabs, which are
-replayed as billboards too and show as faint squares with pieces of scene inside them.
+No amount of moving the lookup around fixes that, because the pixels the eye needs are not in the
+copy. The eye grabs what it has drawn itself instead, which covers exactly what it can see, and the
+fragment samples that at its own position rather than at the flat view's. The grab is taken at the
+first draw that wants the finished frame, by which point the scene behind the water is in the target
+and the water is not; the indirect stage that ripples the lookup still applies on top, so the water
+keeps its wobble. It costs one full-target copy per eye on frames that have such a draw.
+
+The coordinate swap is a uniform rather than a shader variant, so the flat path is untouched: it
+keeps the coordinate the game computed, which is right there. Dropping these draws instead
+(`WR_EYE_SKIPCOMP=1`) leaves the seabed showing through bare sand, and sending them down the overlay
+path puts the ocean on the HUD frame, racer and all.
+
+What remains at speed is the spray grabs. They are the same mechanism one size down — partial EFB
+copies replayed as billboards at coordinates belonging to the flat view — and show as faint squares
+with pieces of scene inside them. The same substitution would suit them, but a partial copy covers
+only a rectangle of the screen, so it needs that rectangle's offset and scale carried through to the
+lookup rather than the whole target.
 
 `--eye-yaw=N` turns the head N degrees. With the view left at identity nothing in the image can be
 seen to be head-locked, and a change that pinned the ocean and a copy of the racer to the viewer's

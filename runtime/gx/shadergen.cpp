@@ -187,6 +187,7 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     // A macro, not a function: a sampler array has to be indexed by a constant
     // expression in GLSL ES (and strictly in GLSL 330 as well). Every call site
     // passes a literal map index, so expansion makes the index constant.
+    s += "uniform int u_screen_uv;\nuniform vec2 u_screen_px;\n";
     s += "#define sample_tex(m, uv) ivec4(round(texture(u_tex[m], (uv)) * 255.0))\n";
     s += "void main() {\n";
     s += "  ivec4 prev = u_reg[0], c0 = u_reg[1], c1 = u_reg[2], c2 = u_reg[3];\n";
@@ -200,6 +201,11 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     for (uint32_t i = 0; i < 8; i++) {
         if (i < k.num_texgens) W("  vec2 uv%u = v_tex[%u].xy / (v_tex[%u].z == 0.0 ? 1.0 : v_tex[%u].z);\n", i, i, i, i);
         else W("  vec2 uv%u = vec2(0.0);\n", i);
+        // A texgen that addresses a copy of the whole frame is a screen-space
+        // lookup, and in an eye the screen is this eye's. u_screen_uv is 0
+        // everywhere else, so the flat path keeps the game's own coordinate.
+        W("  if ((u_screen_uv & %u) != 0) uv%u = gl_FragCoord.xy * u_screen_px;\n",
+          1u << i, i);
     }
     // indirect stages
     for (uint32_t i = 0; i < nind; i++) {

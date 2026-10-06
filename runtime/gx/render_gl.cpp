@@ -47,7 +47,7 @@ struct Program {
     GLuint prog;
     GLint u_proj, u_vp_a, u_vp_b, u_point_size, u_tex, u_reg, u_konst, u_texsize, u_indmtx, u_indscale,
         u_alpharef, u_fog, u_fogcolor, u_indcoordscale;
-    GLint u_vr, u_view;
+    GLint u_vr, u_view, u_screen_uv, u_screen_px;
 };
 
 static int g_scale = 2;
@@ -62,6 +62,12 @@ static float g_vr_proj[16], g_vr_view[16];
 static float g_vr_view_world[16];
 static float g_world_pitch = 0.0f;
 static float g_vr_hud[16];
+// What the eye has drawn so far, standing in for the game's copy of the finished frame.
+// See grab_eye().
+static GLuint g_eye_grab;
+static int g_eye_grab_w, g_eye_grab_h;
+static int g_eye_w, g_eye_h;
+static bool is_fullscreen_tex(uint32_t id);
 static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
 // Copy of the EFB as it looked at the last present. The display copy is immediately
 // followed by an EFB clear, so repainting has to come from here, not the live EFB.
@@ -134,6 +140,8 @@ static const Program& get_program(const ShaderKey& k) {
     pr.u_point_size = glGetUniformLocation(p, "u_point_size");
     pr.u_vr = glGetUniformLocation(p, "u_vr");
     pr.u_view = glGetUniformLocation(p, "u_view");
+    pr.u_screen_uv = glGetUniformLocation(p, "u_screen_uv");
+    pr.u_screen_px = glGetUniformLocation(p, "u_screen_px");
     pr.u_tex = glGetUniformLocation(p, "u_tex");
     pr.u_reg = glGetUniformLocation(p, "u_reg");
     pr.u_konst = glGetUniformLocation(p, "u_konst");
@@ -345,6 +353,35 @@ static void mat4_mul(const float* a, const float* b, float* c) {
         }
 }
 
+// The water surface refracts by looking the finished frame up at the screen position the
+// game computed for each of its vertices. In an eye those positions are the flat view's,
+// and the copy is the flat view's too, so water the eye can see beyond the game's own
+// 60-degree frustum samples off the edge of the copy and clamps -- the scene smeared down
+// the sea in streaks, the racer among it.
+//
+// Nothing about that is fixable by moving the lookup around, because the data is not in
+// the copy. So the eye grabs what it has drawn itself, which covers exactly what the eye
+// can see, and the fragment samples it at its own position rather than at the flat view's.
+// The indirect stage that ripples the lookup still applies on top, so the water keeps its
+// wobble. Costs one full-target copy per eye, and only on frames that have such a draw.
+static void grab_eye(int w, int h) {
+    if (!g_eye_grab || g_eye_grab_w != w || g_eye_grab_h != h) {
+        if (!g_eye_grab) glGenTextures(1, &g_eye_grab);
+        glBindTexture(GL_TEXTURE_2D, g_eye_grab);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        g_eye_grab_w = w;
+        g_eye_grab_h = h;
+    } else {
+        glBindTexture(GL_TEXTURE_2D, g_eye_grab);
+    }
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+}
+
 static void apply_state(const PixelState& st, int prim) {
     int xoff, yoff;
     scissor_offset(st.bp, xoff, yoff);
@@ -458,12 +495,39 @@ static void apply_state(const PixelState& st, int prim) {
     float fogc[3] = {((bp[0xF2] >> 16) & 0xFF) / 255.0f, ((bp[0xF2] >> 8) & 0xFF) / 255.0f, (bp[0xF2] & 0xFF) / 255.0f};
     glUniform3fv(pr.u_fogcolor, 1, fogc);
 
+    // Which texgens feed a copy of the whole frame. In an eye those lookups are taken
+    // over: the texture becomes the eye's own grab and the coordinate becomes the
+    // fragment's own position, since the game's coordinate belongs to a view this eye is
+    // not looking from. See grab_eye().
+    uint32_t screen_uv = 0;
+    if (g_vr_active && g_eye_grab) {
+        const uint32_t nstg = ((bp[0x00] >> 10) & 15) + 1;
+        for (uint32_t s = 0; s < nstg; s++) {
+            const uint32_t order = bp[0x28 + s / 2] >> ((s & 1) * 12);
+            const uint32_t map = order & 7;
+            if ((order & 0x40) && st.tex_is_efb[map] && st.tex_id[map] &&
+                is_fullscreen_tex(st.tex_id[map]))
+                screen_uv |= 1u << ((order >> 3) & 7);
+        }
+    }
+    glUniform1i(pr.u_screen_uv, (GLint)screen_uv);
+    glUniform2f(pr.u_screen_px, g_eye_w ? 1.0f / (float)g_eye_w : 0.0f,
+                g_eye_h ? 1.0f / (float)g_eye_h : 0.0f);
+
     // Textures
     float tsz[16];
     for (int m = 0; m < 8; m++) {
         tsz[m * 2] = tsz[m * 2 + 1] = 1.0f;
         glActiveTexture(GL_TEXTURE0 + m);
         uint32_t id = st.tex_id[m];
+        if (screen_uv && st.tex_is_efb[m] && id && is_fullscreen_tex(id)) {
+            // The grab carries its own filtering; a sampler object would override it.
+            glBindTexture(GL_TEXTURE_2D, g_eye_grab);
+            glBindSampler(m, 0);
+            tsz[m * 2] = (float)g_eye_grab_w;
+            tsz[m * 2 + 1] = (float)g_eye_grab_h;
+            continue;
+        }
         auto it = id ? g_textures.find(id) : g_textures.end();
         if (it == g_textures.end()) { glBindTexture(GL_TEXTURE_2D, 0); continue; }
         glBindTexture(GL_TEXTURE_2D, it->second.tex);
@@ -820,12 +884,15 @@ static void note_fullscreen_copies(const Batch& b) {
     }
 }
 
+static bool is_fullscreen_tex(uint32_t id) {
+    for (uint32_t t : g_fullscreen_tex)
+        if (t == id) return true;
+    return false;
+}
+
 static bool samples_fullscreen_copy(const PixelState& st) {
-    for (int i = 0; i < 8; i++) {
-        if (!st.tex_is_efb[i] || !st.tex_id[i]) continue;
-        for (uint32_t id : g_fullscreen_tex)
-            if (id == st.tex_id[i]) return true;
-    }
+    for (int i = 0; i < 8; i++)
+        if (st.tex_is_efb[i] && st.tex_id[i] && is_fullscreen_tex(st.tex_id[i])) return true;
     return false;
 }
 
@@ -873,6 +940,9 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     }
 
     g_vr_active = true;
+    g_eye_w = w;
+    g_eye_h = h;
+    bool grabbed = false;
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
     glViewport(0, 0, w, h);
     glDisable(GL_SCISSOR_TEST);
@@ -898,6 +968,13 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
         // drawing them flat across the eye. Dropping the water one leaves bare seabed.
         static const bool skipcomp = getenv("WR_EYE_SKIPCOMP") != nullptr;
         if (skipcomp && samples_fullscreen_copy(b.states[c.state])) { n_skipped++; continue; }
+        // The first draw that wants the finished frame is the moment to take it: the
+        // scene behind the water is in the target by now and the water is not yet.
+        if (!grabbed && samples_fullscreen_copy(b.states[c.state])) {
+            grabbed = true;
+            grab_eye(w, h);
+            cur_state = UINT32_MAX;   // the grab left its own texture bound
+        }
         n_drawn++;
         if (c.state != cur_state || c.prim != cur_prim) {
             apply_state(b.states[c.state], c.prim);
