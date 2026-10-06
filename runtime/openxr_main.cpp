@@ -606,6 +606,11 @@ void android_main(android_app* app) {
     gx::render_init(1);
     gx::render_set_window_size(SWAP_W, SWAP_H);
 
+    // The app's own files directory is the only place it can write, and the memory card
+    // has to land there or the game starts from a blank one every launch.
+    static std::string save_dir = dir;
+    if (!save_dir.empty()) g_save_dir = save_dir.c_str();
+
     // Before the guest runs, so the AI DMA has somewhere to go from its first block.
     // A device that will not open is not fatal: the game is still playable silently, and
     // the backend says why in the log.

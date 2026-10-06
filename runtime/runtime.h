@@ -20,6 +20,12 @@ constexpr uint32_t ARAM_SIZE = 0x01000000;
 constexpr uint32_t LC_BASE = 0x20000000;   // locked cache (guest 0xE0000000)
 void mem_init();
 extern uint8_t* g_aram;
+
+// Where the memory card lives. Null means the working directory, which is right for a
+// desktop run started from the repository. An app has no useful working directory -- on
+// Android it is "/", which is not writable -- so a frontend that knows one sets this
+// before the guest boots.
+extern const char* g_save_dir;
 inline uint8_t* mem_ptr(uint32_t a) { return HOST(a); }
 inline uint32_t mem_r32(uint32_t a) { uint32_t v; memcpy(&v, HOST(a), 4); return WR_BSWAP32(v); }
 inline uint16_t mem_r16(uint32_t a) { uint16_t v; memcpy(&v, HOST(a), 2); return WR_BSWAP16(v); }

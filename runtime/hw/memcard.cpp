@@ -90,6 +90,14 @@ void MemCard::flush() {
         // platform layer, which replaces it.
         plat_replace_file(tmp.c_str(), path_.c_str());
         dirty_ = false;
+    } else {
+        // This used to do nothing at all when the path was not writable, which is how an
+        // app with "/" for a working directory came up with a blank card every launch.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            LOG(LOG_EXI, "memcard: cannot write %s -- saves will not persist", tmp.c_str());
+        }
     }
 }
 

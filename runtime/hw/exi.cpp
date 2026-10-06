@@ -129,9 +129,13 @@ static void exi_transfer(int ch) {
     exi_update_irq();
 }
 
+const char* g_save_dir;
+
 void exi_init() {
     sram_init();
-    g_card_a = std::make_unique<MemCard>("saves/memcard_a.raw", 4);
+    const std::string path = g_save_dir ? std::string(g_save_dir) + "/memcard_a.raw"
+                                        : std::string("saves/memcard_a.raw");
+    g_card_a = std::make_unique<MemCard>(path, 4);
 }
 
 uint32_t exi_read32(uint32_t off) {
