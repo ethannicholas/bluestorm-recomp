@@ -18,6 +18,9 @@ void plat_backtrace_print();
 void plat_install_crash_handlers(void (*on_interrupt)(), void (*on_fault)(const void* addr, int sig));
 // Hard-exit after `seconds` no matter what, so a crash handler can never hang.
 void plat_watchdog(int seconds, int exit_code);
+// Record a fatal message where the platform keeps crash reports, which on Android is the
+// one place the app's own logging cannot overwrite it. See the definition.
+void plat_record_fatal(const char* msg);
 // Exit immediately without running destructors or flushing other threads' buffers.
 [[noreturn]] void plat_exit_now(int code);
 

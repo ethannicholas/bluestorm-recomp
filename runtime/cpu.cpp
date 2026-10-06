@@ -26,12 +26,17 @@ void log_msg(LogCat cat, const char* fmt, ...) {
 }
 
 void fatal(const char* fmt, ...) {
-    fprintf(stderr, "FATAL: ");
+    // Formatted once rather than printed piecewise, because the text has to reach two
+    // places: stderr, and the platform's own crash record. On Android stderr is a pipe
+    // into a logcat ring that the app's tracing can lap in under a minute, so a message
+    // that went only there can be gone before anyone comes to read it.
+    char msg[1024];
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
-    fputc('\n', stderr);
+    plat_record_fatal(msg);
+    fprintf(stderr, "FATAL: %s\n", msg);
     CPU* c = cpu_current();
     if (c) {
         fprintf(stderr, "  lr=%08X ctr=%08X msr=%08X\n", c->lr, c->ctr, c->msr);

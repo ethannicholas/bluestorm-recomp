@@ -193,6 +193,7 @@ bool plat_read_at(PlatFile* f, uint64_t offset, void* dst, uint32_t len) {
 #include <pthread.h>
 #ifdef __ANDROID__
 // bionic has no execinfo.h; unwind by hand and symbolize with dladdr.
+#include <android/set_abort_message.h>
 #include <dlfcn.h>
 #include <unwind.h>
 #else
@@ -347,4 +348,22 @@ std::string plat_find_file(const char* dir, const char* suffix) {
         if (match) return it->path().string();
     }
     return {};
+}
+
+// Hand a fatal message to the platform's own crash record.
+//
+// stderr is not enough on Android. The app's stdout and stderr are piped into logcat,
+// and logcat is a 256 KiB ring: with `log_frames 1` in vr.txt the theater path alone
+// writes a line per display frame and laps the buffer in well under a minute, so by the
+// time a crash is noticed the message explaining it has been overwritten. That is not
+// hypothetical -- it is how the crash of 2026-10-06 lost its diagnostic entirely.
+//
+// The abort message goes somewhere else: the tombstone, and the `crash` log buffer,
+// neither of which the app's own logging can flush. It survives.
+void plat_record_fatal(const char* msg) {
+#ifdef __ANDROID__
+    android_set_abort_message(msg);
+#else
+    (void)msg;  // desktop stderr is a terminal or a file, not a ring that laps
+#endif
 }
