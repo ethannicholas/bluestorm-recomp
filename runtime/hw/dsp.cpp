@@ -2,6 +2,7 @@
 // (see dsp_hle.cpp) - this file only models the CPU-side registers.
 #include "../runtime.h"
 #include "dsp_hle.h"
+#include <algorithm>
 #include <deque>
 #include <mutex>
 
@@ -91,6 +92,12 @@ extern uint32_t ai_dma_sample_rate();
 
 static void aid_block_done();
 
+// When the block in flight finishes on the DMA's own clock, which runs from when the
+// DMA was enabled. Events run late by however long the guest took to poll for them;
+// timing each block from when the last one's event ran would add all of that lateness
+// up, and the DMA would deliver audibly fewer samples a second than its rate says.
+static uint64_t g_aid_due;
+
 static void aid_start_block() {
     g_aid_cur_addr = g_aid_addr;
     g_aid_blocks_left = g_aid_ctrl & 0x7FFF;
@@ -98,7 +105,15 @@ static void aid_start_block() {
     dsp_raise(CR_AID);
     uint32_t bytes = g_aid_blocks_left * 32;
     uint64_t dur = (uint64_t)bytes / 4 * TB_FREQ / ai_dma_sample_rate();
-    event_schedule_in(dur ? dur : TB_FREQ / 1000, aid_block_done);
+    if (!dur) dur = TB_FREQ / 1000;
+    uint64_t now = now_ticks();
+    g_aid_due += dur;
+    // A guest that stalled for longer than anything downstream buffers has lost that
+    // audio; start the clock again rather than replay the backlog at speed.
+    if (g_aid_due + TB_FREQ / 10 < now) g_aid_due = now;
+    // Behind by less than that, catch up -- but leave the guest time to take this
+    // interrupt and queue a buffer it has actually filled before the block is over.
+    event_schedule(std::max(g_aid_due, now + dur / 4), aid_block_done);
 }
 
 static void aid_block_done() {
@@ -186,6 +201,7 @@ void dsp_write16(uint32_t off, uint16_t v) {
         g_aid_ctrl = v;
         if ((v & 0x8000) && !was && !g_aid_running) {
             g_aid_running = true;
+            g_aid_due = now_ticks();
             aid_start_block();
         }
         return;

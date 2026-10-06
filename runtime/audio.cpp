@@ -18,10 +18,21 @@ void audio_wav_capture(const int16_t* s, int frames);
 static SDL_AudioDeviceID g_dev;
 
 // ---- AI DMA ring buffer (stereo L,R at 32 kHz) ----
+static constexpr int DMA_RATE = 32000;
+// How much to keep in hand. The guest delivers 5 ms blocks when it gets round to polling
+// for them, and the device takes 10 ms at a gulp, so a ring allowed to sit near empty
+// comes up short many times a second. Mostly the blocks are on time, but the guest
+// cannot take an interrupt while it is inside a host-side GX drain, which can hold one
+// up for 30-50 ms when a frame is heavy; the cushion is sized to ride through that.
+static constexpr size_t RING_CUSHION = DMA_RATE * 60 / 1000;
+static constexpr size_t RING_LIMIT = DMA_RATE * 160 / 1000;
 static std::mutex g_ring_mutex;
-static std::vector<int16_t> g_ring(32000 * 2);  // 1 second
+static std::vector<int16_t> g_ring(DMA_RATE * 2);  // 1 second
 static size_t g_ring_r, g_ring_w, g_ring_count;  // in frames
 static double g_dma_pos;  // fractional read position for resampling
+static bool g_ring_filling = true;  // silent until the cushion is (back) in hand
+static double g_ring_avg;  // smoothed fill level, which the resampling rate steers by
+static int g_stat_underruns;
 
 void audio_push_dma(const int16_t* samples_be, uint32_t frames) {
     std::lock_guard<std::mutex> lk(g_ring_mutex);
@@ -89,12 +100,34 @@ static void audio_callback(void*, uint8_t* stream, int len) {
     {
         std::lock_guard<std::mutex> lk(g_ring_mutex);
         size_t cap = g_ring.size() / 2;
-        // Keep latency bounded: if more than ~120ms is buffered, skip ahead.
-        while (g_ring_count > 32000 * 12 / 100) { g_ring_r = (g_ring_r + 1) % cap; g_ring_count--; }
-        const double step = 32000.0 / OUT_RATE;
+        // Far too much buffered means this side stalled. Cut back to the cushion once,
+        // rather than shaving the excess off a little at every callback.
+        if (g_ring_count > RING_LIMIT) {
+            size_t drop = g_ring_count - RING_CUSHION;
+            g_ring_r = (g_ring_r + drop) % cap;
+            g_ring_count -= drop;
+        }
+        if (g_ring_filling && g_ring_count >= RING_CUSHION) {
+            g_ring_filling = false;
+            g_ring_avg = (double)g_ring_count;
+            g_dma_pos = 0;
+        }
+        // The guest's clock and the device's are not the same clock, so the level drifts.
+        // Resample up to half a percent fast or slow to walk it back to the cushion, which
+        // cannot be heard, where running dry or overflowing every few minutes could.
+        g_ring_avg += ((double)g_ring_count - g_ring_avg) * 0.02;
+        double trim = std::clamp((g_ring_avg - RING_CUSHION) / RING_CUSHION * 0.01, -0.005, 0.005);
+        const double step = (double)DMA_RATE / OUT_RATE * (1.0 + trim);
+        static const bool stats = getenv("WR_AXSTATS") != nullptr;
+        static int calls;
+        if (stats && ++calls % 400 == 0)
+            fprintf(stderr, "[ring] fill=%zu avg=%.0f trim=%+.3f%% underruns=%d\n", g_ring_count, g_ring_avg, trim * 100, g_stat_underruns);
         for (int i = 0; i < frames; i++) {
             int32_t l = 0, r = 0;
-            if (g_ring_count >= 2) {
+            // Out of samples: stay silent until the cushion is back. Playing each block as
+            // it lands would run dry again at once, and a stream of short gaps is a buzz.
+            if (!g_ring_filling && g_ring_count < 2) { g_ring_filling = true; g_stat_underruns++; }
+            if (!g_ring_filling) {
                 size_t a = g_ring_r, b = (g_ring_r + 1) % cap;
                 double f = g_dma_pos;
                 l = (int32_t)(g_ring[2 * a] * (1 - f) + g_ring[2 * b] * f);
