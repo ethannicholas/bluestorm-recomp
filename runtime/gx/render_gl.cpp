@@ -50,6 +50,7 @@ struct Program {
     GLint u_vr, u_view, u_screen_uv, u_screen_px, u_screen_ripple;
 };
 
+// Samples kept per hardware pixel, in each axis. See render_set_internal_scale.
 static int g_scale = 2;
 
 // VR eye state. When active, perspective batches are re-projected for the eye and the
@@ -215,7 +216,9 @@ void main() { o = vec4(texture(u_src, vec2(v_uv.x, 1.0 - v_uv.y)).rgb, 1.0); }
 )";
 
 void render_init(int internal_scale) {
-    g_scale = internal_scale;
+    g_scale = internal_scale < 1 ? 1
+                                 : (internal_scale > kMaxInternalScale ? kMaxInternalScale
+                                                                       : internal_scale);
     g_vs = compile(GL_VERTEX_SHADER, gen_vertex_shader());
 
     glGenFramebuffers(1, &g_efb_fbo);
@@ -274,6 +277,41 @@ void render_init(int internal_scale) {
 
 void render_set_window_size(int w, int h) { g_win_w = w; g_win_h = h; }
 
+// Change how many samples the EFB keeps per hardware pixel, between frames.
+//
+// The two VR views want different answers. Theater shows the EFB itself, blown up to fill
+// a panel wider than the frame was ever drawn for, so every extra sample is detail the
+// viewer sees. Stereo never shows it: there it holds only what the eye passes sample out
+// of it -- the water reflection, the sheet the spray is cut from -- and the pass that
+// fills it is a whole extra scene render on top of the two eyes. So the scale follows the
+// view, which means changing it while the game runs.
+//
+// Nothing in the EFB has to survive the change: it is cleared and redrawn every frame.
+// The textures EFB copies land in do not get off so lightly -- they are allocated at
+// dst * scale but matched for reuse by their logical size alone, so a survivor would be
+// reused at the old resolution and quietly sample wrong. They go with the EFB.
+void render_set_internal_scale(int scale) {
+    if (scale < 1) scale = 1;
+    if (scale > kMaxInternalScale) scale = kMaxInternalScale;
+    if (scale == g_scale) return;
+    g_scale = scale;
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_efb_color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, EFB_W * g_scale, EFB_H * g_scale, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindTexture(GL_TEXTURE_2D, g_efb_depth);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, EFB_W * g_scale, EFB_H * g_scale, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    for (auto it = g_textures.begin(); it != g_textures.end();) {
+        if (it->second.efb) {
+            glDeleteTextures(1, &it->second.tex);
+            it = g_textures.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        fatal("EFB framebuffer incomplete at internal scale %d", g_scale);
+}
 
 // ---------------------------------------------------------------------------
 static void upload_texture(const TexData& t) {

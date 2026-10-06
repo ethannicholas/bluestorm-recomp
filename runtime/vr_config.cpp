@@ -31,6 +31,8 @@ VrConfig vr_config_load(const std::string& dir) {
         else if (!strcmp(key, "hud_height_m")) c.hud_height_m = (float)val;
         else if (!strcmp(key, "hud_pitch_deg")) c.hud_pitch_deg = (float)val;
         else if (!strcmp(key, "world_pitch_deg")) c.world_pitch_deg = (float)val;
+        else if (!strcmp(key, "theater_scale")) c.theater_scale = (int)val;
+        else if (!strcmp(key, "stereo_scale")) c.stereo_scale = (int)val;
         else if (!strcmp(key, "log_frames")) c.log_frames = val != 0;
         else if (!strcmp(key, "dump_every")) c.dump_every = (int)val;
         else if (!strcmp(key, "start_in_stereo")) c.start_in_stereo = val != 0;
@@ -40,9 +42,9 @@ VrConfig vr_config_load(const std::string& dir) {
     __android_log_print(ANDROID_LOG_INFO, "waverace",
                         "vr.txt: units_per_metre=%.1f offset=(%.1f,%.1f,%.1f) "
                         "hud=%.3f@%.1fm height=%.2fm pitch=%.1fdeg world_pitch=%.1fdeg "
-                        "stereo_at_start=%d",
+                        "scale=%d/%d stereo_at_start=%d",
                         c.units_per_metre, c.offset_x, c.offset_y, c.offset_z, c.hud_scale,
                         c.hud_distance_m, c.hud_height_m, c.hud_pitch_deg, c.world_pitch_deg,
-                        (int)c.start_in_stereo);
+                        c.theater_scale, c.stereo_scale, (int)c.start_in_stereo);
     return c;
 }

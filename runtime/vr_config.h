@@ -68,6 +68,26 @@ struct VrConfig {
     // levelling the world wants hud_pitch_deg back at 0.
     float world_pitch_deg = 23.2f;
 
+    // How many samples the EFB keeps per hardware pixel, in each axis, in each view.
+    // 1 is the GameCube's own 640x528, which is what the theater panel used to be
+    // stretched from and why leaving a race looked as soft as it did.
+    //
+    // The two views are separate because the EFB means different things in each. In
+    // theater it *is* the picture. In stereo the eyes are drawn at the headset's own
+    // resolution and the EFB is only scratch space for what they sample out of it --
+    // the water reflection, the sheet the spray is cut from -- filled by a third full
+    // scene pass that already costs more than it returns; leave that at 1 unless the
+    // reflections look coarse.
+    //
+    // 3 draws 1920x1584 behind a panel 1260 texels across, so the extra samples are
+    // filtered down into it rather than thrown away: antialiasing, not just detail. It
+    // is close to free -- this path is bound by the recompiled guest code, and sixteen
+    // times the pixels measured within noise of one -- but the measurement is a 150 s
+    // run, which says nothing about a headset that has been warm for an hour, so there
+    // is a step left in hand. Capped at gx::kMaxInternalScale.
+    int theater_scale = 3;
+    int stereo_scale = 1;
+
     // Trace the theater path one display frame at a time (adb logcat -s waverace).
     bool log_frames = false;
 

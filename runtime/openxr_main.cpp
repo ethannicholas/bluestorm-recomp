@@ -80,8 +80,16 @@ static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
 uint32_t boot_load(const char* iso_path);
 bool audio_open();
 
-// The quad's texture. 4:3 to match the game, large enough that the panel is legible.
-static constexpr int SWAP_W = 1024, SWAP_H = 768;
+// Where the theater panel hangs and how big it is: a cinema-sized 4:3 screen, matching
+// the game's own shape, 2.5 m ahead of where the viewer started.
+static constexpr float kQuadDist = 2.5f;
+static constexpr float kQuadW = 3.2f, kQuadH = 2.4f;
+
+// Rendering an eye at the headset's own resolution and then dropping back to a panel
+// drawn at the GameCube's is the jarring part of leaving a race, so the panel is given as
+// many texels as the headset can actually resolve across it -- see xr_create_swapchain.
+// Starts at what it used to be fixed at, in case the sizing finds nothing to work from.
+static int g_swap_w = 1024, g_swap_h = 768;
 
 static bool xr_ok(XrResult r, const char* what) {
     if (XR_SUCCEEDED(r)) return true;
@@ -300,12 +308,48 @@ static bool xr_create_swapchain() {
     for (int64_t f : formats) if (f == GL_RGBA8) { chosen = f; break; }
     LOGI("swapchain format 0x%llx", (unsigned long long)chosen);
 
+    // What the runtime recommends per eye. Needed before the panel as well as after it:
+    // it is the one honest statement this headset makes about its own pixel density.
+    uint32_t nv = 0;
+    xrEnumerateViewConfigurationViews(g_xr.instance, g_xr.system,
+                                      XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &nv, nullptr);
+    std::vector<XrViewConfigurationView> vcs(nv, {XR_TYPE_VIEW_CONFIGURATION_VIEW});
+    XR_TRY(xrEnumerateViewConfigurationViews(g_xr.instance, g_xr.system,
+                                             XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                             nv, &nv, vcs.data()));
+    if (nv < 2) { LOGE("expected 2 views, got %u", nv); return false; }
+
+    // How many texels the panel is worth.
+    //
+    // It covers 2*atan(1.6/2.5) = 65 degrees of the viewer's horizontal field, and an eye
+    // swapchain spans that whole field -- call it a hundred degrees, which is roughly the
+    // part of a headset's advertised figure that is in front of one eye. So the panel is
+    // worth about two thirds of an eye's width at one texel per display pixel. A little
+    // over that, because the compositor samples the panel at whatever angle the head
+    // happens to be holding and texels that line up with pixels nowhere are better
+    // filtered down than invented.
+    //
+    // Taken from the recommendation rather than fixed, so a denser headset gets a denser
+    // panel: a Quest 3's 1680-wide eyes give 1260x945, against the 1024x768 this was.
+    // Width is kept a multiple of four so that three quarters of it stays whole and the
+    // panel stays exactly 4:3 -- it is submitted as a 4:3 rectangle, and any other shape
+    // would be stretched into it.
+    constexpr float kNominalEyeFovDeg = 100.0f;
+    constexpr float kPanelOversample = 1.15f;
+    const float quad_fov_deg = 2.0f * atanf(0.5f * kQuadW / kQuadDist) * 180.0f / 3.14159265f;
+    const int panel_w = (int)(vcs[0].recommendedImageRectWidth *
+                              (quad_fov_deg / kNominalEyeFovDeg) * kPanelOversample) & ~3;
+    if (panel_w > g_swap_w) {
+        g_swap_w = panel_w;
+        g_swap_h = panel_w * 3 / 4;
+    }
+
     XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
     ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
     ci.format = chosen;
     ci.sampleCount = 1;
-    ci.width = SWAP_W;
-    ci.height = SWAP_H;
+    ci.width = g_swap_w;
+    ci.height = g_swap_h;
     ci.faceCount = 1;
     ci.arraySize = 1;
     ci.mipCount = 1;
@@ -327,19 +371,10 @@ static bool xr_create_swapchain() {
             LOGE("swapchain fbo %u incomplete", i);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    LOGI("quad swapchain %dx%d, %u images", SWAP_W, SWAP_H, n);
+    LOGI("quad swapchain %dx%d, %u images", g_swap_w, g_swap_h, n);
 
     // Per-eye swapchains for the stereo projection layer, at whatever the runtime
     // recommends for this headset.
-    uint32_t nv = 0;
-    xrEnumerateViewConfigurationViews(g_xr.instance, g_xr.system,
-                                      XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &nv, nullptr);
-    std::vector<XrViewConfigurationView> vcs(nv, {XR_TYPE_VIEW_CONFIGURATION_VIEW});
-    XR_TRY(xrEnumerateViewConfigurationViews(g_xr.instance, g_xr.system,
-                                             XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
-                                             nv, &nv, vcs.data()));
-    if (nv < 2) { LOGE("expected 2 views, got %u", nv); return false; }
-
     for (int e = 0; e < 2; e++) {
         auto& eye = g_xr.eyes[e];
         eye.w = (int32_t)vcs[e].recommendedImageRectWidth;
@@ -609,8 +644,8 @@ void android_main(android_app* app) {
     mem_init();
     timing_init();
     input_script_init(read_script(dir).c_str());
-    gx::render_init(1);
-    gx::render_set_window_size(SWAP_W, SWAP_H);
+    gx::render_init(g_vrcfg.start_in_stereo ? g_vrcfg.stereo_scale : g_vrcfg.theater_scale);
+    gx::render_set_window_size(g_swap_w, g_swap_h);
 
     // The app's own files directory is the only place it can write, and the memory card
     // has to land there or the game starts from a blank one every launch.
@@ -763,6 +798,12 @@ void android_main(android_app* app) {
                     agree = 0;
                 }
             }
+            // The two views want the EFB at different sizes -- see theater_scale. This is
+            // the moment to change it: a whole frame is about to be drawn into it, and a
+            // display frame without a new game frame repaints the panel from what is
+            // already there, which a re-scale would have thrown away. A no-op otherwise.
+            gx::render_set_internal_scale(stereo ? g_vrcfg.stereo_scale
+                                                 : g_vrcfg.theater_scale);
         }
 
         std::vector<XrCompositionLayerBaseHeader*> layers;
@@ -892,11 +933,11 @@ void android_main(android_app* app) {
             quad.space = g_xr.space;
             quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
             quad.subImage.swapchain = g_xr.swapchain;
-            quad.subImage.imageRect = {{0, 0}, {SWAP_W, SWAP_H}};
+            quad.subImage.imageRect = {{0, 0}, {g_swap_w, g_swap_h}};
             quad.subImage.imageArrayIndex = 0;
             quad.pose.orientation = {0, 0, 0, 1};
-            quad.pose.position = {0, 0, -2.5f};   // 2.5 m ahead
-            quad.size = {3.2f, 2.4f};             // 4:3, a cinema-sized panel
+            quad.pose.position = {0, 0, -kQuadDist};
+            quad.size = {kQuadW, kQuadH};
             layers.push_back((XrCompositionLayerBaseHeader*)&quad);
         }
 

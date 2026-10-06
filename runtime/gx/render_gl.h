@@ -2,7 +2,17 @@
 #include "render.h"
 
 namespace gx {
+// Upper bound on the EFB's supersampling, so that a mistyped digit in vr.txt asks for a
+// framebuffer that is merely large rather than one the device cannot allocate at all. 8
+// is 5120x4224, past anything either view has a use for.
+constexpr int kMaxInternalScale = 8;
+
 void render_init(int internal_scale);
+
+// Re-scale the EFB between frames. Call only when a whole frame is about to be drawn:
+// it discards the EFB's contents and every texture an EFB copy has produced.
+void render_set_internal_scale(int scale);
+
 void render_set_window_size(int w, int h);
 
 // Redirect the finished frame somewhere other than the window framebuffer, e.g. a VR

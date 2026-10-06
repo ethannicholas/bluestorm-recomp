@@ -57,7 +57,11 @@ the next attempt does not start from nothing.
 
 1. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
    bought about 15%; the next candidates are deduplicating `PixelState` by content and the triple
-   scene render the stereo path does (one flat into the EFB, then one per eye).
+   scene render the stereo path does (one flat into the EFB, then one per eye). It is **not** the
+   pixel pipeline: raising the EFB from 640×528 to 2560×2112, sixteen times the pixels, costs
+   about 2% and nothing beyond that scales with area — see
+   [How many pixels the theater panel gets](#how-many-pixels-the-theater-panel-gets). Look in the
+   recompiled guest code and in the per-draw CPU work instead.
 
 ## Supported version
 
@@ -451,6 +455,53 @@ Stereo is cheap here because of where `xf.cpp` stops. Vertices reach the rendere
 of it: both eyes share one vertex buffer, one CPU-side transform and one set of render-to-texture
 results, and only the uniforms and draw calls repeat.
 
+#### How many pixels the theater panel gets
+
+Leaving a race used to be the worst-looking moment in the app: stereo draws each eye at the
+headset's own 1680×1760, and theater dropped straight back to a 640×480 frame stretched across a
+panel 65 degrees wide. Two separate limits were doing that, and both had to move.
+
+The **panel's own texel count** was a fixed 1024×768. What it should be follows from its angular
+size: it hangs 2.5 m out and is 3.2 m across, so it covers `2*atan(1.6/2.5)` = 65 degrees of the
+viewer's horizontal field, and an eye swapchain spans that whole field — call it a hundred degrees
+in front of one eye. Two thirds of an eye's width is then one texel per display pixel, and the
+panel is given a little over that, because the compositor samples it at whatever angle the head is
+holding and texels that align with pixels nowhere are better filtered down than invented. Derived
+from `recommendedImageRectWidth` rather than fixed, so a denser headset gets a denser panel: a
+Quest 3 gives 1260×945.
+
+The **EFB the panel is blitted from** was the GameCube's own 640×528, so every one of those texels
+was interpolated from something smaller. `theater_scale` in `vr.txt` is how many samples it keeps
+per hardware pixel per axis. It is separate from `stereo_scale` because the EFB means different
+things in the two views: in theater it *is* the picture, while in stereo the eyes are drawn at the
+headset's resolution and the EFB is only scratch space holding what they sample out of it — the
+water reflection, the sheet the spray is cut from — filled by a third full scene render that
+already costs more than it returns. So the scale follows the view, which means re-allocating the
+EFB when the view changes. Nothing in it has to survive that: it is cleared and redrawn every
+frame. The textures EFB copies land in are another matter — they are allocated at `dst * scale`
+but matched for reuse by their logical size alone, so a survivor would be silently reused at the
+old resolution. They are dropped with it.
+
+It costs almost nothing, because this path is bound by the recompiled guest code and not by fill
+rate. Measured on a Quest 3 with `waverace_egl`, 150 s from boot into a race, comparing the same
+550-frame stretch of mid-race in every run:
+
+| `theater_scale` | EFB | mid-race fps | frames in 150 s |
+|---|---|---|---|
+| 1 | 640×528 | 26.93 | 3638 |
+| 2 | 1280×1056 | 26.78 | 3570 |
+| 3 | 1920×1584 | 27.08 | 3560 |
+| 4 | 2560×2112 | 26.75 | 3567 |
+
+Mid-race the four are within 0.7% of each other, which is run-to-run noise; across the whole run 2,
+3 and 4 are indistinguishable, so the 2% between 1 and the rest is a fixed step and not something
+that scales with area. The default is 3, which puts 1920 samples behind a 1260-texel panel —
+enough to antialias it rather than merely fill it — and leaves a step of headroom for a headset
+that has been warm for an hour, which a 150 s run does not measure.
+
+That the frame rate does not move at sixteen times the pixels is also the clearest evidence yet for
+the first open issue: whatever is keeping this below 30 fps, it is not the pixel pipeline.
+
 #### Splitting a frame for the eyes
 
 A frame is not one pass. A race frame holds about a thousand draws and five EFB copies: three
@@ -777,7 +828,7 @@ judgeable by wearing the headset. So they are read at startup from
 between runs, no rebuild:
 
 ```
-units_per_metre 100      # game units per real metre: sets the apparent size of the world
+units_per_metre 50       # game units per real metre: sets the apparent size of the world
 offset_x 0               # viewpoint relative to the game's camera, in game units
 offset_y 0               #   x right, y up, z back
 offset_z 0
@@ -788,6 +839,8 @@ hud_distance_m 4         # how far in front of the game's camera that frame stan
 hud_height_m -0.36       # how far above the forward axis the frame's centre sits
 hud_pitch_deg 0          # frame tilt; 0 is square to the room, which a levelled sea wants
 world_pitch_deg 23.2     # degrees of chase-camera pitch taken back out of the world; 0 keeps it
+theater_scale 3          # EFB samples per hardware pixel, per axis, in theater
+stereo_scale 1           #   and in stereo, where the EFB is only scratch space
 start_in_stereo 0          # start in stereo rather than theater
 ```
 
