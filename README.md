@@ -55,13 +55,10 @@ In rough priority order. Everything here reproduces; where there is a lead it is
 the next attempt does not start from nothing.
 
 1. **World scale.** The racers look too small; `units_per_metre` in `vr.txt` is a guess.
-2. **Spray and rain that hit the camera render as squares** with pieces of scene in them. These are
-   the screen-space grabs the spray is composited from, replayed as billboards in an eye. Same
-   class as the water-surface billboard, which is kept because dropping it loses the ocean.
-3. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
+2. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
    bought about 15%; the next candidates are deduplicating `PixelState` by content and the triple
    scene render the stereo path does (one flat into the EFB, then one per eye).
-4. **No audio on Android.** `audio_stub.cpp` discards DSP output; the mixing in `audio.cpp` is
+3. **No audio on Android.** `audio_stub.cpp` discards DSP output; the mixing in `audio.cpp` is
    portable and only device output is SDL-bound. AAudio or Oboe would do it.
 
 ## Supported version
@@ -406,11 +403,48 @@ keeps the coordinate the game computed, which is right there. Dropping these dra
 (`WR_EYE_SKIPCOMP=1`) leaves the seabed showing through bare sand, and sending them down the overlay
 path puts the ocean on the HUD frame, racer and all.
 
-What remains at speed is the spray grabs. They are the same mechanism one size down — partial EFB
-copies replayed as billboards at coordinates belonging to the flat view — and show as faint squares
-with pieces of scene inside them. The same substitution would suit them, but a partial copy covers
-only a rectangle of the screen, so it needs that rectangle's offset and scale carried through to the
-lookup rather than the whole target.
+The spray grabs are the same mechanism one size down — partial EFB copies replayed as billboards at
+coordinates belonging to the flat view — and show as faint squares with pieces of scene inside them.
+They get the same substitution. A copy that neither scans out nor clears and is no bigger than
+64×64 is one of the spray's: the clear flag is what separates a grab from an off-screen pass, and
+the size keeps the other partial copies (the water reflection, the rect the submerged tint samples)
+out. Those ids cannot be collected in a set the way the whole-frame ones are, because the spray
+copies to addresses that rotate and a set would grow by fifty entries a frame, so the flag rides on
+the texture instead.
+
+Measured on the device, a frame at speed holds 30–65 copies, of which 33 or so are grabs; the
+other partial copies in such a frame (480×480, 128×128, 320×240) all clear, so the clear flag
+alone separates them and the size test is only belt and braces. A droplet draw is one TEV stage
+with one indirect stage, a static indirect matrix and no wrap — `WR_EYELOG=1` prints that
+configuration for the first substituted draw of a frame, which is what settled the next paragraph.
+
+Two things differ from the water. The spray composites itself over the *finished* scene, water
+included, while the water's own grab is deliberately taken before the water is drawn — so there are
+two grabs, not one shared, or substituting the spray would quietly re-point the water's lookup, and
+the game's final composite with it, at a later moment. And what survives of the game's own lookup is
+just the indirect offset that distorts it, which is an absolute displacement in the copy's texels.
+Those texels are EFB pixels; an eye's are not, since it sees a wider field across more pixels, so
+the offset is converted by the ratio of the two grids' pixels per unit of frustum tangent, and
+negated in y (an EFB copy's row 0 is the top of its source rect, an eye grab's is the bottom).
+Without that conversion a droplet keeps a displacement of a few pixels on a target several times the
+EFB's width, a small fraction of the distortion asked for: it degenerates into a near-exact copy of
+its own background, so the spray disappears instead of reading wrongly. `WR_EYE_RIPPLE=0` leaves the
+offset unconverted, which is what the water shipped with, and separates "the lookup is in the wrong
+space" from "the distortion is the wrong size".
+
+One trap, worth the paragraph because the first attempt fell straight into it and the symptom
+looked nothing like the cause. The substitution originally replaced the texgen's coordinate
+outright, at the point where `uv0` is computed. But an indirect stage samples its bump map through
+the *same* texgen, and that map is an ordinary texture that wants the game's coordinate — addressed
+by the fragment's position instead, a ripple meant to span one 32×32 droplet is stretched across
+the whole eye. The squares were duly gone and a striped ladder stood over the ski in their place.
+So the substituted coordinate is declared beside the game's as `suv<n>` and only the stage that
+reads the copy picks it up; the indirect lookup keeps `uv<n>`. Shaders with no EFB-copy texmap
+generate exactly as before either way.
+
+Verified on the device through the `--eye` harness below: at 103 km/h the rectangles over the HUD,
+the turbo bar and the water are gone, and the ski and its spray read as themselves. `WR_EYE_SPRAY=0`
+brings them back in the same run for comparison.
 
 `--eye-yaw=N` turns the head N degrees. With the view left at identity nothing in the image can be
 seen to be head-locked, and a change that pinned the ocean and a copy of the racer to the viewer's
@@ -546,6 +580,10 @@ Not a VR problem but found through this harness, and the tools stay because the 
   up as two draws with identical vertex counts and textures.
 - `WR_DRAW_SKIP=a-b` drops a range of draw indices, `WR_NO_COMP` / `WR_ONLY_COMP` drop or isolate
   the draws sampling a whole-frame copy, and `WR_NO_EFBTEX` drops those sampling a partial one.
+- `WR_EYE_SPRAY=0` and `WR_EYE_RIPPLE=0` turn off the spray substitution and the conversion of its
+  distortion, in that order of bluntness. Both select on content rather than draw index, so they
+  are safe to A/B across runs. With `WR_EYELOG=1` the eye summary carries `spray=N`, the number of
+  substituted droplet draws, and the first of them prints its indirect configuration.
 
 One caution that has cost time twice: **the emulated timebase is wall-clock driven, so frame N is
 not the same moment in two runs.** Any A/B that compares frame N across runs is comparing different

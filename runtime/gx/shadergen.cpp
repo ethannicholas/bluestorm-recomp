@@ -188,6 +188,10 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     // expression in GLSL ES (and strictly in GLSL 330 as well). Every call site
     // passes a literal map index, so expansion makes the index constant.
     s += "uniform int u_screen_uv;\nuniform vec2 u_screen_px;\n";
+    // Converts an indirect offset from the copy's own texels to the eye grab's, for
+    // the stages whose coordinate an eye takes over. (1,1) everywhere else, so the
+    // flat path is unaffected. See apply_state().
+    s += "uniform vec2 u_screen_ripple;\n";
     s += "#define sample_tex(m, uv) ivec4(round(texture(u_tex[m], (uv)) * 255.0))\n";
     s += "void main() {\n";
     s += "  ivec4 prev = u_reg[0], c0 = u_reg[1], c1 = u_reg[2], c2 = u_reg[3];\n";
@@ -197,15 +201,28 @@ std::string gen_pixel_shader(const ShaderKey& k) {
     s += "  ivec4 snap = ivec4(0);\n";  // WR_SNAP target; unused unless WR_SHOW=snap
     s += "  vec2 tc_prev = vec2(0.0);\n";
 
+    // Which texgens feed a stage that reads an EFB copy, and so may have their
+    // coordinate taken over in an eye. Collected up front because the substituted
+    // coordinate is declared with the texgens but only read down in the stages.
+    uint32_t subst_coords = 0;
+    for (uint32_t st = 0; st < nstages; st++) {
+        uint32_t order = k.order[st / 2] >> ((st & 1) * 12);
+        if ((k.efb_tex_mask >> (order & 7)) & 1) subst_coords |= 1u << ((order >> 3) & 7);
+    }
     // texcoords (projective divide)
     for (uint32_t i = 0; i < 8; i++) {
         if (i < k.num_texgens) W("  vec2 uv%u = v_tex[%u].xy / (v_tex[%u].z == 0.0 ? 1.0 : v_tex[%u].z);\n", i, i, i, i);
         else W("  vec2 uv%u = vec2(0.0);\n", i);
-        // A texgen that addresses a copy of the whole frame is a screen-space
-        // lookup, and in an eye the screen is this eye's. u_screen_uv is 0
-        // everywhere else, so the flat path keeps the game's own coordinate.
-        W("  if ((u_screen_uv & %u) != 0) uv%u = gl_FragCoord.xy * u_screen_px;\n",
-          1u << i, i);
+        // A texgen that addresses a copy of the whole frame, or one of the spray's
+        // grabs, is a screen-space lookup, and in an eye the screen is this eye's.
+        // The substituted coordinate is kept beside the game's rather than replacing
+        // it, because an indirect stage sampling an ordinary bump map through the
+        // same texgen still wants the game's -- addressing that map by the fragment's
+        // position stretches a per-droplet ripple across the whole eye. u_screen_uv is
+        // 0 everywhere else, so the flat path takes the game's coordinate either way.
+        if ((subst_coords >> i) & 1)
+            W("  vec2 suv%u = ((u_screen_uv & %u) != 0) ? gl_FragCoord.xy * u_screen_px : uv%u;\n",
+              i, 1u << i, i);
     }
     // indirect stages
     for (uint32_t i = 0; i < nind; i++) {
@@ -221,8 +238,14 @@ std::string gen_pixel_shader(const ShaderKey& k) {
         uint32_t cenv = k.cenv[st], aenv = k.aenv[st];
         uint32_t ind = k.indcmd[st];
         W("  // stage %u\n  {\n", st);
+        // A stage that reads an EFB copy is one whose coordinate an eye may take
+        // over, so the parts of the lookup that only mean something in the copy's
+        // own space are made conditional on it. Every other shader is generated
+        // exactly as before, which keeps the flat path byte for byte unchanged.
+        const bool subst = (k.efb_tex_mask >> map) & 1;
+        const uint32_t cbit = 1u << coord;
         // ---- indirect texture offset ----
-        W("    vec2 tc = uv%u * u_texsize[%u];\n", coord, map);
+        W("    vec2 tc = %s%u * u_texsize[%u];\n", subst ? "suv" : "uv", coord, map);
         uint32_t bt = ind & 3, fmt = (ind >> 2) & 3, bias = (ind >> 4) & 7, bs = (ind >> 7) & 3, mid = (ind >> 9) & 15;
         uint32_t sw = (ind >> 13) & 7, tw = (ind >> 16) & 7;
         bool fb = (ind >> 20) & 1;
@@ -254,11 +277,27 @@ std::string gen_pixel_shader(const ShaderKey& k) {
         } else {
             W("    vec2 ioff = vec2(0.0);\n");
         }
+        // An offset from a static indirect matrix is an absolute displacement in the
+        // copy's texels. Substituted, those texels are the eye grab's and each covers
+        // a different angle, so it is converted. The dynamic matrices (5..11) scale
+        // the stage's own coordinate instead, so their offset is already relative to
+        // whatever space the coordinate is in and needs no conversion.
+        if (subst && bt < nind && mid >= 1 && mid <= 3)
+            W("    if ((u_screen_uv & %u) != 0) ioff *= u_screen_ripple;\n", cbit);
+        // A wrap folds the coordinate into the copy's own size. Substituted, the
+        // coordinate is the fragment's position on the whole eye target, and folding
+        // that tiles the eye into 32-pixel squares instead of addressing it.
         static const float wrapsz[8] = {0, 256, 128, 64, 32, 16, 0.001f, 0};
-        if (sw == 6) W("    tc.x = 0.0;\n");
-        else if (sw) W("    tc.x = mod(tc.x, %.1f);\n", wrapsz[sw]);
-        if (tw == 6) W("    tc.y = 0.0;\n");
-        else if (tw) W("    tc.y = mod(tc.y, %.1f);\n", wrapsz[tw]);
+        const char* wi = "";
+        if (subst && (sw || tw)) {
+            W("    if ((u_screen_uv & %u) == 0) {\n", cbit);
+            wi = "  ";
+        }
+        if (sw == 6) W("    %stc.x = 0.0;\n", wi);
+        else if (sw) W("    %stc.x = mod(tc.x, %.1f);\n", wi, wrapsz[sw]);
+        if (tw == 6) W("    %stc.y = 0.0;\n", wi);
+        else if (tw) W("    %stc.y = mod(tc.y, %.1f);\n", wi, wrapsz[tw]);
+        if (*wi) W("    }\n");
         W("    tc += ioff;\n");
         // "Add previous" carries the previous stage's whole coordinate, not just its
         // offset: a stage can zero its own coordinate with a wrap of 0 and look up at

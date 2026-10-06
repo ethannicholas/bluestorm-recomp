@@ -47,7 +47,7 @@ struct Program {
     GLuint prog;
     GLint u_proj, u_vp_a, u_vp_b, u_point_size, u_tex, u_reg, u_konst, u_texsize, u_indmtx, u_indscale,
         u_alpharef, u_fog, u_fogcolor, u_indcoordscale;
-    GLint u_vr, u_view, u_screen_uv, u_screen_px;
+    GLint u_vr, u_view, u_screen_uv, u_screen_px, u_screen_ripple;
 };
 
 static int g_scale = 2;
@@ -63,9 +63,13 @@ static float g_vr_view_world[16];
 static float g_world_pitch = 0.0f;
 static float g_vr_hud[16];
 // What the eye has drawn so far, standing in for the game's copy of the finished frame.
-// See grab_eye().
-static GLuint g_eye_grab;
-static int g_eye_grab_w, g_eye_grab_h;
+// There are two because the two users want different moments: the water refracts the
+// scene as it stood *before* the water was drawn, and the spray refracts it after, water
+// included. One texture serving both would quietly re-point the water's lookup -- and the
+// game's own final composite, which samples the same whole-frame copy -- at whatever the
+// spray grabbed later. See grab_eye().
+struct EyeGrab { GLuint tex; int w, h; };
+static EyeGrab g_eye_grab, g_spray_grab;
 static int g_eye_w, g_eye_h;
 static bool is_fullscreen_tex(uint32_t id);
 static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
@@ -80,7 +84,8 @@ static GLint g_blit_u_src, g_blit_u_rect;
 static GLuint g_copy_fbo;
 static GLuint g_vs;
 static std::unordered_map<ShaderKey, Program, ShaderKeyHash> g_programs;
-struct GlTex { GLuint tex; uint32_t w, h; bool efb; uint32_t last_used; };
+// `grab` marks one of the spray's screen-space grabs; see is_grab_copy().
+struct GlTex { GLuint tex; uint32_t w, h; bool efb; bool grab; uint32_t last_used; };
 static std::unordered_map<uint32_t, GlTex> g_textures;
 // Frames counted here rather than reusing the GX frame counter, so eviction works the
 // same for any frontend. Textures the game stops using are released: a race streams
@@ -142,6 +147,7 @@ static const Program& get_program(const ShaderKey& k) {
     pr.u_view = glGetUniformLocation(p, "u_view");
     pr.u_screen_uv = glGetUniformLocation(p, "u_screen_uv");
     pr.u_screen_px = glGetUniformLocation(p, "u_screen_px");
+    pr.u_screen_ripple = glGetUniformLocation(p, "u_screen_ripple");
     pr.u_tex = glGetUniformLocation(p, "u_tex");
     pr.u_reg = glGetUniformLocation(p, "u_reg");
     pr.u_konst = glGetUniformLocation(p, "u_konst");
@@ -363,23 +369,56 @@ static void mat4_mul(const float* a, const float* b, float* c) {
 // the copy. So the eye grabs what it has drawn itself, which covers exactly what the eye
 // can see, and the fragment samples it at its own position rather than at the flat view's.
 // The indirect stage that ripples the lookup still applies on top, so the water keeps its
-// wobble. Costs one full-target copy per eye, and only on frames that have such a draw.
-static void grab_eye(int w, int h) {
-    if (!g_eye_grab || g_eye_grab_w != w || g_eye_grab_h != h) {
-        if (!g_eye_grab) glGenTextures(1, &g_eye_grab);
-        glBindTexture(GL_TEXTURE_2D, g_eye_grab);
+// wobble. Costs one full-target copy per eye, taken only on a frame that has such a
+// draw -- and the spray wants the same thing at a later moment, so a frame throwing
+// spray pays for two. See is_grab_tex().
+static void grab_eye(EyeGrab& g, int w, int h) {
+    if (!g.tex || g.w != w || g.h != h) {
+        if (!g.tex) glGenTextures(1, &g.tex);
+        glBindTexture(GL_TEXTURE_2D, g.tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        g_eye_grab_w = w;
-        g_eye_grab_h = h;
+        g.w = w;
+        g.h = h;
     } else {
-        glBindTexture(GL_TEXTURE_2D, g_eye_grab);
+        glBindTexture(GL_TEXTURE_2D, g.tex);
     }
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+}
+
+// The spray is composited from screen-space grabs -- the same mechanism as the water
+// surface, one size down. At speed it lifts some fifty small rects out of the live scene
+// and redraws each as a billboard sampling its own rect, so on hardware a droplet
+// refracts exactly the pixels it covers and its edges cannot be seen. An eye re-projects
+// the billboard but not the rect, which belongs to the flat view, so the patch agrees
+// with nothing behind it and reads as a square with a piece of scene in it.
+//
+// So these lookups are taken over the way the water's are: the texture becomes the eye's
+// own grab and the coordinate becomes the fragment's own position, which is the one place
+// the pixels the droplet wants actually are. What survives of the game's own lookup is
+// the indirect offset that distorts it -- the droplet's whole visible character, since
+// the undistorted part is by construction the background it sits on.
+//
+// Unlike the whole-frame copies these go to addresses that rotate, so a fresh texture id
+// appears for every sprite of every frame; a set of ids would grow without bound and be
+// scanned per draw. The flag rides on the texture instead.
+static bool is_grab_tex(uint32_t id) {
+    // WR_EYE_SPRAY=0 restores the stale lookup, which is the only way to see from inside
+    // the headset what this changed.
+    static const bool off = getenv("WR_EYE_SPRAY") && atoi(getenv("WR_EYE_SPRAY")) == 0;
+    if (off || !id) return false;
+    auto it = g_textures.find(id);
+    return it != g_textures.end() && it->second.grab;
+}
+
+// Whether an eye takes this texture's lookups over at all: a copy of the whole frame
+// (the water surface samples one) or one of the spray's grabs.
+static bool is_eye_screen_tex(uint32_t id) {
+    return (g_eye_grab.tex && is_fullscreen_tex(id)) || (g_spray_grab.tex && is_grab_tex(id));
 }
 
 static void apply_state(const PixelState& st, int prim) {
@@ -500,13 +539,13 @@ static void apply_state(const PixelState& st, int prim) {
     // fragment's own position, since the game's coordinate belongs to a view this eye is
     // not looking from. See grab_eye().
     uint32_t screen_uv = 0;
-    if (g_vr_active && g_eye_grab) {
+    if (g_vr_active) {
         const uint32_t nstg = ((bp[0x00] >> 10) & 15) + 1;
         for (uint32_t s = 0; s < nstg; s++) {
             const uint32_t order = bp[0x28 + s / 2] >> ((s & 1) * 12);
             const uint32_t map = order & 7;
             if ((order & 0x40) && st.tex_is_efb[map] && st.tex_id[map] &&
-                is_fullscreen_tex(st.tex_id[map]))
+                is_eye_screen_tex(st.tex_id[map]))
                 screen_uv |= 1u << ((order >> 3) & 7);
         }
     }
@@ -514,18 +553,48 @@ static void apply_state(const PixelState& st, int prim) {
     glUniform2f(pr.u_screen_px, g_eye_w ? 1.0f / (float)g_eye_w : 0.0f,
                 g_eye_h ? 1.0f / (float)g_eye_h : 0.0f);
 
+    // The indirect offset that distorts a substituted lookup is an absolute displacement
+    // in the copy's texels, and the copy's texels are EFB pixels. The eye grab's are not:
+    // the eye sees a wider field across more pixels, so one of its pixels covers a
+    // different angle. Both grids are pixels over an angle, so the conversion is the
+    // ratio of their pixels per unit of frustum tangent -- the game's from its own
+    // viewport and projection, the eye's from the target size and the headset's.
+    //
+    // Without it the droplets keep a displacement of a few pixels on a target several
+    // times the EFB's width, which is a fraction of the distortion the game asked for:
+    // each one degenerates into an almost exact copy of its own background and the spray
+    // disappears rather than reading wrongly.
+    //
+    // The y term is negated because the two grids run opposite ways. An EFB copy's row 0
+    // is the top of its source rect, so +t walks down the screen; the eye grab comes
+    // straight off the render target, so its row 0 is the bottom and +t walks up -- which
+    // is also the direction gl_FragCoord.y counts, and why the undistorted part of the
+    // lookup needs no flip of its own.
+    float ripple[2] = {1.0f, 1.0f};
+    // WR_EYE_RIPPLE=0 keeps the substitution but leaves the offset unconverted, which is
+    // what the water surface shipped with and separates "the lookup is in the wrong
+    // space" from "the distortion is the wrong size".
+    static const bool no_ripple = getenv("WR_EYE_RIPPLE") && atoi(getenv("WR_EYE_RIPPLE")) == 0;
+    if (screen_uv && perspective && !no_ripple) {
+        const float gx = fabsf(vp[0]) * p[0], gy = fabsf(vp[1]) * p[2];
+        if (gx > 0.0f) ripple[0] = 0.5f * (float)g_eye_w * g_vr_proj[0] / gx;
+        if (gy > 0.0f) ripple[1] = -0.5f * (float)g_eye_h * g_vr_proj[5] / gy;
+    }
+    glUniform2fv(pr.u_screen_ripple, 1, ripple);
+
     // Textures
     float tsz[16];
     for (int m = 0; m < 8; m++) {
         tsz[m * 2] = tsz[m * 2 + 1] = 1.0f;
         glActiveTexture(GL_TEXTURE0 + m);
         uint32_t id = st.tex_id[m];
-        if (screen_uv && st.tex_is_efb[m] && id && is_fullscreen_tex(id)) {
+        if (screen_uv && st.tex_is_efb[m] && id && is_eye_screen_tex(id)) {
+            const EyeGrab& g = is_grab_tex(id) ? g_spray_grab : g_eye_grab;
             // The grab carries its own filtering; a sampler object would override it.
-            glBindTexture(GL_TEXTURE_2D, g_eye_grab);
+            glBindTexture(GL_TEXTURE_2D, g.tex);
             glBindSampler(m, 0);
-            tsz[m * 2] = (float)g_eye_grab_w;
-            tsz[m * 2 + 1] = (float)g_eye_grab_h;
+            tsz[m * 2] = (float)g.w;
+            tsz[m * 2 + 1] = (float)g.h;
             continue;
         }
         auto it = id ? g_textures.find(id) : g_textures.end();
@@ -616,6 +685,16 @@ static void apply_state(const PixelState& st, int prim) {
     glScissor(x0 * g_scale, (EFB_H - y1) * g_scale, (x1 - x0) * g_scale, (y1 - y0) * g_scale);
 }
 
+// A copy the spray composites from. It neither scans out nor clears -- a clearing copy
+// ends an off-screen pass, and a grab deliberately leaves the scene it lifted from intact
+// -- and it is small: at speed the spray takes 32x32 and 64x64 rects, while the other
+// partial copies in this game (the water reflection, the rect the submerged tint samples)
+// are far larger, which is what keeps them out of this. See is_grab_tex().
+static constexpr uint32_t kGrabMax = 64;
+static bool is_grab_copy(const EfbCopyCmd& c) {
+    return !c.to_xfb && !c.clear && c.dst_w <= kGrabMax && c.dst_h <= kGrabMax;
+}
+
 static void do_efb_copy(const EfbCopyCmd& c) {
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
@@ -641,6 +720,8 @@ static void do_efb_copy(const EfbCopyCmd& c) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
         }
         t.last_used = g_render_frame;
+        // Set after the reuse path, which carries the previous copy's flags in.
+        t.grab = is_grab_copy(c);
         glBindFramebuffer(GL_FRAMEBUFFER, g_copy_fbo);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.tex, 0);
         glViewport(0, 0, c.dst_w * g_scale, c.dst_h * g_scale);
@@ -896,6 +977,12 @@ static bool samples_fullscreen_copy(const PixelState& st) {
     return false;
 }
 
+static bool samples_grab_copy(const PixelState& st) {
+    for (int i = 0; i < 8; i++)
+        if (st.tex_is_efb[i] && st.tex_id[i] && is_grab_tex(st.tex_id[i])) return true;
+    return false;
+}
+
 // Draw one eye's view of a batch into `fbo`.
 //
 // The vertex buffer, the CPU-side transform in xf.cpp and any render-to-texture results
@@ -918,7 +1005,7 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     // WR_EYELOG=1 reports how a frame was split, which is the only way to tell a scene
     // rendered at the wrong field of view from a composite quad standing in for one.
     static const bool eyelog = getenv("WR_EYELOG") != nullptr;
-    int n_drawn = 0, n_skipped = 0;
+    int n_drawn = 0, n_skipped = 0, n_spray = 0;
     if (eyelog && do_copies) {
         uint32_t dw, dh;
         display_size(b, dw, dh);
@@ -942,7 +1029,7 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     g_vr_active = true;
     g_eye_w = w;
     g_eye_h = h;
-    bool grabbed = false;
+    bool grabbed = false, grabbed_spray = false;
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fbo);
     glViewport(0, 0, w, h);
     glDisable(GL_SCISSOR_TEST);
@@ -972,8 +1059,38 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
         // scene behind the water is in the target by now and the water is not yet.
         if (!grabbed && samples_fullscreen_copy(b.states[c.state])) {
             grabbed = true;
-            grab_eye(w, h);
+            grab_eye(g_eye_grab, w, h);
             cur_state = UINT32_MAX;   // the grab left its own texture bound
+        }
+        // The spray composites itself over the finished scene, the water included, so the
+        // grab above -- taken deliberately before the water, which is what the water
+        // itself needs -- is a layer short by the time the droplets draw. Re-take it at
+        // the first of them, once, and every droplet in the frame then refracts the scene
+        // as it actually stands. Costs a second full-target copy per eye on any frame
+        // that throws spray, which at speed is every frame.
+        if (samples_grab_copy(b.states[c.state])) {
+            // How a droplet actually addresses its grab, which decides what the
+            // substitution has to carry over: the indirect matrix id per stage (1..3 is
+            // a static offset in texels, 5..11 scales the coordinate itself) and the
+            // wrap, which folds the coordinate into the copy's own size.
+            if (eyelog && do_copies && !grabbed_spray) {
+                const PixelState& st = b.states[c.state];
+                const uint32_t nstg = ((st.bp[0x00] >> 10) & 15) + 1;
+                fprintf(stderr, "[eye]   spray draw: stages=%u nind=%u", nstg,
+                        (st.bp[0x00] >> 16) & 7);
+                for (uint32_t t = 0; t < nstg; t++) {
+                    const uint32_t ic = st.bp[0x10 + t];
+                    fprintf(stderr, " s%u[mid=%u sw=%u tw=%u bt=%u]", t, (ic >> 9) & 15,
+                            (ic >> 13) & 7, (ic >> 16) & 7, ic & 3);
+                }
+                fprintf(stderr, "\n");
+            }
+            if (!grabbed_spray) {
+                grabbed_spray = true;
+                grab_eye(g_spray_grab, w, h);
+                cur_state = UINT32_MAX;
+            }
+            n_spray++;
         }
         n_drawn++;
         if (c.state != cur_state || c.prim != cur_prim) {
@@ -989,7 +1106,8 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
         glDrawArrays(mode[c.prim], c.first, c.count);
     }
     if (eyelog && do_copies)
-        fprintf(stderr, "[eye]   drawn=%d skipped_composite=%d\n", n_drawn, n_skipped);
+        fprintf(stderr, "[eye]   drawn=%d skipped_composite=%d spray=%d\n", n_drawn,
+                n_skipped, n_spray);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     g_vr_active = false;
     return true;
