@@ -358,20 +358,22 @@ The app presents the game two ways and switches between them automatically:
 - **Stereo** — the world rendered per eye as an `XrCompositionLayerProjection`, with the 2D
   elements painted on a frame standing in front of the game's camera.
 
-The switch is driven by the game's own state: `0x806193BC` is non-zero from the moment the
-countdown starts until the race ends, and zero through boot, the menus, course select, loading,
-the course overview flyover, the pre-race rider cinematic and the results screen. It holds the
-course's wave height as a float — 3.0 on Dolphin Park — which is simply the race parameter that
-happens to be live exactly when a race is. Being exact, it needs no hysteresis. Clicking the right
-thumbstick pins the view manually, which is also the way to compare the two.
+The switch is driven by the game's own state. No single variable spans a race at both ends, so
+three are read, one job each: `0x80602160` counts what the course loaded and is the only one that
+clears when a race is *quit*, so it gates the rest; `0x80625A54` is the start sequence's state and
+brings stereo up with the starting lights; `0x806193BC` is the course's wave height, which is what
+notices a race *finishing*. Stereo is `on_course > 0 && (wave_height || start_state == countdown)`.
+Clicking the
+right thumbstick pins the view manually, which is also the way to compare the two. The sections
+below are the working: how they were found, and why the earlier answers were wrong.
 
-It replaced counting a frame's perspective draws, which was wrong in both directions: the course
+They replaced counting a frame's perspective draws, which was wrong in both directions: the course
 overview is a full 3D flyover and cleared the threshold, so stereo began before the race, and a
 sparse view during a race dipped below it, so the view flapped. **There is no fallback to that
-heuristic.** If the address reads anything but zero or a plausible wave height the app stops with
-a diagnostic, because guessing wrong does not degrade gracefully — it drops someone into stereo
-over a menu, or flips the view mid-race, and that is unpleasant enough in a headset to be worth
-refusing to run at all.
+heuristic.** But an unexpected value is no longer fatal: it presents the flat view and says so
+once in the log. An earlier build aborted instead, on the belief that `0x80602160` was a flag that
+could only read 0 or 1, and that belief was wrong — see
+[When a count was mistaken for a flag](#when-a-count-was-mistaken-for-a-flag).
 
 #### Finding it, and why the first two answers were wrong
 
@@ -420,7 +422,8 @@ mid-race.
 **exactly two transitions** in a 6,663-frame session that races to the finish (1 at 1996, 0 at 3797)
 and exactly two in a 5,837-frame session that retires to the main menu (1 at 1996, 0 at 3539,
 against a quit confirmed at 3520). It is zero through boot, the menus, course select, loading, the
-results screen and the title screen. Stereo is simply `0x80602160 != 0`.
+results screen and the title screen. That made it look like a flag; it is a count, and the
+difference mattered — see [When a count was mistaken for a flag](#when-a-count-was-mistaken-for-a-flag).
 
 No single variable spans a race at both ends, so three are used, one job each.
 
@@ -454,6 +457,72 @@ Stereo is cheap here because of where `xf.cpp` stops. Vertices reach the rendere
 *view* space with the projection applied in the shader, so an eye is just another matrix in front
 of it: both eyes share one vertex buffer, one CPU-side transform and one set of render-to-texture
 results, and only the uniforms and draw calls repeat.
+
+#### When a count was mistaken for a flag
+
+On 2026-10-06 the app aborted about six minutes into a session in the headset. It was not the
+system reclaiming memory: peak RSS was 521 MB, `Killed-By-AM: No`, and the tombstone's backtrace
+goes through our own `fatal()`. `llvm-addr2line` on `android_main+4888` against the crashing
+build's BuildId named the line exactly — the guard that refused to run when `0x80602160` read
+anything but 0 or 1.
+
+**The value that tripped it was gone.** `fatal()` wrote only to stderr, which on Android is piped
+into logcat, and logcat is a 256 KiB ring; `log_frames 1` writes a line per display frame and laps
+it in well under a minute. The one diagnostic the guard existed to produce had been overwritten by
+our own tracing. `fatal()` now also calls `android_set_abort_message`, which puts the text in the
+tombstone and in the `crash` buffer, neither of which the app's own logging can flush.
+
+So the value had to come from the code instead, and it is worth recording how, because the same
+route answers "what can this address actually hold" for any of them.
+
+`analysis/symbols.txt` gives the first surprise:
+
+```
+lbl_80602140 = .bss:0x80602140; // type:object size:0xF00
+```
+
+It is not a variable. It is field `+0x20` of a 3840-byte object, whose first `0x24` bytes are
+`memset` as a unit — the generated code calls `fn_80003320(0x80602140, 0, 0x24)` — with a pointer
+at `+0x18` that is freed when non-null. Identically shaped descriptors sit at `0x80632ED8` and
+`0x80632F68`.
+
+A `WR_WATCH` build then named the two instructions that touch it across a whole race. That build is
+not one of the presets — `WR_WATCH` has to reach the generated C as well as the runtime, since the
+hook sits on every store the recompiler emits:
+
+```
+cmake -S . -B build-android-watch -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_static \
+  -DWR_BENCH_ONLY=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_C_FLAGS=-DWR_WATCH -DCMAKE_CXX_FLAGS=-DWR_WATCH
+ninja -C build-android-watch waverace_egl
+```
+
+Run it with `WR_WATCH_ADDR=<hex address>` and it reports every change to that word, with the guest
+PC of the instruction responsible:
+
+```
+[watch] 80602160: 00000000 -> 00000001 at store 8004561C
+[watch] 80602160: 00000001 -> 00000000 at store 800033E8   (inside the memset)
+```
+
+And `0x8004561C` is `907E0020`, `stw r3,0x20(r30)`, immediately after `bl fn_80047320`. So the
+field is that function's return value, which is either `r24` — zeroed at `0x80047348`, incremented
+once per entry at `0x800473CC`, and used at `0x80047404` to size an allocation of sixteen bytes
+apiece — or `-1` from the error path at `0x80047578`.
+
+**It is a count.** Every session measured while the switch was being worked out counted exactly one
+entry, so it read 0 and 1, and two sessions of that was enough to convince me it was a flag and to
+write an abort around the belief. A session that counted two, or that took the error path, was
+always going to end the way this one did. The crash came on the first session with a *persisting*
+memory card — the save was written a minute before — which is exactly the kind of thing that sends
+a game down a path no cold-boot trace covered.
+
+The reading is now `on_course > 0`, signed, so a failed load is off-course rather than on. The
+guard is gone. Being wrong about which view to present does not degrade gracefully, which is why it
+was there, but aborting in a headset degrades worse, and a value this build has not seen before is
+not evidence of the wrong disc — the build already verifies the disc by hash.
 
 #### How many pixels the theater panel gets
 

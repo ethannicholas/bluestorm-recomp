@@ -30,11 +30,12 @@
 // back on the title screen, which left the headset stuck in stereo over the menus. The
 // start-sequence state at 0x80625A54 covered the lights but went out mid-race.
 //
-// This one is a plain flag, so anything but 0 or 1 means a disc or a mode this was not
-// measured on. That is fatal rather than guessed at, for the reason the draw-count
-// heuristic this all replaced was abandoned: being wrong does not degrade gracefully. It
-// drops someone into stereo over a menu or flips the view mid-race, and that is unpleasant
-// enough in a headset to be worth refusing to run at all.
+// This one is a signed count of what the course loaded, not a flag -- see where it is
+// read. Treating it as a flag, and aborting on anything but 0 or 1, is what it used to
+// do; it read 0 and 1 in every session measured and then aborted in someone's headset on
+// a session that counted differently. Being wrong about which view to present does not
+// degrade gracefully, but aborting degrades worse, so an unexpected value now presents
+// the flat view and says so once.
 static constexpr uint32_t kOnCourseAddr = 0x80602160;
 
 // The start sequence's phase: 0 until the course loads, 12 while the intro flies over, 5
@@ -759,15 +760,30 @@ void android_main(android_app* app) {
         if (batch) {
             game_frames++;
             if (!manual_override) {
-                // The game's own "on a course" flag; see kOnCourseAddr. Found by
+                // The game's own "on a course" value; see kOnCourseAddr. Found by
                 // diffing guest RAM across labelled snapshots and then tracing every
-                // frame, which is the only way to tell a steady flag from one that
+                // frame, which is the only way to tell a steady value from one that
                 // blinks -- see the Tools section of README.md.
-                const uint32_t on_course = mem_r32(kOnCourseAddr);
-                if (on_course > 1)
-                    fatal("on-course flag at %#x reads %#010x, which is not 0 or 1. This "
-                          "build only knows the disc named in README.md; refusing to "
-                          "guess which view to present.", kOnCourseAddr, on_course);
+                //
+                // It is a *count*, not a flag, which cost a crash to learn. It is field
+                // +0x20 of the descriptor at 0x80602140, written once at 0x8004561C
+                // (`stw r3,0x20(r30)`) from whatever fn_80047320 returns: a loop counter,
+                // zeroed at 0x80047348 and incremented per entry at 0x800473CC, or -1
+                // from the error path at 0x80047578. Every session traced while this was
+                // being worked out counted exactly one entry, so it read 0 and 1 and
+                // looked boolean. It is not, and a build that insisted it was aborted in
+                // someone's headset mid-session.
+                //
+                // Positive is on a course; -1 is a load that failed, which is not.
+                const int32_t on_course = (int32_t)mem_r32(kOnCourseAddr);
+                if (on_course < 0) {
+                    static bool said = false;
+                    if (!said) {
+                        said = true;
+                        LOGE("on-course count at %#x reads %d; treating as off-course",
+                             kOnCourseAddr, on_course);
+                    }
+                }
                 // Three variables, one job each, because no one of them spans a race at
                 // both ends. kOnCourseAddr is the only one that clears when a race is
                 // quit, so it gates everything. Within that, the countdown phase brings
@@ -777,7 +793,7 @@ void android_main(android_app* app) {
                 // results.
                 const uint32_t start_state = mem_r32(kStartStateAddr);
                 const uint32_t racing = mem_r32(kRaceActiveAddr);
-                const bool want_stereo = on_course != 0 &&
+                const bool want_stereo = on_course > 0 &&
                                          (racing != 0 || start_state == kStartCountdown);
                 // The flag is written by the guest thread and read here, so a sample can
                 // land on a transient: tracing the old race flag from this side caught it
