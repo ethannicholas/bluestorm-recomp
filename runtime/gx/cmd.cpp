@@ -1,7 +1,9 @@
 // GX FIFO command stream parser.
 #include "../runtime.h"
 #include "gx.h"
+#include <cmath>
 
+const char* func_name(uint32_t addr);
 void pe_signal_token(uint16_t token, bool interrupt);
 void pe_signal_finish();
 
@@ -75,6 +77,30 @@ static void load_cp(uint8_t reg, uint32_t v) {
 }
 
 static void load_xf(uint32_t addr, uint32_t n, const uint8_t* data) {
+#ifdef WR_CALL_TRACE
+    // WR_POSMTX_STACK=<z> prints the guest call stack whenever a position matrix with
+    // that view-space Z is loaded, which names the code placing the object. Needs a
+    // build with WR_TRACE_CALLS; see ENTER()/RET() in recomp.h.
+    static const char* want_z = getenv("WR_POSMTX_STACK");
+    if (want_z && n == 12 && (addr & 3) == 0 && addr < 0x100) {
+        float tz, ty;
+        const uint32_t w = be32(data + 44), wy = be32(data + 28);
+        memcpy(&tz, &w, 4);
+        memcpy(&ty, &wy, 4);
+        static int shown;
+        // The rig descends while it turns, so its Y is anywhere in a range; Z is exact.
+        if (fabsf(tz - (float)atof(want_z)) < 0.05f && ty > 25.0f && ty < 65.0f &&
+            shown++ < 4) {
+            CPU* c = cpu_current();
+            fprintf(stderr, "[posmtx] id=%u ty=%.1f tz=%.1f, guest call stack innermost first:\n",
+                    addr / 4, (double)ty, (double)tz);
+            const uint32_t have = c && c->depth < 256 ? c->depth : 0;
+            for (uint32_t i = 1; i <= have; i++)
+                fprintf(stderr, "[posmtx]   %08X %s\n", c->stack[have - i],
+                        func_name(c->stack[have - i]));
+        }
+    }
+#endif
     for (uint32_t i = 0; i < n; i++, addr++) {
         uint32_t v = be32(data + 4 * i);
         if (addr < 0x800) g_state.xf_mem[addr] = v;

@@ -245,7 +245,7 @@ def main():
                         s += f'{irq}goto L_{t:08X};'
                         last_uncond = True
                 else:
-                    call = emit_call(pc, t, False) + ' return;'
+                    call = emit_call(pc, t, False) + ' RET();'
                     if cond:
                         s += f'if ({cond}) {{ {call} }}'
                     else:
@@ -256,9 +256,9 @@ def main():
                     s += f'{{ uint32_t t = c->lr; c->lr = 0x{pc + 4:08X}u; '
                     s += f'if ({cond}) call_indirect(c, t); }}' if cond else 'call_indirect(c, t); }'
                 elif cond:
-                    s += f'if ({cond}) return;'
+                    s += f'if ({cond}) RET();'
                 else:
-                    s += 'return;'
+                    s += 'RET();'
                     last_uncond = True
             elif br.kind == 'bctr':
                 if br.link:
@@ -266,9 +266,9 @@ def main():
                 else:
                     if jt_sorted:
                         cases = ' '.join(f'case 0x{t:08X}u: goto L_{t:08X};' for t in jt_sorted)
-                        body = (f'switch (c->ctr) {{ {cases} default: call_indirect(c, c->ctr); return; }}')
+                        body = (f'switch (c->ctr) {{ {cases} default: call_indirect(c, c->ctr); RET(); }}')
                     else:
-                        body = 'call_indirect(c, c->ctr); return;'
+                        body = 'call_indirect(c, c->ctr); RET();'
                 if cond:
                     s += f'if ({cond}) {{ {body} }}'
                 else:
@@ -277,7 +277,7 @@ def main():
             out.append(f'\t/* {pc:08X} {i:08X} */ {s}')
         if not last_uncond:
             if f.end in by_addr:
-                out.append(f'\t{cname(f.end)}(c); return; /* fallthrough */')
+                out.append(f'\t{cname(f.end)}(c); RET(); /* fallthrough */')
             else:
                 out.append(f'\tunimpl(c, 0x{f.end:08X}u, 0); /* fell off end */')
             stats['fallthrough'] += 1

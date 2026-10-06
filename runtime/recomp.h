@@ -10,6 +10,10 @@
 extern "C" {
 #endif
 
+#if defined(WR_WATCH) || defined(WR_TRACE_CALLS)
+#define WR_CALL_TRACE 1
+#endif
+
 typedef union { double d; uint64_t u; } FPR;
 
 typedef struct CPU {
@@ -22,18 +26,62 @@ typedef struct CPU {
     uint32_t gqr[8];
     uint32_t spr[1024];
     void* host;        /* owning HostThread */
-    uint32_t trace[256];  /* ring buffer of recently entered functions */
-    uint32_t trace_pos;
+#ifdef WR_CALL_TRACE
+    uint32_t stack[256];  /* guest call stack, innermost at depth-1 */
+    uint32_t depth;
+#endif
 } CPU;
+
+/* Guest call stack. Every recompiled function opens with ENTER(its own address) and
+   leaves through RET(), which pops.
+
+   Nothing in the running game reads it: the only consumer is debug_dump_threads(), from
+   the fault and interrupt handlers, and whatever is asking "which guest function did
+   that?" at the time. So a release build leaves it out and both macros vanish, which also
+   takes 1 KB off the CPU snapshot that every context switch copies.
+
+   Not, as it turns out, because it is slow. Benchmarked on a Quest 3 at WR_TIMESCALE=3,
+   OFF/ON/OFF, the steady state was 40.60, 41.34 and 40.84 fps: the instrumented build
+   measured *faster*, consistently, so a push and a pop per guest call sit below the noise
+   floor and the couple of per cent between builds is code layout. It is out of release
+   because it is diagnostic machinery that the running game has no use for, not to buy back
+   frames -- do not go looking for them here.
+
+   This replaces a ring of the last 256 functions *entered*. A ring cannot answer which
+   function a piece of work came from: between a callee and its caller sit all the
+   callee's siblings and any interrupt handler that ran, and two draws a few microseconds
+   apart share almost the whole ring. A stack answers it exactly.
+
+   The fields live in CPU, which OSSaveContext/OSLoadContext snapshot and restore beside
+   the jmp_buf, so longjmping back into a parked guest thread brings the stack back with
+   the C stack it belongs to. */
+#ifdef WR_CALL_TRACE
+static inline void wr_push(CPU* c, uint32_t fn) {
+    if (c->depth < 256) c->stack[c->depth] = fn;
+    c->depth++;  /* counts past the end, so deep recursion still unwinds correctly */
+}
+static inline void wr_pop(CPU* c) {
+    if (c->depth) c->depth--;
+}
+#endif
 
 #ifdef WR_WATCH
 void debug_watch_check(CPU* c, uint32_t fn);
-#define ENTER(addr) (c->trace[c->trace_pos++ & 255] = (addr), debug_watch_check(c, (addr)))
+#define ENTER(addr) (wr_push(c, (addr)), debug_watch_check(c, (addr)))
 #define WATCH_STORE(pc) debug_watch_check(c, (pc) | 1u)
-#else
+#define EXIT() wr_pop(c)
+#elif defined(WR_TRACE_CALLS)
+#define ENTER(addr) wr_push(c, (addr))
 #define WATCH_STORE(pc) ((void)0)
-#define ENTER(addr) (c->trace[c->trace_pos++ & 255] = (addr))
+#define EXIT() wr_pop(c)
+#else
+#define ENTER(addr) ((void)0)
+#define WATCH_STORE(pc) ((void)0)
+#define EXIT() ((void)0)
 #endif
+
+/* How a recompiled function returns. */
+#define RET() do { EXIT(); return; } while (0)
 
 #define MSR_EE 0x8000u
 

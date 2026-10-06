@@ -856,6 +856,52 @@ Debugging environment variables used during development include `WR_INPUT` (scri
 controller input), `WR_GXSTATS`, `WR_TRACE_FRAME`, `WR_WAV` (record audio output) and
 `WR_PEEK`. See the source for details.
 
+### Which guest function did that?
+
+Every recompiled function opens with `ENTER(its own address)` and leaves through `RET()`, which
+pops — together they keep a guest call stack in `CPU`, and `func_name()` turns an address into a
+name from `analysis/symbols.txt` (the GX SDK entry points are named there, so the stack reads
+sensibly). `debug_dump_threads()` prints it from the fault and interrupt handlers, and anything
+asking which guest code produced a particular draw, copy or matrix can read it directly.
+
+It is **off by default**: `cmake -DWR_TRACE_CALLS=ON`. Both macros compile to nothing otherwise
+and the fields leave `CPU` with them, which also takes 1 KB off the snapshot every context switch
+copies.
+
+Not because it is slow, which was the expectation and is wrong. Benchmarked on a Quest 3 at
+`WR_TIMESCALE=3`, running OFF/ON/OFF, the steady state was 40.60, 41.34 and 40.84 fps — the
+instrumented build measured *faster*, consistently. A push per call and a pop per return are below
+the noise floor here, and the couple of per cent between builds is code layout. It is out of a
+release build because it is diagnostic machinery the running game has no use for; there are no
+frames to win by removing it.
+
+The stack replaces a ring of the last 256 functions *entered*, which was compiled into every build
+and could not answer the question it looked like it answered. Between a callee and its caller sit
+all the callee's siblings and any interrupt handler that ran, so the entry just before
+`GXLoadPosMtxImm` is another GX call, not the code that wanted the matrix; and two draws a few
+microseconds apart share almost the whole ring. Diffing 200 entries either side of a draw found
+nothing unique to it. A stack answers it exactly.
+
+It survives the thread switching because the fields live in `CPU`, which `OSSaveContext` snapshots
+and `OSLoadContext` restores beside the `jmp_buf` — so longjmping back into a parked guest thread
+brings the stack back with the C stack it belongs to. Depth is counted past the end of the array,
+so recursion deeper than 256 frames still unwinds to the right place.
+
+**Ask at the right end of the FIFO.** A GX command cannot be attributed where the renderer sees it.
+The game writes commands into a FIFO and the GP is kept a frame behind, so the stack at a draw, an
+EFB copy or a matrix load is the *drain* site — six frames straight to `main`, identical for every
+command in the frame. Ask where the command is written into the write-gather pipe instead and the
+guest is still inside the code that wanted it. `WR_GP_STACK=<hex word>` prints the stack the first
+few times that word is pushed into the pipe, which is how the countdown rig's placement was traced
+to `fn_800D4260`; `WR_POSMTX_STACK=<z>` does the same for a position matrix load, and shows the
+drain site rather than the owner, which is the point.
+
+**The guest keeps its own stack too.** The PowerPC ABI puts the caller's frame pointer at `[sp]` and
+its return address at `[sp+4]`, so a backtrace can be walked straight out of guest memory with no
+instrumentation at all — which is what `--sample` reports, and what makes attribution available in a
+release build. `ENTER`/`RET` give an exact stack with names for the price of the instrumentation;
+the backchain gives one for free, and misses frames that have none.
+
 ## How it works
 
 ```

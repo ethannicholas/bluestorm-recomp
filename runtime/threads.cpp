@@ -317,13 +317,22 @@ void debug_dump_threads() {
     for (auto* h : g_threads) {
         CPU* c = &h->cpu;
         fprintf(stderr, "=== host thread %d (run=%d) lr=%08X msr=%08X r1=%08X r3=%08X\n", h->id, h->run, c->lr, c->msr, c->r[1], c->r[3]);
-        fprintf(stderr, "  recent function entries (oldest first):\n");
-        uint32_t n = c->trace_pos < 256 ? c->trace_pos : 256;
-        uint32_t depth = getenv("WR_TRACE_DEPTH") ? (uint32_t)atoi(getenv("WR_TRACE_DEPTH")) : 40; if (depth > n) depth = n;
-        for (uint32_t i = c->trace_pos - depth; i != c->trace_pos; i++) {
-            uint32_t a = c->trace[i & 255];
+#ifdef WR_CALL_TRACE
+        fprintf(stderr, "  guest call stack (innermost first):\n");
+        uint32_t want = getenv("WR_TRACE_DEPTH") ? (uint32_t)atoi(getenv("WR_TRACE_DEPTH")) : 40;
+        // The depth counts past the end of the array so that deep recursion still unwinds
+        // correctly; anything above 256 was never recorded.
+        uint32_t have = c->depth < 256 ? c->depth : 256;
+        if (c->depth > 256)
+            fprintf(stderr, "    (%u frames deeper than the stack records)\n", c->depth - 256);
+        if (want > have) want = have;
+        for (uint32_t i = 1; i <= want; i++) {
+            uint32_t a = c->stack[have - i];
             fprintf(stderr, "    %08X %s\n", a, func_name(a));
         }
+#else
+        fprintf(stderr, "  (built without WR_TRACE_CALLS, so there is no guest call stack)\n");
+#endif
     }
 }
 
@@ -369,30 +378,34 @@ void debug_sampler_start() {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             for (auto* h : g_threads) {
                 CPU* c = &h->cpu;
-                std::string s;
+                // Walk the guest's own stack: the PowerPC ABI keeps the caller's frame
+                // pointer at [sp] and its return address at [sp+4], so this is a real
+                // guest backtrace read straight out of guest memory. It needs no
+                // instrumentation at all, which is why it, rather than anything ENTER()
+                // keeps, is what --sample reports.
+                std::string bt, s;
                 uint32_t seen[8]; int ns = 0;
-                for (uint32_t i = 0; i < 256 && ns < 8; i++) {
-                    uint32_t a = c->trace[(c->trace_pos - 1 - i) & 255];
-                    if (a >= 0x80100000u || a < 0x80006000u) continue;
-                    bool dup = false;
-                    for (int k = 0; k < ns; k++) dup |= seen[k] == a;
-                    if (dup) continue;
-                    seen[ns++] = a;
-                    char buf[24]; snprintf(buf, sizeof(buf), " %08X", a); s += buf;
-                }
-                static uint32_t last_frames;
-                uint32_t fr = gx_frames_submitted();
-                fprintf(stderr, "[sample] vi=%u frames=%u (+%u) thread %d game fns:%s\n", g_vi_retrace_count.load(), fr, fr - last_frames, h->id, s.c_str());
-                last_frames = fr;
-                std::string bt;
                 uint32_t sp = c->r[1];
                 for (int d = 0; d < 24 && sp >= 0x80000000u && sp < 0x81800000u; d++) {
                     uint32_t prev = mem_r32(sp);
                     if (prev < 0x80000000u || prev >= 0x81800000u || prev <= sp) break;
                     uint32_t ret = mem_r32(prev + 4);
                     char buf[16]; snprintf(buf, sizeof(buf), " %08X", ret); bt += buf;
+                    // Game code lives below the SDK; name the distinct ones.
+                    if (ret >= 0x80006000u && ret < 0x80100000u && ns < 8) {
+                        bool dup = false;
+                        for (int k = 0; k < ns; k++) dup |= seen[k] == ret;
+                        if (!dup) {
+                            seen[ns++] = ret;
+                            char b2[24]; snprintf(b2, sizeof(b2), " %08X", ret); s += b2;
+                        }
+                    }
                     sp = prev;
                 }
+                static uint32_t last_frames;
+                uint32_t fr = gx_frames_submitted();
+                fprintf(stderr, "[sample] vi=%u frames=%u (+%u) thread %d game fns:%s\n", g_vi_retrace_count.load(), fr, fr - last_frames, h->id, s.c_str());
+                last_frames = fr;
                 fprintf(stderr, "         guest stack:%s\n", bt.c_str());
             }
         }

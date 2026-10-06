@@ -59,6 +59,15 @@ if(HAVE_GAME_ISO)
 
   add_library(game_recomp STATIC ${RECOMP_SOURCES})
   target_include_directories(game_recomp PUBLIC ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR})
+  # See ENTER()/RET() in runtime/recomp.h. ON maintains a guest call stack, which answers
+  # "which guest function did that?" and gives a crash dump something to print. Off unless
+  # asked for because it is diagnostic machinery, not because it is slow -- measured on a
+  # Quest 3 it is below the noise floor. PUBLIC because the CPU struct grows with it: the
+  # runtime and the generated code must agree on the layout.
+  option(WR_TRACE_CALLS "Maintain a guest call stack (diagnostics; costs performance)" OFF)
+  if(WR_TRACE_CALLS)
+    target_compile_definitions(game_recomp PUBLIC WR_TRACE_CALLS)
+  endif()
   if(MSVC)
     # Generated code is enormous and machine-written: keep the optimizer honest about
     # aliasing and floating point, and silence the noise it legitimately produces.
