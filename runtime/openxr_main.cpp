@@ -713,20 +713,26 @@ void android_main(android_app* app) {
                 layers.push_back((XrCompositionLayerBaseHeader*)&proj_layer);
             }
         } else if (fs.shouldRender) {
+            // Touch the swapchain only when there is a new game frame to put in it.
+            //
+            // The compositor does not need a new image every display frame: a quad layer
+            // keeps showing the last image released to it, reprojected at display rate,
+            // which is what makes head tracking smooth however slowly the game renders --
+            // and is exactly what the re-submission below relies on. Re-blitting identical
+            // pixels into a freshly acquired image 72 times a second bought nothing and
+            // meant cycling the swapchain under the compositor while it sampled, at the
+            // one rate where a fade makes any mismatch visible. It also cost a full-screen
+            // blit per display frame.
             uint32_t idx = 0;
             XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-            if (XR_SUCCEEDED(xrAcquireSwapchainImage(g_xr.swapchain, &ai, &idx))) {
+            if (batch && XR_SUCCEEDED(xrAcquireSwapchainImage(g_xr.swapchain, &ai, &idx))) {
                 XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
                 wi.timeout = XR_INFINITE_DURATION;
                 if (XR_SUCCEEDED(xrWaitSwapchainImage(g_xr.swapchain, &wi))) {
                     gx::render_set_output_fbo(g_xr.fbos[idx]);
                     // Consume at most one game frame per display frame; otherwise a
                     // backlog would be drawn and thrown away.
-                    bool drew = false;
-                    if (batch && gx::render_execute(*batch)) drew = true;
-                    // The compositor needs an image every display frame, and the game
-                    // produces far fewer, so repaint the last one otherwise.
-                    if (!drew) gx::render_repaint();
+                    const bool drew = gx::render_execute(*batch);
                     gx::render_set_output_fbo(0);
                     // `log_frames 1` in vr.txt traces the theater path one display frame
                     // at a time: which swapchain image was written, whether it got a new
@@ -734,14 +740,13 @@ void android_main(android_app* app) {
                     // headless harness renders the same pixels but cannot reproduce the
                     // compositor, so flicker that is not in the EFB has to be caught here.
                     if (g_vrcfg.log_frames)
-                        LOGI("[t] disp=%llu img=%u %s present=%u batch=%d",
-                             (unsigned long long)disp_frames, idx, drew ? "drew" : "rept",
-                             gx::present_count(), batch ? 1 : 0);
+                        LOGI("[t] disp=%llu img=%u %s present=%u", (unsigned long long)disp_frames,
+                             idx, drew ? "drew" : "no-present", gx::present_count());
                     // Issue the blit before handing the image back. A full fence wait
                     // here was tried against the character-select flicker and changed
                     // nothing, at about a tenth of the game's frame rate.
                     glFlush();
-                    have_content = true;
+                    if (drew) have_content = true;
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_xr.swapchain, &ri);

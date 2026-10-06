@@ -272,6 +272,13 @@ slowly the game renders. Measured on a Quest 3: **72 Hz compositor with no stale
 game fed it 30 fps**. Full 3D later replaces the quad with a projection layer and per-eye
 `u_proj`/`u_view`; the session, swapchain and input code are unchanged by that.
 
+The swapchain is touched **only when the game has produced a frame**, not once per display frame.
+A quad layer keeps showing the last image released to it — that is the same property the
+re-submission of the layer on non-rendered frames relies on — so re-blitting identical pixels into
+a freshly acquired image at 72 Hz bought nothing, cost a full-screen blit every display frame, and
+meant cycling the swapchain underneath the compositor while it was sampling. Removing it took the
+game from ~187 to ~219 frames per five seconds with the compositor still at a full 72 Hz.
+
 The OpenXR loader comes from Khronos' official Android AAR on Maven Central, fetched at configure
 time, so no binary is committed. Because there is no Gradle and so no manifest merger, the
 loader's own manifest requirements (two permissions and a `<queries>` block for the runtime
@@ -408,8 +415,8 @@ frame — "draws sampling the water copy" rather than "draws 256 to 273".
 #### Tracing what the compositor is shown
 
 `log_frames 1` in `vr.txt` logs the theater path one display frame at a time: which swapchain
-image was written, whether it got a new game frame or a repaint of the last one, and which game
-frame that is. The app runs on a headset nobody is wearing, so this can be captured without help:
+image was written and which game frame went into it — only frames the game produced touch the
+swapchain at all. The app runs on a headset nobody is wearing, so this can be captured without help:
 push a `wr_input.txt` script beside `vr.txt`, `am start` the activity, and read
 `adb logcat -s waverace`.
 
