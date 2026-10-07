@@ -96,7 +96,7 @@ static GLuint g_copy_fbo;
 static GLuint g_vs;
 static std::unordered_map<ShaderKey, Program, ShaderKeyHash> g_programs;
 // `grab` marks one of the spray's screen-space grabs; see is_grab_copy().
-struct GlTex { GLuint tex; uint32_t w, h; bool efb; bool grab; uint32_t last_used; };
+struct GlTex { GLuint tex; uint32_t w, h, levels; bool efb; bool grab; uint32_t last_used; };
 static std::unordered_map<uint32_t, GlTex> g_textures;
 // Frames counted here rather than reusing the GX frame counter, so eviction works the
 // same for any frontend. Textures the game stops using are released: a race streams
@@ -505,11 +505,13 @@ void render_set_window_size(int w, int h) { g_win_w = w; g_win_h = h; }
 // The textures EFB copies land in do not get off so lightly -- they are allocated at
 // dst * scale but matched for reuse by their logical size alone, so a survivor would be
 // reused at the old resolution and quietly sample wrong. They go with the EFB.
+static void gl_state_invalidate();
 void render_set_internal_scale(int scale) {
     if (scale < 1) scale = 1;
     if (scale > kMaxInternalScale) scale = kMaxInternalScale;
     if (scale == g_scale) return;
     g_scale = scale;
+    gl_state_invalidate();
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g_efb_color);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, EFB_W * g_scale, EFB_H * g_scale, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -541,6 +543,7 @@ static void upload_texture(const TexData& t) {
         h = h > 1 ? h / 2 : 1;
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)t.levels.size() - 1);
+    g.levels = (uint32_t)t.levels.size();
     g.last_used = g_render_frame;
     g_textures[t.id] = g;
 }
@@ -674,13 +677,62 @@ static bool is_eye_screen_tex(uint32_t id) {
     return (g_eye_grab.tex && is_fullscreen_tex(id)) || (g_spray_grab.tex && is_grab_tex(id));
 }
 
+// What apply_state last put into GL, so that it can put in only what differs.
+//
+// A race frame applies around a thousand states, and measured over a million consecutive
+// pairs, 94% of them differ in a texture -- 1.1 texmaps on average -- while the projection,
+// viewport, scissor, fog, indirect matrices and point size are the same more than 99% of
+// the time, the program 81%, the TEV registers 76%, blend and depth 90%. Re-issuing the
+// forty-odd GL calls of a full application for every one of those was most of the
+// renderer's CPU time; the typical application is now a texture bind and its size.
+//
+// Uniforms belong to a program, so they are only skipped while the program is the one they
+// were last uploaded to. Bindings and fixed-function state are global and skipped on their
+// own terms. The shadow holds within one pass: an EFB copy, a present or an eye's grab
+// changes GL state behind it, and so does the start of a new pass, whose eye matrices
+// differ -- each of those invalidates it.
+struct AppliedState {
+    bool valid = false;
+    ShaderKey key;
+    const Program* pr = nullptr;
+    float proj[7], viewport[6];
+    uint8_t view_space;
+    uint32_t bp[256];
+    uint32_t tev_reg[4][2], tev_konst[4][2];
+    uint32_t screen_uv;
+    float ripple[2];
+    uint32_t tex_id[8];
+    uint8_t tex_sub[8];       // the unit holds an eye grab, not the game's texture
+    GLuint sampler[8];
+    float tsz[16];
+    int prim;
+    bool hud_depth;
+};
+static AppliedState g_applied;
+static void gl_state_invalidate() { g_applied.valid = false; }
+
 static void apply_state(const PixelState& st, int prim) {
     int xoff, yoff;
     scissor_offset(st.bp, xoff, yoff);
     const uint32_t* bp = st.bp;
+    const uint32_t* abp = g_applied.bp;
     ShaderKey key = make_shader_key(st);
-    const Program& pr = get_program(key);
-    glUseProgram(pr.prog);
+    // `same` means the previous application is still in GL and the program is unchanged,
+    // so a uniform whose inputs match may be left alone.
+    const bool same = g_applied.valid && key == g_applied.key;
+    const Program& pr = same ? *g_applied.pr : get_program(key);
+    if (!same) {
+        glUseProgram(pr.prog);
+        g_applied.key = key;
+        g_applied.pr = &pr;
+    }
+    // Shorthand for "this group's inputs are what was last uploaded to this program".
+    auto same_bp = [&](uint32_t lo, uint32_t hi) {
+        if (!same) return false;
+        for (uint32_t r = lo; r <= hi; r++) if (bp[r] != abp[r]) return false;
+        return true;
+    };
+    auto same_reg = [&](uint32_t r) { return same && bp[r] == abp[r]; };
 
     // Projection. In VR a perspective batch is world geometry and gets the eye's
     // projection instead of the game's; an orthographic one is a 2D element and goes on
@@ -712,98 +764,122 @@ static void apply_state(const PixelState& st, int prim) {
     } else {
         P[0] = p[0]; P[12] = p[1]; P[5] = p[2]; P[13] = p[3]; P[10] = p[4]; P[14] = p[5]; P[15] = 1.0f;
     }
+    const bool same_proj = same && memcmp(st.proj, g_applied.proj, sizeof(st.proj)) == 0 &&
+                           st.view_space == g_applied.view_space;
     // Note: a draw sampling a copy of the whole frame (the water surface is one) must
     // stay in the world, however tempting its screen-space origin makes the overlay path
     // look. Sending the water through it put the water, and the racer baked into the
     // copy, on a flat panel hanging in front of the camera while the real racer went on
     // moving in the world. The seam at the billboard's edge is the lesser problem.
-    if (g_vr_active && !on_hud_frame) {
-        // A camera-placed 3D object is viewed with the head transform but without the
-        // world's pitch correction; see view_space_3d above.
-        const float* view = view_space_3d ? g_vr_view : g_vr_view_world;
-        // WR_EYE_GAMEPROJ keeps the game's own frustum and applies only the head
-        // transform, which tells apart "the eye sees less than it should" from "the game
-        // never drew anything out there".
-        static const bool game_proj = getenv("WR_EYE_GAMEPROJ") != nullptr;
-        static bool logged = false;
-        if (!logged && getenv("WR_EYELOG")) {
-            logged = true;
-            fprintf(stderr, "[eye] game fov: x=%.1fdeg y=%.1fdeg (p0=%f p2=%f)\n",
-                    2.0f * atanf(1.0f / p[0]) * 57.2958f, 2.0f * atanf(1.0f / p[2]) * 57.2958f,
-                    p[0], p[2]);
+    if (!same_proj) {
+        if (g_vr_active && !on_hud_frame) {
+            // A camera-placed 3D object is viewed with the head transform but without the
+            // world's pitch correction; see view_space_3d above.
+            const float* view = view_space_3d ? g_vr_view : g_vr_view_world;
+            // WR_EYE_GAMEPROJ keeps the game's own frustum and applies only the head
+            // transform, which tells apart "the eye sees less than it should" from "the game
+            // never drew anything out there".
+            static const bool game_proj = getenv("WR_EYE_GAMEPROJ") != nullptr;
+            static bool logged = false;
+            if (!logged && getenv("WR_EYELOG")) {
+                logged = true;
+                fprintf(stderr, "[eye] game fov: x=%.1fdeg y=%.1fdeg (p0=%f p2=%f)\n",
+                        2.0f * atanf(1.0f / p[0]) * 57.2958f, 2.0f * atanf(1.0f / p[2]) * 57.2958f,
+                        p[0], p[2]);
+            }
+            glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, game_proj ? P : g_vr_proj);
+            glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, view);
+            glUniform1i(pr.u_vr, 1);
+        } else if (g_vr_active) {
+            // A HUD element in an eye. The game's own projection already puts its frame in
+            // [-1,1], so that is where the chain picks up -- for the perspective rig too,
+            // since the frame's matrix carries clip w through and the divide lands it on
+            // the plane just the same.
+            //
+            // GX's viewport transform is deliberately not in the chain: it places the frame
+            // within the 640x528 EFB, and an eye's render target is not the EFB -- the same
+            // reason the scissor rect is dropped below. Including it would map the EFB
+            // rather than the 480 lines the game displays, leaving the HUD a few per cent
+            // small and off centre.
+            //
+            // Every term is constant for the draw, so the whole chain folds into one matrix
+            // here and the shader is left with a single multiply.
+            float a[16], b[16], M[16];
+            mat4_mul(g_vr_hud, P, a);   // the game's 2D frame, placed in view space
+            mat4_mul(g_vr_view, a, b);  // that frame seen from this eye
+            mat4_mul(g_vr_proj, b, M);
+            glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, M);
+            glUniform1i(pr.u_vr, 2);
+        } else {
+            glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, P);
+            glUniform1i(pr.u_vr, 0);
         }
-        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, game_proj ? P : g_vr_proj);
-        glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, view);
-        glUniform1i(pr.u_vr, 1);
-    } else if (g_vr_active) {
-        // A HUD element in an eye. The game's own projection already puts its frame in
-        // [-1,1], so that is where the chain picks up -- for the perspective rig too,
-        // since the frame's matrix carries clip w through and the divide lands it on
-        // the plane just the same.
-        //
-        // GX's viewport transform is deliberately not in the chain: it places the frame
-        // within the 640x528 EFB, and an eye's render target is not the EFB -- the same
-        // reason the scissor rect is dropped below. Including it would map the EFB
-        // rather than the 480 lines the game displays, leaving the HUD a few per cent
-        // small and off centre.
-        //
-        // Every term is constant for the draw, so the whole chain folds into one matrix
-        // here and the shader is left with a single multiply.
-        float a[16], b[16], M[16];
-        mat4_mul(g_vr_hud, P, a);   // the game's 2D frame, placed in view space
-        mat4_mul(g_vr_view, a, b);  // that frame seen from this eye
-        mat4_mul(g_vr_proj, b, M);
-        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, M);
-        glUniform1i(pr.u_vr, 2);
-    } else {
-        glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, P);
-        glUniform1i(pr.u_vr, 0);
+        memcpy(g_applied.proj, st.proj, sizeof(st.proj));
+        g_applied.view_space = st.view_space;
     }
     const float* vp = st.viewport;  // sx, sy, sz, ox, oy, oz
-    float vpa[4] = {2.0f * (vp[3] - xoff) / EFB_W - 1.0f, 2.0f * vp[0] / EFB_W, 2.0f * (vp[4] - yoff) / EFB_H - 1.0f, 2.0f * vp[1] / EFB_H};
-    float vpb[4] = {2.0f * vp[5] / 16777215.0f - 1.0f, 2.0f * vp[2] / 16777215.0f, 0, 0};
-    glUniform4fv(pr.u_vp_a, 1, vpa);
-    glUniform4fv(pr.u_vp_b, 1, vpb);
-    float psize = ((bp[0x22] >> 8) & 0xFF) / 6.0f * g_scale;
-    glUniform1f(pr.u_point_size, psize < 1 ? 1 : psize);
+    if (!(same && same_reg(0x59) && memcmp(vp, g_applied.viewport, sizeof(st.viewport)) == 0)) {
+        float vpa[4] = {2.0f * (vp[3] - xoff) / EFB_W - 1.0f, 2.0f * vp[0] / EFB_W, 2.0f * (vp[4] - yoff) / EFB_H - 1.0f, 2.0f * vp[1] / EFB_H};
+        float vpb[4] = {2.0f * vp[5] / 16777215.0f - 1.0f, 2.0f * vp[2] / 16777215.0f, 0, 0};
+        glUniform4fv(pr.u_vp_a, 1, vpa);
+        glUniform4fv(pr.u_vp_b, 1, vpb);
+        memcpy(g_applied.viewport, vp, sizeof(st.viewport));
+    }
+    if (!same_reg(0x22)) {
+        float psize = ((bp[0x22] >> 8) & 0xFF) / 6.0f * g_scale;
+        glUniform1f(pr.u_point_size, psize < 1 ? 1 : psize);
+    }
 
     // TEV registers
-    GLint regs[16], kon[16];
-    for (int r = 0; r < 4; r++) {
-        uint32_t ra = st.tev_reg[r][0], bg = st.tev_reg[r][1];
-        regs[r * 4 + 0] = sx11(ra); regs[r * 4 + 3] = sx11(ra >> 12);
-        regs[r * 4 + 2] = sx11(bg); regs[r * 4 + 1] = sx11(bg >> 12);
-        uint32_t ka = st.tev_konst[r][0], kb = st.tev_konst[r][1];
-        kon[r * 4 + 0] = ka & 0xFF; kon[r * 4 + 3] = (ka >> 12) & 0xFF;
-        kon[r * 4 + 2] = kb & 0xFF; kon[r * 4 + 1] = (kb >> 12) & 0xFF;
+    if (!(same && memcmp(st.tev_reg, g_applied.tev_reg, sizeof(st.tev_reg)) == 0 &&
+          memcmp(st.tev_konst, g_applied.tev_konst, sizeof(st.tev_konst)) == 0)) {
+        GLint regs[16], kon[16];
+        for (int r = 0; r < 4; r++) {
+            uint32_t ra = st.tev_reg[r][0], bg = st.tev_reg[r][1];
+            regs[r * 4 + 0] = sx11(ra); regs[r * 4 + 3] = sx11(ra >> 12);
+            regs[r * 4 + 2] = sx11(bg); regs[r * 4 + 1] = sx11(bg >> 12);
+            uint32_t ka = st.tev_konst[r][0], kb = st.tev_konst[r][1];
+            kon[r * 4 + 0] = ka & 0xFF; kon[r * 4 + 3] = (ka >> 12) & 0xFF;
+            kon[r * 4 + 2] = kb & 0xFF; kon[r * 4 + 1] = (kb >> 12) & 0xFF;
+        }
+        glUniform4iv(pr.u_reg, 4, regs);
+        glUniform4iv(pr.u_konst, 4, kon);
+        memcpy(g_applied.tev_reg, st.tev_reg, sizeof(st.tev_reg));
+        memcpy(g_applied.tev_konst, st.tev_konst, sizeof(st.tev_konst));
     }
-    glUniform4iv(pr.u_reg, 4, regs);
-    glUniform4iv(pr.u_konst, 4, kon);
-    GLint aref[2] = {(GLint)(bp[0xF3] & 0xFF), (GLint)((bp[0xF3] >> 8) & 0xFF)};
-    glUniform2iv(pr.u_alpharef, 1, aref);
+    if (!same_reg(0xF3)) {
+        GLint aref[2] = {(GLint)(bp[0xF3] & 0xFF), (GLint)((bp[0xF3] >> 8) & 0xFF)};
+        glUniform2iv(pr.u_alpharef, 1, aref);
+    }
     // Indirect matrices
-    GLint im[18];
-    GLint isc[3];
-    for (int m = 0; m < 3; m++) {
-        uint32_t r0 = bp[0x06 + 3 * m], r1 = bp[0x07 + 3 * m], r2 = bp[0x08 + 3 * m];
-        im[m * 6 + 0] = sx11(r0); im[m * 6 + 1] = sx11(r1); im[m * 6 + 2] = sx11(r2);
-        im[m * 6 + 3] = sx11(r0 >> 11); im[m * 6 + 4] = sx11(r1 >> 11); im[m * 6 + 5] = sx11(r2 >> 11);
-        isc[m] = (int)(((r0 >> 22) & 3) | (((r1 >> 22) & 3) << 2) | (((r2 >> 22) & 3) << 4)) - 17;
+    if (!same_bp(0x06, 0x0E)) {
+        GLint im[18];
+        GLint isc[3];
+        for (int m = 0; m < 3; m++) {
+            uint32_t r0 = bp[0x06 + 3 * m], r1 = bp[0x07 + 3 * m], r2 = bp[0x08 + 3 * m];
+            im[m * 6 + 0] = sx11(r0); im[m * 6 + 1] = sx11(r1); im[m * 6 + 2] = sx11(r2);
+            im[m * 6 + 3] = sx11(r0 >> 11); im[m * 6 + 4] = sx11(r1 >> 11); im[m * 6 + 5] = sx11(r2 >> 11);
+            isc[m] = (int)(((r0 >> 22) & 3) | (((r1 >> 22) & 3) << 2) | (((r2 >> 22) & 3) << 4)) - 17;
+        }
+        glUniform3iv(pr.u_indmtx, 6, im);
+        glUniform1iv(pr.u_indscale, 3, isc);
     }
-    glUniform3iv(pr.u_indmtx, 6, im);
-    glUniform1iv(pr.u_indscale, 3, isc);
-    float ics[8];
-    for (int i = 0; i < 4; i++) {
-        uint32_t ss = bp[0x25 + i / 2] >> ((i & 1) * 8);
-        ics[i * 2] = 1.0f / (float)(1u << (ss & 15));
-        ics[i * 2 + 1] = 1.0f / (float)(1u << ((ss >> 4) & 15));
+    if (!same_bp(0x25, 0x26)) {
+        float ics[8];
+        for (int i = 0; i < 4; i++) {
+            uint32_t ss = bp[0x25 + i / 2] >> ((i & 1) * 8);
+            ics[i * 2] = 1.0f / (float)(1u << (ss & 15));
+            ics[i * 2 + 1] = 1.0f / (float)(1u << ((ss >> 4) & 15));
+        }
+        glUniform2fv(pr.u_indcoordscale, 4, ics);
     }
-    glUniform2fv(pr.u_indcoordscale, 4, ics);
     // Fog
-    float fog[4] = {fog_float(bp[0xEE]), fog_float(bp[0xF1]), (float)(bp[0xEF] & 0xFFFFFF), (float)(bp[0xF0] & 0x1F)};
-    glUniform4fv(pr.u_fog, 1, fog);
-    float fogc[3] = {((bp[0xF2] >> 16) & 0xFF) / 255.0f, ((bp[0xF2] >> 8) & 0xFF) / 255.0f, (bp[0xF2] & 0xFF) / 255.0f};
-    glUniform3fv(pr.u_fogcolor, 1, fogc);
+    if (!same_bp(0xEE, 0xF2)) {
+        float fog[4] = {fog_float(bp[0xEE]), fog_float(bp[0xF1]), (float)(bp[0xEF] & 0xFFFFFF), (float)(bp[0xF0] & 0x1F)};
+        glUniform4fv(pr.u_fog, 1, fog);
+        float fogc[3] = {((bp[0xF2] >> 16) & 0xFF) / 255.0f, ((bp[0xF2] >> 8) & 0xFF) / 255.0f, (bp[0xF2] & 0xFF) / 255.0f};
+        glUniform3fv(pr.u_fogcolor, 1, fogc);
+    }
 
     // Which texgens feed a copy of the whole frame. In an eye those lookups are taken
     // over: the texture becomes the eye's own grab and the coordinate becomes the
@@ -820,9 +896,12 @@ static void apply_state(const PixelState& st, int prim) {
                 screen_uv |= 1u << ((order >> 3) & 7);
         }
     }
-    glUniform1i(pr.u_screen_uv, (GLint)screen_uv);
-    glUniform2f(pr.u_screen_px, g_eye_w ? 1.0f / (float)g_eye_w : 0.0f,
-                g_eye_h ? 1.0f / (float)g_eye_h : 0.0f);
+    if (!same || screen_uv != g_applied.screen_uv) {
+        glUniform1i(pr.u_screen_uv, (GLint)screen_uv);
+        glUniform2f(pr.u_screen_px, g_eye_w ? 1.0f / (float)g_eye_w : 0.0f,
+                    g_eye_h ? 1.0f / (float)g_eye_h : 0.0f);
+        g_applied.screen_uv = screen_uv;
+    }
 
     // The indirect offset that distorts a substituted lookup is an absolute displacement
     // in the copy's texels, and the copy's texels are EFB pixels. The eye grab's are not:
@@ -851,120 +930,161 @@ static void apply_state(const PixelState& st, int prim) {
         if (gx > 0.0f) ripple[0] = 0.5f * (float)g_eye_w * g_vr_proj[0] / gx;
         if (gy > 0.0f) ripple[1] = -0.5f * (float)g_eye_h * g_vr_proj[5] / gy;
     }
-    glUniform2fv(pr.u_screen_ripple, 1, ripple);
+    if (!same || ripple[0] != g_applied.ripple[0] || ripple[1] != g_applied.ripple[1]) {
+        glUniform2fv(pr.u_screen_ripple, 1, ripple);
+        g_applied.ripple[0] = ripple[0];
+        g_applied.ripple[1] = ripple[1];
+    }
 
-    // Textures
+    // Textures. The bindings are global, so a unit already holding this texture under
+    // this sampler is left alone whatever the program; the sizes are a uniform.
     float tsz[16];
+    bool tsz_changed = !same;
     for (int m = 0; m < 8; m++) {
         tsz[m * 2] = tsz[m * 2 + 1] = 1.0f;
-        glActiveTexture(GL_TEXTURE0 + m);
         uint32_t id = st.tex_id[m];
-        if (screen_uv && st.tex_is_efb[m] && id && is_eye_screen_tex(id)) {
+        const bool sub = screen_uv && st.tex_is_efb[m] && id && is_eye_screen_tex(id);
+        GLuint sampler = 0;
+        const GlTex* gt = nullptr;
+        if (sub) {
             const EyeGrab& g = is_grab_tex(id) ? g_spray_grab : g_eye_grab;
-            // The grab carries its own filtering; a sampler object would override it.
-            glBindTexture(GL_TEXTURE_2D, g.tex);
-            glBindSampler(m, 0);
             tsz[m * 2] = (float)g.w;
             tsz[m * 2 + 1] = (float)g.h;
-            continue;
+        } else if (id) {
+            auto it = g_textures.find(id);
+            if (it != g_textures.end()) {
+                gt = &it->second;
+                it->second.last_used = g_render_frame;
+                uint32_t base = m < 4 ? 0x80 + m : 0xA0 + (m - 4);
+                uint32_t img0 = bp[base + 8];
+                tsz[m * 2] = (float)((img0 & 0x3FF) + 1);
+                tsz[m * 2 + 1] = (float)(((img0 >> 10) & 0x3FF) + 1);
+                sampler = get_sampler(bp[base], bp[base + 4], gt->efb ? 1 : gt->levels);
+            } else {
+                id = 0;
+            }
         }
-        auto it = id ? g_textures.find(id) : g_textures.end();
-        if (it == g_textures.end()) { glBindTexture(GL_TEXTURE_2D, 0); continue; }
-        glBindTexture(GL_TEXTURE_2D, it->second.tex);
-        it->second.last_used = g_render_frame;
-        uint32_t base = m < 4 ? 0x80 + m : 0xA0 + (m - 4);
-        uint32_t img0 = bp[base + 8];
-        tsz[m * 2] = (float)((img0 & 0x3FF) + 1);
-        tsz[m * 2 + 1] = (float)(((img0 >> 10) & 0x3FF) + 1);
-        GLint maxl = 0;
-        glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, &maxl);
-        glBindSampler(m, get_sampler(bp[base], bp[base + 4], it->second.efb ? 1 : (uint32_t)maxl + 1));
+        if (tsz[m * 2] != g_applied.tsz[m * 2] || tsz[m * 2 + 1] != g_applied.tsz[m * 2 + 1]) tsz_changed = true;
+        g_applied.tsz[m * 2] = tsz[m * 2];
+        g_applied.tsz[m * 2 + 1] = tsz[m * 2 + 1];
+        if (g_applied.valid && g_applied.tex_id[m] == id && g_applied.tex_sub[m] == sub &&
+            g_applied.sampler[m] == sampler)
+            continue;
+        glActiveTexture(GL_TEXTURE0 + m);
+        if (sub) {
+            // The grab carries its own filtering; a sampler object would override it.
+            glBindTexture(GL_TEXTURE_2D, (is_grab_tex(id) ? g_spray_grab : g_eye_grab).tex);
+            glBindSampler(m, 0);
+        } else if (gt) {
+            glBindTexture(GL_TEXTURE_2D, gt->tex);
+            glBindSampler(m, sampler);
+        } else {
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        g_applied.tex_id[m] = id;
+        g_applied.tex_sub[m] = sub;
+        g_applied.sampler[m] = sampler;
     }
-    glUniform2fv(pr.u_texsize, 8, tsz);
+    if (tsz_changed) glUniform2fv(pr.u_texsize, 8, tsz);
 
-    // Blend / logic op
+    // Blend / logic op, colour mask
+    const bool same_blend = g_applied.valid && bp[0x41] == abp[0x41] && bp[0x43] == abp[0x43];
     uint32_t bm = bp[0x41];
-    bool blend = bm & 1, logic = (bm >> 1) & 1, sub = (bm >> 11) & 1;
-    if (sub) {
-        glEnable(GL_BLEND);
-        set_logic_op_off();
-        glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
-        glBlendFunc(GL_ONE, GL_ONE);
-    } else if (blend) {
-        glEnable(GL_BLEND);
-        set_logic_op_off();
-        glBlendEquation(GL_FUNC_ADD);
-        glBlendFunc(kBlendSrc[(bm >> 8) & 7], kBlendDst[(bm >> 5) & 7]);
-    } else if (logic) {
-        glDisable(GL_BLEND);
-        set_logic_op(bm >> 12);
-    } else {
-        glDisable(GL_BLEND);
-        set_logic_op_off();
+    if (!same_blend) {
+        bool blend = bm & 1, logic = (bm >> 1) & 1, sub = (bm >> 11) & 1;
+        if (sub) {
+            glEnable(GL_BLEND);
+            set_logic_op_off();
+            glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
+            glBlendFunc(GL_ONE, GL_ONE);
+        } else if (blend) {
+            glEnable(GL_BLEND);
+            set_logic_op_off();
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendFunc(kBlendSrc[(bm >> 8) & 7], kBlendDst[(bm >> 5) & 7]);
+        } else if (logic) {
+            glDisable(GL_BLEND);
+            set_logic_op(bm >> 12);
+        } else {
+            glDisable(GL_BLEND);
+            set_logic_op_off();
+        }
+        bool has_alpha = (bp[0x43] & 7) == 1;
+        GLboolean cw = (bm >> 3) & 1, aw = ((bm >> 4) & 1) && has_alpha;
+        glColorMask(cw, cw, cw, aw);
     }
-    bool has_alpha = (bp[0x43] & 7) == 1;
-    GLboolean cw = (bm >> 3) & 1, aw = ((bm >> 4) & 1) && has_alpha;
-    glColorMask(cw, cw, cw, aw);
-    // Depth
-    uint32_t zm = bp[0x40];
-    if (zm & 1) {
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(kDepthFunc[(zm >> 1) & 7]);
-    } else {
-        glDisable(GL_DEPTH_TEST);
-    }
-    glDepthMask((zm >> 4) & 1);
-    // In an eye the HUD is a quad out in the world rather than something laid over the
-    // finished image, so the game's depth state no longer places it: the scene it is meant
-    // to sit over is mostly nearer than the frame, and every element of the HUD is on one
-    // plane. It is submitted last, so submission order is the layering.
-    if (g_vr_active && on_hud_frame) {
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
+    // Depth. In an eye the HUD is a quad out in the world rather than something laid over
+    // the finished image, so the game's depth state no longer places it: the scene it is
+    // meant to sit over is mostly nearer than the frame, and every element of the HUD is
+    // on one plane. It is submitted last, so submission order is the layering.
+    const bool hud_depth = g_vr_active && on_hud_frame;
+    if (!(g_applied.valid && bp[0x40] == abp[0x40] && hud_depth == g_applied.hud_depth)) {
+        uint32_t zm = bp[0x40];
+        if (zm & 1) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(kDepthFunc[(zm >> 1) & 7]);
+        } else {
+            glDisable(GL_DEPTH_TEST);
+        }
+        glDepthMask((zm >> 4) & 1);
+        if (hud_depth) {
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+        }
+        g_applied.hud_depth = hud_depth;
     }
     // Cull
     uint32_t cull = (bp[0x00] >> 14) & 3;
-    static bool nocull = getenv("WR_NOCULL") != nullptr;
-    if (prim != 0 || cull == 0 || nocull) glDisable(GL_CULL_FACE);
-    else {
-        glEnable(GL_CULL_FACE);
-        if (cull == 3) glCullFace(GL_FRONT_AND_BACK);
+    if (!(g_applied.valid && cull == ((abp[0x00] >> 14) & 3) && prim == g_applied.prim)) {
+        static bool nocull = getenv("WR_NOCULL") != nullptr;
+        if (prim != 0 || cull == 0 || nocull) glDisable(GL_CULL_FACE);
         else {
-            // GX: 1 = cull front, 2 = cull back. GX front faces are clockwise with y down,
-            // which is counter-clockwise after our y flip (GL's default front face).
-            bool back = cull == 2;
-            if (g_cull_swap) back = !back;
-            glCullFace(back ? GL_BACK : GL_FRONT);
+            glEnable(GL_CULL_FACE);
+            if (cull == 3) glCullFace(GL_FRONT_AND_BACK);
+            else {
+                // GX: 1 = cull front, 2 = cull back. GX front faces are clockwise with y down,
+                // which is counter-clockwise after our y flip (GL's default front face).
+                bool back = cull == 2;
+                if (g_cull_swap) back = !back;
+                glCullFace(back ? GL_BACK : GL_FRONT);
+            }
         }
+        g_applied.prim = prim;
     }
     // Scissor (EFB coords, y down), measured from the same origin as the viewport.
-    int x0 = (int)(bp[0x20] >> 12 & 0x7FF) - xoff, y0 = (int)(bp[0x20] & 0x7FF) - yoff;
-    int x1 = (int)(bp[0x21] >> 12 & 0x7FF) - xoff + 1, y1 = (int)(bp[0x21] & 0x7FF) - yoff + 1;
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > EFB_W) x1 = EFB_W;
-    if (y1 > EFB_H) y1 = EFB_H;
-    if (x1 < x0) x1 = x0;
-    if (y1 < y0) y1 = y0;
-    if (g_vr_active) {
-        // The scissor rect is in EFB coordinates, which say nothing about an eye's
-        // render target.
-        //
-        // WR_EYE_SCISSORLOG reports the draws whose rect is not the whole frame, which
-        // are the ones this is throwing away clipping for. Anything the game relies on
-        // the scissor to hide is drawn in full in an eye.
-        static const bool slog = getenv("WR_EYE_SCISSORLOG") != nullptr;
-        if (slog && (x0 > 0 || y0 > 0 || x1 < EFB_W || y1 < EFB_H)) {
-            static int shown;
-            if (shown++ < 40)
-                fprintf(stderr, "[scissor] f%u rect=%d,%d..%d,%d (frame is 0,0..%d,%d)\n",
-                        g_render_frame, x0, y0, x1, y1, EFB_W, EFB_H);
+    const bool same_scissor = g_applied.valid && bp[0x20] == abp[0x20] && bp[0x21] == abp[0x21] && bp[0x59] == abp[0x59];
+    if (!same_scissor) {
+        int x0 = (int)(bp[0x20] >> 12 & 0x7FF) - xoff, y0 = (int)(bp[0x20] & 0x7FF) - yoff;
+        int x1 = (int)(bp[0x21] >> 12 & 0x7FF) - xoff + 1, y1 = (int)(bp[0x21] & 0x7FF) - yoff + 1;
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 > EFB_W) x1 = EFB_W;
+        if (y1 > EFB_H) y1 = EFB_H;
+        if (x1 < x0) x1 = x0;
+        if (y1 < y0) y1 = y0;
+        if (g_vr_active) {
+            // The scissor rect is in EFB coordinates, which say nothing about an eye's
+            // render target.
+            //
+            // WR_EYE_SCISSORLOG reports the draws whose rect is not the whole frame, which
+            // are the ones this is throwing away clipping for. Anything the game relies on
+            // the scissor to hide is drawn in full in an eye.
+            static const bool slog = getenv("WR_EYE_SCISSORLOG") != nullptr;
+            if (slog && (x0 > 0 || y0 > 0 || x1 < EFB_W || y1 < EFB_H)) {
+                static int shown;
+                if (shown++ < 40)
+                    fprintf(stderr, "[scissor] f%u rect=%d,%d..%d,%d (frame is 0,0..%d,%d)\n",
+                            g_render_frame, x0, y0, x1, y1, EFB_W, EFB_H);
+            }
+            glDisable(GL_SCISSOR_TEST);
+        } else {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(x0 * g_scale, (EFB_H - y1) * g_scale, (x1 - x0) * g_scale, (y1 - y0) * g_scale);
         }
-        glDisable(GL_SCISSOR_TEST);
-        return;
     }
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(x0 * g_scale, (EFB_H - y1) * g_scale, (x1 - x0) * g_scale, (y1 - y0) * g_scale);
+    // Everything above has now been compared against bp, so it becomes the reference.
+    memcpy(g_applied.bp, bp, sizeof(g_applied.bp));
+    g_applied.valid = true;
 }
 
 // A copy the spray composites from. It neither scans out nor clears -- a clearing copy
@@ -996,7 +1116,7 @@ static void do_efb_copy(const EfbCopyCmd& c) {
             glBindTexture(GL_TEXTURE_2D, t.tex);
         } else {
             glGenTextures(1, &t.tex);
-            t.w = c.dst_w; t.h = c.dst_h; t.efb = true;
+            t.w = c.dst_w; t.h = c.dst_h; t.levels = 1; t.efb = true;
             glBindTexture(GL_TEXTURE_2D, t.tex);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, c.dst_w * g_scale, c.dst_h * g_scale, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
@@ -1324,12 +1444,14 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
 
     uint32_t cur_state = UINT32_MAX;
+    gl_state_invalidate();
     int cur_prim = -1;
     for (size_t i = 0; i < b.cmds.size(); i++) {
         Cmd& c = b.cmds[i];
         // Copies and the present are the first eye's business, done against the EFB.
         if (c.type != CmdType::Draw) {
             cur_state = UINT32_MAX;
+            gl_state_invalidate();
             continue;
         }
         if (skip[i]) { n_skipped++; continue; }
@@ -1343,6 +1465,7 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
             grabbed = true;
             grab_eye(g_eye_grab, w, h);
             cur_state = UINT32_MAX;   // the grab left its own texture bound
+            gl_state_invalidate();
         }
         // The spray composites itself over the finished scene, the water included, so the
         // grab above -- taken deliberately before the water, which is what the water
@@ -1371,6 +1494,7 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
                 grabbed_spray = true;
                 grab_eye(g_spray_grab, w, h);
                 cur_state = UINT32_MAX;
+                gl_state_invalidate();
             }
             n_spray++;
         }
@@ -1446,6 +1570,7 @@ static bool execute_batch(Batch& b, bool do_present) {
     }
     bool presented = false;
     uint32_t cur_state = UINT32_MAX;
+    gl_state_invalidate();
     int cur_prim = -1;
     // WR_NO_COMP drops draws that sample a copy of the whole frame, in the flat path too.
     // The duplicate racer on the water is visible without any of the VR code, so this is
@@ -1540,6 +1665,7 @@ static bool execute_batch(Batch& b, bool do_present) {
             do_efb_copy(c.copy);
             glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
             cur_state = UINT32_MAX;
+            gl_state_invalidate();
             break;
         case CmdType::Present:
             if (do_present) present(c.copy);
@@ -1547,6 +1673,7 @@ static bool execute_batch(Batch& b, bool do_present) {
             glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
             glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
             cur_state = UINT32_MAX;
+            gl_state_invalidate();
             break;
         }
     }

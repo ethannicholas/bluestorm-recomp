@@ -985,11 +985,16 @@ the renderer waiting four times as long as the guest so an address is always for
 first and a draw can never reach an id whose texture has gone. Resident memory over two and a
 half minutes of racing at speed now oscillates between 145 and 274 MB with no upward trend.
 
-The draw-call shape is still worth knowing — ~830 draws per frame during a race, averaging ~106
-vertices each — and deduplicating `PixelState` by content would likely still help. But it is an
-optimisation, not the explanation for a slideshow that was really a memory leak. Note that
-`render_execute` already skips `apply_state` when consecutive draws share a state index; what it
-cannot skip is distinct indices holding identical contents.
+The draw-call shape is still worth knowing: the game issues some 13,000 GX draw commands per race
+frame, averaging five vertices each, which the front end merges into ~1,000 draws with ~1,000
+distinct pixel states between them. Measured over a million consecutive pairs of those states,
+94% differ in a texture and almost nothing else -- projection, viewport, scissor, fog and the
+indirect matrices are the same more than 99% of the time, the program 81%. So `apply_state`
+shadows what it last put into GL and issues only the difference, which makes the typical state
+change a texture bind and its size rather than forty calls. (Deduplicating `PixelState` by
+content, suggested here earlier, would not have helped: consecutive states really are different,
+just barely.) But it is an optimisation, not the explanation for a slideshow that was really a
+memory leak.
 
 If the game exits with `OpenGL 1.1 is too old (got "1.1.0" / "GDI Generic")`, the host has no
 OpenGL driver at all and Windows is falling back to its software 1.1 implementation. This is
