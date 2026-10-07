@@ -22,6 +22,12 @@ struct State {
     // draw commands but changes this state only about 1,000 times, so between changes the
     // front end hands back the last snapshot without building one to compare.
     bool pixel_dirty = true;
+    // Bumped whenever a CP register is written. The vertex layout and the byte size of a
+    // vertex are a few dozen bit extractions each and were both re-derived for every one
+    // of those 13,000 draw commands, from registers the game sets once per model. Each is
+    // cached against this counter, separately, so that neither can clear a flag the other
+    // still needs. See layout_for() in xf.cpp and vertex_size() in cmd.cpp.
+    uint32_t cp_gen = 1;
 };
 
 extern State g_state;

@@ -26,7 +26,7 @@ static inline uint32_t attr_size(uint32_t desc, uint32_t direct_size) {
     }
 }
 
-uint32_t vertex_size(int vat) {
+static uint32_t vertex_size_uncached(int vat) {
     const uint32_t* cp = g_state.cp;
     uint32_t vcd_lo = cp[0x50], vcd_hi = cp[0x60];
     uint32_t a = cp[0x70 + vat], b = cp[0x80 + vat], c = cp[0x90 + vat];
@@ -74,6 +74,7 @@ uint32_t vertex_size(int vat) {
 
 static void load_cp(uint8_t reg, uint32_t v) {
     g_state.cp[reg] = v;
+    g_state.cp_gen++;
 }
 
 static void load_xf(uint32_t addr, uint32_t n, const uint8_t* data) {
@@ -154,6 +155,19 @@ static void load_bp(uint32_t w) {
     case 0x65: g_state.pixel_dirty = true; break;  // TLUT load: palette contents changed
     }
     renderer_bp_write(reg, v);
+}
+
+// Cached against State::cp_gen, since it is derived from the CP registers alone. It is
+// asked for once per draw command, and a race frame issues some 13,000 of those.
+uint32_t vertex_size(int vat) {
+    static uint32_t cached[8];
+    static uint32_t valid, gen;
+    if (gen != g_state.cp_gen) { valid = 0; gen = g_state.cp_gen; }
+    if (!(valid & (1u << vat))) {
+        cached[vat] = vertex_size_uncached(vat);
+        valid |= 1u << vat;
+    }
+    return cached[vat];
 }
 
 uint32_t process(const uint8_t* data, uint32_t len, bool partial_ok) {

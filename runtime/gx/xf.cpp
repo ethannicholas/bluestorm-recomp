@@ -207,6 +207,23 @@ static Layout make_layout(int vat) {
     return L;
 }
 
+// Layouts come from the CP registers only, which the game sets per model rather than
+// per draw, so they are cached against State::cp_gen.
+static Layout g_layouts[8];
+static uint32_t g_layouts_valid, g_layouts_gen;
+
+static const Layout& layout_for(int vat) {
+    if (g_layouts_gen != g_state.cp_gen) {
+        g_layouts_valid = 0;
+        g_layouts_gen = g_state.cp_gen;
+    }
+    if (!(g_layouts_valid & (1u << vat))) {
+        g_layouts[vat] = make_layout(vat);
+        g_layouts_valid |= 1u << vat;
+    }
+    return g_layouts[vat];
+}
+
 // Resolve an attribute pointer: direct data or indexed array element.
 static const uint8_t* attr_ptr(const uint8_t*& p, uint32_t desc, int array, uint32_t direct_size) {
     if (desc == 1) { const uint8_t* r = p; p += direct_size; return r; }
@@ -564,7 +581,7 @@ void renderer_draw(const DrawCall& dc) {
 
 static void draw_impl(const DrawCall& dc) {
     if (dc.count == 0) return;
-    Layout L = make_layout(dc.vat);
+    const Layout& L = layout_for(dc.vat);
     g_in.resize(dc.count);
     const uint8_t* p = dc.data;
     for (uint32_t i = 0; i < dc.count; i++) decode_vertex(L, p, g_in[i]);
