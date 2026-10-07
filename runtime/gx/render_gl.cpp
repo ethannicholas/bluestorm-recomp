@@ -57,7 +57,7 @@ struct Program {
     GLuint prog;
     GLint u_proj, u_vp_a, u_vp_b, u_point_size, u_tex, u_reg, u_konst, u_texsize, u_indmtx, u_indscale,
         u_alpharef, u_fog, u_fogcolor, u_indcoordscale;
-    GLint u_vr, u_view, u_screen_uv, u_screen_px, u_screen_ripple;
+    GLint u_vr, u_view, u_zproj, u_screen_uv, u_screen_px, u_screen_ripple;
 };
 
 // Samples kept per hardware pixel, in each axis. See render_set_internal_scale.
@@ -174,6 +174,13 @@ static uint64_t hash_str(const char* s, uint64_t h = 1469598103934665603ull) {
     return h;
 }
 
+// A stored binary is a link of one fragment shader against the one vertex shader, and
+// nothing in the key says which vertex shader that was -- so its source goes in beside
+// the fragment's. Changing it then retires every record in the file rather than quietly
+// restoring binaries that predate the change.
+static uint64_t g_vs_hash = 1469598103934665603ull;
+static uint64_t program_src_hash(const char* fs) { return hash_str(fs, g_vs_hash); }
+
 // Identifies the driver whose binaries the file holds.
 static uint64_t driver_id() {
     uint64_t h = hash_str((const char*)glGetString(GL_VENDOR));
@@ -263,6 +270,7 @@ static const Program& register_program(const ShaderKey& k, GLuint p) {
     pr.u_point_size = glGetUniformLocation(p, "u_point_size");
     pr.u_vr = glGetUniformLocation(p, "u_vr");
     pr.u_view = glGetUniformLocation(p, "u_view");
+    pr.u_zproj = glGetUniformLocation(p, "u_zproj");
     pr.u_screen_uv = glGetUniformLocation(p, "u_screen_uv");
     pr.u_screen_px = glGetUniformLocation(p, "u_screen_px");
     pr.u_screen_ripple = glGetUniformLocation(p, "u_screen_ripple");
@@ -327,7 +335,7 @@ static void shader_cache_load() {
         p += len;
         if (g_programs.count(k)) { stale = true; continue; }  // a duplicate, written by a crash mid-append
         std::string src = gen_pixel_shader(k);
-        const bool bin_ok = same_driver && len && hash_str(src.c_str()) == src_hash;
+        const bool bin_ok = same_driver && len && program_src_hash(src.c_str()) == src_hash;
         GLuint prog = bin_ok ? build_program(k, src, bin, fmt, len) : 0;
         if (prog) from_binary++;
         else { prog = build_program(k, src, nullptr, 0, 0); compiled++; stale = true; }
@@ -338,7 +346,7 @@ static void shader_cache_load() {
     if (stale || (g_binaries_supported && from_binary == 0 && compiled > 0)) {
         if (FILE* f = fopen(g_shader_cache_path.c_str(), "wb")) {
             shader_cache_write_header(f);
-            for (auto& kv : g_programs) shader_cache_write_record(f, kv.first, hash_str(gen_pixel_shader(kv.first).c_str()), kv.second.prog);
+            for (auto& kv : g_programs) shader_cache_write_record(f, kv.first, program_src_hash(gen_pixel_shader(kv.first).c_str()), kv.second.prog);
             fclose(f);
         }
     }
@@ -361,7 +369,7 @@ static const Program& get_program(const ShaderKey& k) {
         if (f) {
             fseek(f, 0, SEEK_END);
             if (ftell(f) == 0) shader_cache_write_header(f);
-            shader_cache_write_record(f, k, hash_str(src.c_str()), p);
+            shader_cache_write_record(f, k, program_src_hash(src.c_str()), p);
             fclose(f);
         }
     }
@@ -422,7 +430,9 @@ void render_init(int internal_scale) {
     g_scale = internal_scale < 1 ? 1
                                  : (internal_scale > kMaxInternalScale ? kMaxInternalScale
                                                                        : internal_scale);
-    g_vs = compile(GL_VERTEX_SHADER, gen_vertex_shader());
+    const std::string vs_src = gen_vertex_shader();
+    g_vs_hash = hash_str(vs_src.c_str());
+    g_vs = compile(GL_VERTEX_SHADER, vs_src);
 #if WR_HAVE_PROGRAM_BINARY
     {
         GLint n = 0;
@@ -814,6 +824,11 @@ static void apply_state(const PixelState& st, int prim) {
             glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, P);
             glUniform1i(pr.u_vr, 0);
         }
+        // Fog runs off the depth GX would have written, which an eye does not write, so
+        // the shader rebuilds it from the game's own projection -- the z row is all that
+        // takes, plus how w is formed: -z under a frustum, 1 under an ortho batch.
+        const float zp[4] = {p[4], p[5], perspective ? -1.0f : 0.0f, perspective ? 0.0f : 1.0f};
+        glUniform4fv(pr.u_zproj, 1, zp);
         memcpy(g_applied.proj, st.proj, sizeof(st.proj));
         g_applied.view_space = st.view_space;
     }

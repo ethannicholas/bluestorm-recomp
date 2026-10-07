@@ -109,10 +109,39 @@ uniform float u_point_size;
 //   2 = a 2D element, painted on the HUD frame out in front of the game's camera
 uniform int u_vr;
 uniform mat4 u_view;       // eye transform, relative to the game's camera
+// The game's own projection reduced to what depth needs, as a function of view-space z:
+// clip z = .x * z + .y and clip w = .z * z + .w, so the last pair is (-1, 0) for a
+// frustum and (0, 1) for an ortho batch. Fog needs the depth GX would have written
+// whatever matrix the vertex is actually drawn with; see v_fogz.
+uniform vec4 u_zproj;
 out vec4 v_col0;
 out vec4 v_col1;
 out vec3 v_tex[8];
+// The game's screen z as a numerator and the w to divide it by. Both are affine in the
+// vertex position, so perspective-correct interpolation delivers them exactly and the
+// ratio is the real value at the fragment -- which a single interpolated z/w would not be.
+out vec2 v_fogz;
 void main() {
+)";
+    // Fog is a curve over the 24-bit depth GX writes, and in an eye gl_FragCoord.z is
+    // not that: it comes from the headset's own frustum, whose near and far are nothing
+    // like the game's. Fed to the curve it saturates a few metres out, so everything
+    // beyond came back the fog colour -- which is what turned the sea bed black in
+    // stereo while the flat view was fine. So the game's own screen z is rebuilt here
+    // from its projection, independently of the matrix the vertex is drawn with.
+    //
+    // The depth fed in is this eye's, not the game camera's. Fog is a distance cue, and
+    // the distance that matters to a viewer who has turned their head is the one along
+    // their own line of sight: with the game's z, something off to the side fogs as
+    // though it were as near as its forward depth, and stops fogging at all when it
+    // leaves the game's 60-degree frustum. WR_EYE_FOGZ=0 takes the game's depth instead,
+    // which fogs exactly as the flat view does whatever the head is doing.
+    static const bool eye_fog_z = !(getenv("WR_EYE_FOGZ") && atoi(getenv("WR_EYE_FOGZ")) == 0);
+    s += eye_fog_z ? "    float fz = (u_vr == 1) ? (u_view * vec4(a_pos, 1.0)).z : a_pos.z;\n"
+                   : "    float fz = a_pos.z;\n";
+    s += R"(    float gz = u_zproj.x * fz + u_zproj.y;
+    float gw = u_zproj.z * fz + u_zproj.w;
+    v_fogz = vec2((0.5 * u_vp_b.x + 0.5) * gw + 0.5 * u_vp_b.y * gz, gw);
     if (u_vr == 1) {
         // Straight to clip space: the eye's render target is the whole viewport, so
         // the GX viewport transform does not apply. No Y negation either -- that
@@ -173,6 +202,8 @@ std::string gen_pixel_shader(const ShaderKey& k) {
 
     s += WR_GLSL_VERSION;
     s += "in vec4 v_col0;\nin vec4 v_col1;\nin vec3 v_tex[8];\n";
+    // Only the shaders that fog read it, so every other one is generated exactly as before.
+    if ((k.fog & 7) >= 2) s += "in vec2 v_fogz;\n";
     s += "uniform sampler2D u_tex[8];\n";
     s += "uniform ivec4 u_reg[4];\nuniform ivec4 u_konst[4];\n";
     s += "uniform vec2 u_texsize[8];\n";
@@ -442,7 +473,13 @@ std::string gen_pixel_shader(const ShaderKey& k) {
         uint32_t fsel = k.fog & 7;
         bool ortho = (k.fog >> 3) & 1;
         if (fsel >= 2 && !no_fog) {
-            s += "  float zs = gl_FragCoord.z * 16777215.0;\n";
+            // Not gl_FragCoord.z: that is the depth of whatever projection actually drew
+            // this fragment, and in an eye that is the headset's, not the game's. v_fogz
+            // carries the game's own screen z instead -- see the vertex shader. Clamping
+            // stands in for the depth range the hardware would have applied, and covers
+            // the geometry an eye can see outside the game's frustum, whose reconstructed
+            // z lands outside [0,1] (behind the game's camera it even goes negative).
+            s += "  float zs = clamp(v_fogz.x / v_fogz.y, 0.0, 1.0) * 16777215.0;\n";
             if (ortho) s += "  float ze = u_fog.x * (zs / 16777215.0);\n";
             else s += "  float ze = (u_fog.x * 16777216.0) / (u_fog.z - floor(zs / exp2(u_fog.w)));\n";
             s += "  float fog = clamp(ze - u_fog.y, 0.0, 1.0);\n";

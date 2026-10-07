@@ -280,7 +280,9 @@ before the game boots. Where the driver hands back program binaries (GL ES 3.0 d
 reports no binary formats) those are stored too, and the run after that loads rather than
 compiles. A binary is only trusted with the same driver and the same generated source -- the
 file carries the GL strings and each record a hash of its GLSL -- and anything stale falls back
-to compiling and rewrites the file. Deleting the file is always safe; the first run just pays
+to compiling and rewrites the file. That hash covers the one vertex shader as well as the
+record's own fragment shader: a binary is a link of the two, and nothing in the key would
+otherwise notice the vertex shader changing underneath it. Deleting the file is always safe; the first run just pays
 the compiles at first use again. The startup line reports what happened:
 
 ```
@@ -655,6 +657,21 @@ The coordinate swap is a uniform rather than a shader variant, so the flat path 
 keeps the coordinate the game computed, which is right there. Dropping these draws instead
 (`WR_EYE_SKIPCOMP=1`) leaves the seabed showing through bare sand, and sending them down the overlay
 path puts the ocean on the HUD frame, racer and all.
+
+Fog is the other thing an eye cannot read off the hardware's depth. GX fogs on the 24-bit screen
+z it writes, and the generated shader recovered that from `gl_FragCoord.z` -- which in an eye is
+the headset's frustum, 0.1 m to 2000 m, nothing like the game's. Handed to a curve calibrated for
+the game's near and far it saturates within a few metres, so everything past that came back the
+fog colour: a black band across the sea bed on Dolphin Park, and part of the darkness on Southern
+Island. The game's own screen z is rebuilt in the vertex shader instead, from the z row of its
+projection (`u_zproj`) and the GX viewport's z scale, and handed to the fragment as a numerator
+and a w to divide by -- both affine in the vertex position, so perspective-correct interpolation
+delivers the exact value where a single interpolated z/w would not. The depth fed in is the eye's
+own and not the game camera's: fog is a distance cue, and the distance that matters to a viewer
+who has turned their head is the one along their own line of sight, where the game's z would fog
+something off to the side as though it were only as far away as its forward depth.
+`WR_EYE_FOGZ=0` takes the game's depth instead, which fogs exactly as the flat view does whatever
+the head is doing.
 
 The spray grabs are the same mechanism one size down — partial EFB copies replayed as billboards at
 coordinates belonging to the flat view — and show as faint squares with pieces of scene inside them.
