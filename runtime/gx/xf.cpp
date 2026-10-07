@@ -87,12 +87,14 @@ Batch::~Batch() {
     b.verts.swap(verts);
     b.indices.swap(indices);
     b.states.swap(states);
+    b.mtxs.swap(mtxs);
     b.new_textures.swap(new_textures);
     // Emptied now, on the thread that is done with it: the decoded textures go with it.
     b.cmds.clear();
     b.verts.clear();
     b.indices.clear();
     b.states.clear();
+    b.mtxs.clear();
     b.new_textures.clear();
     std::lock_guard<std::mutex> lk(pool_mutex());
     if (pool().size() < kMaxPooled) pool().push_back(std::move(b));
@@ -113,6 +115,11 @@ static Batch& batch() {
 
 // Frames since the race started; drives WR_MTXLOG.
 static uint32_t mtx_race_frames;
+static const uint32_t g_mtxlog = getenv("WR_MTXLOG") ? (uint32_t)atoi(getenv("WR_MTXLOG")) : 0;
+static uint32_t g_mtx_draw;
+static bool g_was_racing;
+// Whether this is the frame WR_MTXLOG dumps.
+static bool mtxlog_frame() { return g_mtxlog && g_was_racing && mtx_race_frames == g_mtxlog; }
 
 static void flush_batch() {
     if (g_batch && !g_batch->cmds.empty()) submit_batch(std::move(g_batch));
@@ -738,12 +745,10 @@ static void draw_impl(const DrawCall& dc) {
     // Do not look for the reflection passes by a negative determinant: the game mirrors
     // the camera about the water plane *and* negates view-space X, which keeps the winding
     // and leaves the determinant positive. It undoes the X flip when it samples the result.
-    static const uint32_t mtxlog = getenv("WR_MTXLOG") ? (uint32_t)atoi(getenv("WR_MTXLOG")) : 0;
-    static uint32_t mtx_draw;
-    static bool was_racing;
-    if (mtxlog) {
+    uint32_t state = snapshot_state(pos_matrix_is_view_space(g_in[0].pnmtx));
+    if (g_mtxlog) {
         const bool racing = mem_r32(0x806193BC) != 0;
-        if (racing != was_racing)
+        if (racing != g_was_racing)
             fprintf(stderr, "[race] flag -> %d at frame %u\n", (int)racing, g_frame_counter);
         // WR_WATCH=a,b,c prints those guest addresses every frame. Sparse snapshots cannot
         // tell a steady flag from one that blinks: 0x80631FA4 looked perfect sampled every
@@ -761,22 +766,28 @@ static void draw_impl(const DrawCall& dc) {
             }
             fprintf(stderr, "\n");
         }
-        if (racing && !was_racing) { mtx_race_frames = 0; mtx_draw = 0; }
-        was_racing = racing;
+        if (racing && !g_was_racing) { mtx_race_frames = 0; g_mtx_draw = 0; }
+        g_was_racing = racing;
     }
-    if (mtxlog && was_racing && mtx_race_frames == mtxlog) {
+    if (mtxlog_frame()) {
         const uint32_t m = (g_in[0].pnmtx & 63) * 4;
-        fprintf(stderr, "[mtx] %3u n=%4u pnmtx=%2u | %8.3f %8.3f %8.3f %10.2f | %8.3f %8.3f %8.3f %10.2f"
-                " | %8.3f %8.3f %8.3f %10.2f | out0=%.1f,%.1f,%.1f\n",
-                mtx_draw, dc.count, g_in[0].pnmtx & 63,
+        const PixelState& ps = b.states[state];
+        fprintf(stderr, "[mtx] %3u n=%4u pnmtx=%2u st=%u | %8.3f %8.3f %8.3f %10.2f | %8.3f %8.3f %8.3f %10.2f"
+                " | %8.3f %8.3f %8.3f %10.2f | out0=%.1f,%.1f,%.1f |",
+                g_mtx_draw, dc.count, g_in[0].pnmtx & 63, state,
                 xf_f(m + 0), xf_f(m + 1), xf_f(m + 2), xf_f(m + 3),
                 xf_f(m + 4), xf_f(m + 5), xf_f(m + 6), xf_f(m + 7),
                 xf_f(m + 8), xf_f(m + 9), xf_f(m + 10), xf_f(m + 11),
                 out[0].pos[0], out[0].pos[1], out[0].pos[2]);
-        fprintf(stderr, "[prj] %3u type=%d %9.4f %9.4f %9.4f %9.4f %9.4f %9.4f\n", mtx_draw,
+        // The textures too: a model is recognised by what it is textured with, so this
+        // is what ties a draw in one pass to the same model drawn in another.
+        for (int i = 0; i < 8; i++)
+            if (ps.tex_id[i]) fprintf(stderr, " t%d=%u%s", i, ps.tex_id[i], ps.tex_is_efb[i] ? "*" : "");
+        fprintf(stderr, "\n");
+        fprintf(stderr, "[prj] %3u type=%d %9.4f %9.4f %9.4f %9.4f %9.4f %9.4f\n", g_mtx_draw,
                 (int)g_state.xf_regs[0x26], xfr_f(0x20), xfr_f(0x21), xfr_f(0x22),
                 xfr_f(0x23), xfr_f(0x24), xfr_f(0x25));
-        mtx_draw++;
+        g_mtx_draw++;
     }
 
     // WR_PNMLOG=a-b lists the position matrices a frame actually uses, one line each time
@@ -811,7 +822,20 @@ static void draw_impl(const DrawCall& dc) {
                     cur[4], cur[5], cur[6], cur[7], cur[8], cur[9], cur[10], cur[11]);
         }
     }
-    uint32_t state = snapshot_state(pos_matrix_is_view_space(g_in[0].pnmtx));
+    // The draw's position matrix, from its first vertex -- see pos_matrix_is_view_space
+    // for why that one stands for the draw. Appended only when it differs from the last
+    // one appended, so the draws of one rigid object share an index.
+    uint32_t mtx = (uint32_t)b.mtxs.size() / 12;
+    {
+        const uint32_t m = (g_in[0].pnmtx & 63) * 4;
+        float cur[12];
+        for (int i = 0; i < 12; i++) cur[i] = xf_f(m + i);
+        if (mtx > 0 && memcmp(cur, &b.mtxs[(mtx - 1) * 12], sizeof(cur)) == 0) {
+            mtx--;
+        } else {
+            b.mtxs.insert(b.mtxs.end(), cur, cur + 12);
+        }
+    }
     uint32_t first = (uint32_t)b.indices.size();
     uint8_t prim = 0;
     auto push = [&](uint32_t i) { b.indices.push_back(base + i); };
@@ -849,7 +873,8 @@ static void draw_impl(const DrawCall& dc) {
     // Merge with the previous draw when state and primitive type match.
     if (!b.cmds.empty()) {
         Cmd& last = b.cmds.back();
-        if (last.type == CmdType::Draw && last.state == state && last.prim == prim && last.first + last.count == first) {
+        if (last.type == CmdType::Draw && last.state == state && last.prim == prim &&
+            last.mtx == mtx && last.first + last.count == first) {
             last.count += count;
             return;
         }
@@ -860,6 +885,7 @@ static void draw_impl(const DrawCall& dc) {
     c.state = state;
     c.first = first;
     c.count = count;
+    c.mtx = mtx;
     b.cmds.push_back(c);
 }
 
@@ -912,6 +938,12 @@ void renderer_efb_copy(uint32_t dest_addr, bool /*unused*/) {
                 "half=%d pe=%06X\n", g_frame_counter, cc.to_xfb, dest_addr, cc.dst_w, cc.dst_h,
                 cc.src_w, cc.src_h, cc.src_x, cc.src_y, cc.format, cc.clear, (int)half, v);
     if (!cc.to_xfb) cc.tex_id = texture_register_efb_copy(dest_addr, cc.dst_w, cc.dst_h, cc.format);
+    // In the WR_MTXLOG dump, so the draws it lists can be read against the pass
+    // boundaries: which were drawn into an off-screen target and which into the scene.
+    if (mtxlog_frame())
+        fprintf(stderr, "[cpy] after draw %u: xfb=%d tex=%u dst=%ux%u src=%ux%u@%u,%u clear=%d\n",
+                g_mtx_draw, cc.to_xfb, cc.tex_id, cc.dst_w, cc.dst_h, cc.src_w, cc.src_h,
+                cc.src_x, cc.src_y, cc.clear);
     // For display copies the presentation must see the EFB before the copy's clear.
     if (cc.to_xfb) {
         Cmd pc{};

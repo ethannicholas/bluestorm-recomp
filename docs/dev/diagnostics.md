@@ -131,6 +131,18 @@ adb shell "cd /data/local/tmp && WR_INPUT='600:START:10,800:START:10,1000:START:
   ./waverace_egl --eye --seconds=150 --dump-dir=/data/local/tmp/eye --dump-every=500 <iso>"
 ```
 
+The desktop build has the same `--eye`: it shows the eye in the window instead of the flat frame,
+and `--dump-dir`/`--dump-every` write the eye's frames as `eye_NNNNN.png`. `--first-person`
+(optionally `=x,y,z`, the anchor in game units) puts the eye on the ski the way the thumbstick
+click does in the headset, and `WR_FPLOG=1` prints, per frame, where the hull was found and how
+many of the rider's draws were left out -- or that no racer was found. It is the quickest way to
+look at the first-person view, since the headset cannot be driven from this Mac:
+
+```sh
+WR_FPLOG=1 WR_INPUT='<the Ocean City Harbor route above>' \
+  ./build/waverace --hidden --eye --first-person --dump-dir=/tmp/fp --dump-every=100
+```
+
 ## Which guest function did that?
 
 Every recompiled function opens with `ENTER(its own address)` and leaves through `RET()`, which

@@ -73,6 +73,17 @@ static float g_vr_proj[16], g_vr_view[16];
 static float g_vr_view_world[16];
 static float g_world_pitch = 0.0f;
 static float g_vr_hud[16];
+// What world geometry goes through before the eye's own view: the chase camera's pitch
+// taken back out (world_pitch_matrix), or in first person the move from the game's camera
+// to the rider's head (first_person_camera). g_vr_view_world is g_vr_view times this.
+static float g_world_xform[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+// First person: see render_set_first_person. The anchor is in the ski's own frame.
+static bool g_fp_on = false;
+static float g_fp_anchor[3] = {0.0f, 42.0f, -12.0f};
+static bool g_fp_found = false;
+// Per command of the batch being drawn: 1 for the rider's draws, which first person
+// leaves out. Empty when nothing is hidden.
+static std::vector<uint8_t> g_hide;
 // The morph between theater and stereo; see render_set_vr_morph. 1 is plain stereo.
 static float g_morph = 1.0f;
 static float g_panel[16];
@@ -1347,8 +1358,6 @@ uint32_t present_count() { return g_present_count; }
 
 
 // Executes a batch. Returns true if it contained a Present.
-void render_set_world_pitch(float pitch_rad) { g_world_pitch = pitch_rad; }
-
 // The camera looks down by `pitch`, so the world's up arrives at (0, cos, sin) in the
 // vertices' own frame. Rotating about X by -pitch takes it back to (0, 1, 0), which is the
 // headset's up, and the sea with it.
@@ -1361,13 +1370,256 @@ static void world_pitch_matrix(float R[16]) {
     R[15] = 1.0f;
 }
 
+static void compose_world_view() { mat4_mul(g_vr_view, g_world_xform, g_vr_view_world); }
+
+void render_set_world_pitch(float pitch_rad) {
+    g_world_pitch = pitch_rad;
+    if (!(g_fp_on && g_fp_found)) world_pitch_matrix(g_world_xform);
+    compose_world_view();
+}
+
+void render_set_first_person(bool on, float x, float y, float z) {
+    g_fp_on = on;
+    g_fp_anchor[0] = x;
+    g_fp_anchor[1] = y;
+    g_fp_anchor[2] = z;
+    if (!on) {
+        g_fp_found = false;
+        world_pitch_matrix(g_world_xform);
+        compose_world_view();
+    }
+}
+
 void render_set_vr_eye(const float proj[16], const float view[16], const float hud[16]) {
     memcpy(g_vr_proj, proj, sizeof(g_vr_proj));
     memcpy(g_vr_view, view, sizeof(g_vr_view));
     memcpy(g_vr_hud, hud, sizeof(g_vr_hud));
-    float R[16];
-    world_pitch_matrix(R);
-    mat4_mul(view, R, g_vr_view_world);
+    compose_world_view();
+}
+
+// ---------------------------------------------------------------------------
+// First person.
+//
+// The eye is fixed to the player's ski, which means finding the ski in the batch: the
+// vertices arrive in the chase camera's view space, and the only thing that says which
+// of them are the ski, and where it is, is the position matrix each draw went through.
+//
+// What a race frame looks like from that side, read off a WR_MTXLOG dump of Ocean City
+// Harbor at speed. Every draw of the main scene goes through the world's view matrix --
+// the course, the water, the other racers (they are transformed into the world on the
+// CPU) -- except the player's racer, which the game places with matrices of its own: one
+// for the hull and three for parts of the rider, in GX_PNMTX1..4. The hull is the one
+// with the largest extent, some 80 units long against the rider's 40. Its model frame is
+// X to the ski's left, Y up and Z forward: the matrix's columns come out as view-space
+// -X, world up and the direction of travel. The racer's reflection is a separate 128x128
+// pass with ten matrices of its own, mirrored, and is left alone.
+//
+// So: among the draws an eye replays, the matrix most vertices go through is the
+// world's; every other rigid matrix near the camera is a piece of the racer; the piece
+// with the biggest bounding box is the hull, and the rest are the rider, who is not
+// drawn. A dolphin or a boat with a matrix of its own would be taken for the rider if it
+// came within reach, so a piece must also be textured with something the reflection
+// pass drew -- the one place the batch says what the racer looks like.
+// ---------------------------------------------------------------------------
+static bool mtx_equal(const float* a, const float* b) { return memcmp(a, b, 12 * sizeof(float)) == 0; }
+
+static bool mtx_is_rigid(const float* m) {
+    // Columns of unit length and orthogonal: a rotation, not a scaled billboard.
+    for (int c = 0; c < 3; c++) {
+        const float len2 = m[c] * m[c] + m[4 + c] * m[4 + c] + m[8 + c] * m[8 + c];
+        if (fabsf(len2 - 1.0f) > 0.05f) return false;
+    }
+    const float xy = m[0] * m[1] + m[4] * m[5] + m[8] * m[9];
+    const float yz = m[1] * m[2] + m[5] * m[6] + m[9] * m[10];
+    return fabsf(xy) < 0.05f && fabsf(yz) < 0.05f;
+}
+
+// The view-to-camera transform for a head `anchor` (x right, y up, z forward, in the
+// ski's frame) on a hull placed by `m`, as a column-major 4x4.
+static void first_person_camera(const float* m, const float anchor[3], float C[16]) {
+    float fwd[3] = {m[2], m[6], m[10]};
+    float up[3] = {m[1], m[5], m[9]};
+    auto norm = [](float* v) {
+        const float l = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        for (int i = 0; i < 3; i++) v[i] /= l;
+    };
+    norm(fwd);
+    const float d = up[0] * fwd[0] + up[1] * fwd[1] + up[2] * fwd[2];
+    for (int i = 0; i < 3; i++) up[i] -= d * fwd[i];
+    norm(up);
+    // The camera's own axes: x right, y up, z back. right = up x back.
+    const float back[3] = {-fwd[0], -fwd[1], -fwd[2]};
+    const float right[3] = {up[1] * back[2] - up[2] * back[1], up[2] * back[0] - up[0] * back[2],
+                            up[0] * back[1] - up[1] * back[0]};
+    float e[3];
+    for (int i = 0; i < 3; i++)
+        e[i] = m[3 + 4 * i] + right[i] * anchor[0] + up[i] * anchor[1] + fwd[i] * anchor[2];
+    memset(C, 0, 16 * sizeof(float));
+    C[0] = right[0]; C[4] = right[1]; C[8] = right[2];
+    C[1] = up[0];    C[5] = up[1];    C[9] = up[2];
+    C[2] = back[0];  C[6] = back[1];  C[10] = back[2];
+    C[12] = -(right[0] * e[0] + right[1] * e[1] + right[2] * e[2]);
+    C[13] = -(up[0] * e[0] + up[1] * e[1] + up[2] * e[2]);
+    C[14] = -(back[0] * e[0] + back[1] * e[1] + back[2] * e[2]);
+    C[15] = 1.0f;
+}
+
+// Finds the racer in `b` and sets up g_world_xform and g_hide for it. `skip` marks the
+// off-screen passes, as mark_offscreen_passes leaves it.
+static void first_person_prepare(const Batch& b, const std::vector<uint8_t>& skip) {
+    g_hide.clear();
+    g_fp_found = false;
+    if (!g_fp_on) {
+        world_pitch_matrix(g_world_xform);
+        return;
+    }
+    static const bool fplog = getenv("WR_FPLOG") != nullptr;
+    // The distinct matrices the main scene's world draws go through, with how many
+    // vertices each carries.
+    struct Group { const float* m; uint32_t verts; float lo[3], hi[3]; bool racer; };
+    std::vector<Group> groups;
+    std::vector<uint32_t> group_of(b.cmds.size(), UINT32_MAX);
+    for (size_t i = 0; i < b.cmds.size(); i++) {
+        const Cmd& c = b.cmds[i];
+        if (c.type != CmdType::Draw || skip[i]) continue;
+        const PixelState& st = b.states[c.state];
+        if ((int)st.proj[6] != 0 || st.view_space) continue;
+        const float* m = &b.mtxs[c.mtx * 12];
+        uint32_t g = UINT32_MAX;
+        for (size_t k = 0; k < groups.size(); k++)
+            if (mtx_equal(groups[k].m, m)) { g = (uint32_t)k; break; }
+        if (g == UINT32_MAX) {
+            g = (uint32_t)groups.size();
+            groups.push_back({m, 0, {1e30f, 1e30f, 1e30f}, {-1e30f, -1e30f, -1e30f}, false});
+        }
+        groups[g].verts += c.count;
+        group_of[i] = g;
+    }
+    if (groups.empty()) {
+        world_pitch_matrix(g_world_xform);
+        return;
+    }
+    uint32_t world = 0;
+    for (size_t k = 1; k < groups.size(); k++)
+        if (groups[k].verts > groups[world].verts) world = (uint32_t)k;
+    // Within reach of the camera: the chase camera keeps the hull some 150 units ahead.
+    constexpr float kReach = 600.0f;
+    auto near_camera = [](const float* m) {
+        return m[3] * m[3] + m[7] * m[7] + m[11] * m[11] < kReach * kReach;
+    };
+    // What the racer is textured with: whatever an off-screen pass drew near the camera
+    // through a rigid matrix that is not the world's, which is the reflection pass and
+    // nothing else. The 480x480 pass is the sky through a rotation at 10,000 units, and
+    // the reflection reads it as the environment, so the sky's texture is on the racer
+    // whichever way the set is built; what keeps the sky itself out is its size, below.
+    std::vector<uint32_t> racer_tex;
+    for (size_t i = 0; i < b.cmds.size(); i++) {
+        const Cmd& c = b.cmds[i];
+        if (c.type != CmdType::Draw || !skip[i]) continue;
+        const PixelState& st = b.states[c.state];
+        const float* m = &b.mtxs[c.mtx * 12];
+        if (st.view_space || !near_camera(m) || !mtx_is_rigid(m) || mtx_equal(m, groups[world].m))
+            continue;
+        for (int t = 0; t < 8; t++)
+            if (st.tex_id[t] && !st.tex_is_efb[t]) racer_tex.push_back(st.tex_id[t]);
+    }
+    // A piece of the racer: rigid, within reach of the camera, textured like one, and no
+    // bigger than a ski. No reflection pass means no racer. Each of those was learned
+    // from a false positive: without the texture test a menu's full-screen quad, drawn
+    // with a perspective projection through a matrix turned a quarter turn, passed as a
+    // hull 640 units across; and without the size cap the sky did, a rotation at the
+    // origin 8,000 units wide wearing the same environment map the ski's paint reflects.
+    constexpr float kPieceMax = 300.0f;
+    for (size_t k = 0; k < groups.size() && !racer_tex.empty(); k++) {
+        Group& g = groups[k];
+        if (k == world || !mtx_is_rigid(g.m) || !near_camera(g.m)) continue;
+        bool textured = false;
+        for (size_t i = 0; i < b.cmds.size() && !textured; i++) {
+            if (group_of[i] != k) continue;
+            const PixelState& st = b.states[b.cmds[i].state];
+            for (int t = 0; t < 8 && !textured; t++)
+                for (uint32_t id : racer_tex) if (id == st.tex_id[t]) { textured = true; break; }
+        }
+        g.racer = textured;
+    }
+    // Each piece's extent in its own frame -- across, up and along its matrix's axes --
+    // which is what tells a hull from a buoy: the hull is 28 units across and 82 long,
+    // a buoy about 90 every way. The columns are unit length to within what
+    // mtx_is_rigid allows, so projecting onto them is good enough for a size.
+    for (size_t i = 0; i < b.cmds.size(); i++) {
+        const uint32_t k = group_of[i];
+        if (k == UINT32_MAX || !groups[k].racer) continue;
+        const Cmd& c = b.cmds[i];
+        const float* m = groups[k].m;
+        for (uint32_t v = 0; v < c.count; v++) {
+            const float* p = b.verts[b.indices[c.first + v]].pos;
+            const float d[3] = {p[0] - m[3], p[1] - m[7], p[2] - m[11]};
+            for (int a = 0; a < 3; a++) {
+                const float e = d[0] * m[a] + d[1] * m[4 + a] + d[2] * m[8 + a];
+                if (e < groups[k].lo[a]) groups[k].lo[a] = e;
+                if (e > groups[k].hi[a]) groups[k].hi[a] = e;
+            }
+        }
+    }
+    auto size2 = [](const Group& g) {
+        float d2 = 0.0f;
+        for (int a = 0; a < 3; a++) d2 += (g.hi[a] - g.lo[a]) * (g.hi[a] - g.lo[a]);
+        return d2;
+    };
+    for (auto& g : groups)
+        if (g.racer && size2(g) > kPieceMax * kPieceMax) g.racer = false;
+    // The hull is the longest piece that is at least twice as long as it is wide. The
+    // course intro flies the camera past a buoy, which is rigid, within reach, textured
+    // like the reflection pass's buoys and bigger than the hull; it was the hull for two
+    // seconds before the shape was asked for. The rider is every piece placed near the
+    // hull: the rider's parts have their origins within 40 units of the hull's.
+    uint32_t hull = UINT32_MAX;
+    float best = -1.0f;
+    for (size_t k = 0; k < groups.size(); k++) {
+        const Group& g = groups[k];
+        if (!g.racer) continue;
+        const float across = g.hi[0] - g.lo[0], along = g.hi[2] - g.lo[2];
+        if (along >= 2.0f * across && along > best) { best = along; hull = (uint32_t)k; }
+    }
+    if (hull == UINT32_MAX) {
+        if (fplog) fprintf(stderr, "[fp] f%u no racer: %zu matrices, world has %u verts, %zu racer textures\n",
+                           g_render_frame, groups.size(), groups[world].verts, racer_tex.size());
+        world_pitch_matrix(g_world_xform);
+        return;
+    }
+    constexpr float kRiderReach = 60.0f;
+    const float* hm = groups[hull].m;
+    for (auto& g : groups) {
+        if (!g.racer) continue;
+        const float dx = g.m[3] - hm[3], dy = g.m[7] - hm[7], dz = g.m[11] - hm[11];
+        if (dx * dx + dy * dy + dz * dz > kRiderReach * kRiderReach) g.racer = false;
+    }
+    g_fp_found = true;
+    first_person_camera(hm, g_fp_anchor, g_world_xform);
+    g_hide.assign(b.cmds.size(), 0);
+    int hidden = 0;
+    for (size_t i = 0; i < b.cmds.size(); i++) {
+        const uint32_t k = group_of[i];
+        if (k != UINT32_MAX && k != hull && groups[k].racer) { g_hide[i] = 1; hidden++; }
+    }
+    if (fplog) {
+        for (size_t k = 0; k < groups.size(); k++) {
+            const Group& g = groups[k];
+            if (!g.racer || k == hull) continue;
+            fprintf(stderr, "[fp]   rider piece at (%.1f, %.1f, %.1f) across/up/along %.0fx%.0fx%.0f, %u verts\n",
+                    g.m[3], g.m[7], g.m[11], g.hi[0] - g.lo[0], g.hi[1] - g.lo[1], g.hi[2] - g.lo[2], g.verts);
+        }
+        const float* m = groups[hull].m;
+        fprintf(stderr, "[fp] f%u hull at (%.1f, %.1f, %.1f) fwd=(%.2f, %.2f, %.2f) up=(%.2f, %.2f, %.2f)"
+                " across/up/along %.0fx%.0fx%.0f, %u verts; eye at (%.1f, %.1f, %.1f); %d rider draws hidden of %zu groups\n",
+                g_render_frame, m[3], m[7], m[11], m[2], m[6], m[10], m[1], m[5], m[9],
+                groups[hull].hi[0] - groups[hull].lo[0], groups[hull].hi[1] - groups[hull].lo[1],
+                groups[hull].hi[2] - groups[hull].lo[2], groups[hull].verts,
+                -(g_world_xform[0] * g_world_xform[12] + g_world_xform[1] * g_world_xform[13] + g_world_xform[2] * g_world_xform[14]),
+                -(g_world_xform[4] * g_world_xform[12] + g_world_xform[5] * g_world_xform[13] + g_world_xform[6] * g_world_xform[14]),
+                -(g_world_xform[8] * g_world_xform[12] + g_world_xform[9] * g_world_xform[13] + g_world_xform[10] * g_world_xform[14]),
+                hidden, groups.size());
+    }
 }
 
 void render_set_vr_morph(float t, const float panel[16]) {
@@ -1415,7 +1667,7 @@ static void morph_chain(const float P[16], MorphKind kind, float chain[16], floa
     fog[0] = fog[5] = fog[10] = fog[15] = 1.0f;
     switch (kind) {
     case MorphKind::World:
-        world_pitch_matrix(S);
+        memcpy(S, g_world_xform, sizeof(S));
         for (int i = 0; i < 16; i++) fog[i] = (1.0f - k) * fog[i] + k * g_vr_view_world[i];
         break;
     case MorphKind::CameraHeld:
@@ -1621,12 +1873,17 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     // untextured and put a black quad on the water. So the first eye runs the whole frame
     // flat into the EFB exactly as the hardware would, minus the scanout, and the eyes
     // then re-project only the main scene on top of correct textures.
+    static std::vector<uint8_t> skip;
+    mark_offscreen_passes(b, skip);
     if (do_copies) {
+        // Where the eye stands and what it leaves out are read off the batch, so they
+        // are settled before anything is drawn from it -- the flat pass included, which
+        // leaves the rider out of the EFB too.
+        first_person_prepare(b, skip);
+        compose_world_view();
         g_vr_active = false;
         execute_batch(b, false);  // which also notes this batch's whole-frame copies
     }
-    static std::vector<uint8_t> skip;
-    mark_offscreen_passes(b, skip);
     // WR_EYELOG=1 reports how a frame was split, which is the only way to tell a scene
     // rendered at the wrong field of view from a composite quad standing in for one.
     static const bool eyelog = getenv("WR_EYELOG") != nullptr;
@@ -1726,6 +1983,7 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
             continue;
         }
         if (skip[i]) { n_skipped++; continue; }
+        if (!g_hide.empty() && g_hide[i]) continue;
         // WR_EYE_SKIPCOMP drops the screen-space passes entirely, for comparing against
         // drawing them flat across the eye. Dropping the water one leaves bare seabed.
         static const bool skipcomp = getenv("WR_EYE_SKIPCOMP") != nullptr;
@@ -1858,9 +2116,11 @@ static bool execute_batch(Batch& b, bool do_present) {
     static const bool only_comp = getenv("WR_ONLY_COMP") != nullptr;
     static const bool complog = getenv("WR_COMPLOG") != nullptr;
     int draw_index = 0;
-    for (auto& c : b.cmds) {
+    for (size_t ci = 0; ci < b.cmds.size(); ci++) {
+        Cmd& c = b.cmds[ci];
         switch (c.type) {
         case CmdType::Draw: {
+            if (!g_hide.empty() && g_hide[ci]) break;
             const bool comp = (no_comp || complog || only_comp) &&
                               samples_fullscreen_copy(b.states[c.state]);
             if (only_comp && !comp) break;
@@ -1962,6 +2222,9 @@ static bool execute_batch(Batch& b, bool do_present) {
     return presented;
 }
 
-bool render_execute(Batch& b) { return execute_batch(b, true); }
+bool render_execute(Batch& b) {
+    g_hide.clear();   // the flat view shows the rider whatever the eyes do
+    return execute_batch(b, true);
+}
 
 }  // namespace gx

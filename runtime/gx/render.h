@@ -68,6 +68,11 @@ struct Cmd {
     uint8_t prim;       // GL-ish: 0 = triangles, 1 = lines, 2 = points
     uint32_t state;     // index into Batch::states
     uint32_t first, count;  // range of Batch::indices
+    // The draw's position matrix: an index into Batch::mtxs. The vertices arrive already
+    // transformed by it, so nothing here needs it to draw; it is kept for what the stereo
+    // path reads off it -- which draws are the player's racer, and where the ski is. The
+    // index only changes when the matrix does, so a run of draws sharing one shares it.
+    uint32_t mtx;
     EfbCopyCmd copy;
 };
 
@@ -80,6 +85,9 @@ struct Batch {
     std::vector<GpuVertex> verts;
     std::vector<uint32_t> indices;
     std::vector<PixelState> states;
+    // The position matrices the draws used, twelve floats each in GX's row-major 3x4
+    // layout (row r is m[r*4..r*4+3], the last column the translation). See Cmd::mtx.
+    std::vector<float> mtxs;
     std::vector<std::shared_ptr<TexData>> new_textures;
 
     // A race frame's batch is eight megabytes or so, and a fresh one grew into that

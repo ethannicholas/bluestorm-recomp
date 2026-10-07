@@ -160,7 +160,8 @@ survive reinstalling the app.
 The app appears on the headset under **Library → Unknown Sources → Wave Race**.
 
 Outside of races, your view will be a 2D screen in front of you. It will transition to stereoscopic
-3D at the beginning of the race.
+3D at the beginning of the race. During a race, clicking the right thumbstick switches between the
+game's chase camera and a first-person view from the rider's seat.
 
 Like the desktop build, the first run through a course hitches briefly while shaders are
 compiled; later runs will take advantage of cached copies.
@@ -174,7 +175,7 @@ compiled; later runs will take advantage of cached copies.
 | Z | Right grip |
 | L / R | Left / right trigger |
 | Start | Menu (left) |
-| *(toggle view)* | Right thumbstick click |
+| *(first person on/off)* | Right thumbstick click |
 
 If something goes wrong, `adb logcat -s waverace` shows the app's log, including compositor and
 game frame counts every five seconds.
@@ -204,6 +205,10 @@ eye_scale 1.4            # eye render size, as a multiple of what the runtime re
 msaa 4                   # samples per eye pixel; 0 for none
 start_in_stereo 0        # start in stereo rather than theater
 transition_s 1           # seconds the morph between the two views takes; 0 snaps
+first_person 0           # start races in first person rather than behind the chase camera
+fp_x 0                   # where the first-person eye sits relative to the ski, in game units:
+fp_y 42                  #   x right, y up, z forward
+fp_z -12
 ```
 
 ## Controls
@@ -234,6 +239,8 @@ Escape quits. Touch controller bindings for the Quest are listed
 | `--hidden` | Don't show the window (testing) |
 | `--headless` | Run without graphics or audio output |
 | `--dump-dir=DIR --dump-every=N` | Save every Nth frame as a PNG |
+| `--eye` | Show the VR eye view instead of the flat frame (testing) |
+| `--first-person[=x,y,z]` | With `--eye`, view from the rider's seat, optionally at that offset from the ski |
 | `--sample` | Print periodic profiling samples of what the game code is doing |
 | `--log-all` | Verbose hardware logging |
 

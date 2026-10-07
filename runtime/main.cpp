@@ -22,6 +22,71 @@
 uint32_t boot_load(const char* iso_path);
 void debug_dump_threads();
 void debug_sampler_start();
+bool write_png(const char* path, const uint8_t* rgba, int w, int h);
+
+// ---------------------------------------------------------------------------
+// --eye renders through the stereo path into an offscreen target and shows that in the
+// window instead of the flat frame. It is the desktop twin of the --eye mode of the
+// headless Android harness (see docs/dev/diagnostics.md): the eye sits where the game's
+// camera is, looking straight ahead with a 90 degree field, so a VR change can be looked
+// at here before it goes anywhere near a headset. --first-person[=x,y,z] puts the eye on
+// the ski instead, as the thumbstick click does in the headset, with the anchor in game
+// units in the ski's frame. --dump-dir/--dump-every write the eye's frames as PNGs.
+// ---------------------------------------------------------------------------
+static bool g_eye_mode = false;
+static GLuint g_eye_fbo, g_eye_tex, g_eye_depth;
+static const int kEyeW = 960, kEyeH = 720;
+// The VR app's own defaults, in game units at its 50 units per metre.
+static const float kHudDist = 200.0f, kHudScale = 0.5f, kHudHeight = -18.0f;
+static const float kWorldPitch = 23.2f * 3.14159265f / 180.0f;
+
+static void eye_init() {
+    glGenTextures(1, &g_eye_tex);
+    glBindTexture(GL_TEXTURE_2D, g_eye_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kEyeW, kEyeH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glGenRenderbuffers(1, &g_eye_depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, g_eye_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kEyeW, kEyeH);
+    glGenFramebuffers(1, &g_eye_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, g_eye_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_eye_tex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_eye_depth);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) fatal("eye fbo incomplete");
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gx::render_set_world_pitch(kWorldPitch);
+    gx::render_set_vr_morph(1.0f, nullptr);
+}
+
+// Column-major, as glUniformMatrix4fv takes them. The view is the identity: the eye is
+// wherever the renderer's world transform puts it.
+static void eye_matrices(float* proj, float* view, float* hud) {
+    const float fov = 1.0f;   // tan(45 deg): a 90 degree vertical field
+    const float aspect = (float)kEyeW / (float)kEyeH;
+    const float n = 5.0f, f = 100000.0f;
+    memset(proj, 0, 16 * sizeof(float));
+    proj[0] = 1.0f / (fov * aspect);
+    proj[5] = 1.0f / fov;
+    proj[10] = -(f + n) / (f - n);
+    proj[11] = -1.0f;
+    proj[14] = -(2.0f * f * n) / (f - n);
+    memset(view, 0, 16 * sizeof(float));
+    view[0] = view[5] = view[10] = view[15] = 1.0f;
+    gx::render_hud_frame(kHudDist, fov, kHudScale, kHudHeight, 0.0f, hud);
+}
+
+static void eye_dump(uint32_t n) {
+    std::vector<uint8_t> px((size_t)kEyeW * kEyeH * 4), fl(px.size());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_eye_fbo);
+    glReadPixels(0, 0, kEyeW, kEyeH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    const size_t stride = (size_t)kEyeW * 4;
+    for (int y = 0; y < kEyeH; y++) memcpy(&fl[y * stride], &px[(size_t)(kEyeH - 1 - y) * stride], stride);
+    for (size_t i = 3; i < fl.size(); i += 4) fl[i] = 255;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/eye_%05u.png", gx::g_dump_dir, n);
+    write_png(path, fl.data(), kEyeW, kEyeH);
+}
 
 // Stringify, to quote the required GL version in a message without a format argument.
 #define WR_STR_(x) #x
@@ -114,10 +179,16 @@ int main(int argc, char** argv) {
     std::string iso_default = WR_DEFAULT_ISO;
     if (!plat_readable(iso_default.c_str())) iso_default = plat_find_file("rom", ".iso");
     const char* iso = iso_default.c_str();
-    bool headless = false, hidden = false;
+    bool headless = false, hidden = false, first_person = false;
+    float fp[3] = {0.0f, 42.0f, -12.0f};
     int scale = 2;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--log-all")) for (auto& e : g_log_enabled) e = true;
+        else if (!strcmp(argv[i], "--eye")) g_eye_mode = true;
+        else if (!strncmp(argv[i], "--first-person", 14)) {
+            first_person = true;
+            if (argv[i][14] == '=') sscanf(argv[i] + 15, "%f,%f,%f", &fp[0], &fp[1], &fp[2]);
+        }
         else if (!strcmp(argv[i], "--sample")) debug_sampler_start();
         else if (!strcmp(argv[i], "--headless")) headless = true;
         else if (!strcmp(argv[i], "--hidden")) hidden = true;
@@ -184,6 +255,9 @@ int main(int argc, char** argv) {
     plat_make_dirs("saves");
     gx::render_set_shader_cache("saves/shaders.bin");
     gx::render_init(scale);
+    if (g_eye_mode) eye_init();
+    if (first_person) gx::render_set_first_person(true, fp[0], fp[1], fp[2]);
+    if (gx::g_dump_dir) plat_make_dirs(gx::g_dump_dir);
 
     audio_open();
 
@@ -206,7 +280,22 @@ int main(int argc, char** argv) {
         gx::render_set_window_size(dw, dh);
         auto b = gx::take_batch(4);
         if (!b) continue;
-        if (gx::render_execute(*b)) {
+        bool presented;
+        if (g_eye_mode) {
+            float P[16], V[16], H[16];
+            eye_matrices(P, V, H);
+            gx::render_set_vr_eye(P, V, H);
+            presented = gx::render_execute_eye(*b, g_eye_fbo, kEyeW, kEyeH, true);
+            static uint32_t eye_frames = 0;
+            eye_frames++;
+            if (gx::g_dump_dir && gx::g_dump_every && eye_frames % gx::g_dump_every == 0) eye_dump(eye_frames);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, g_eye_fbo);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glBlitFramebuffer(0, 0, kEyeW, kEyeH, 0, 0, dw, dh, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        } else {
+            presented = gx::render_execute(*b);
+        }
+        if (presented) {
             // macOS (GL on Metal) only presents correctly with the window framebuffer bound.
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
             SDL_GL_SwapWindow(win);

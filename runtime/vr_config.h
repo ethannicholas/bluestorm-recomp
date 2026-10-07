@@ -113,6 +113,17 @@ struct VrConfig {
     // Start in stereo rather than theater, for testing.
     bool start_in_stereo = false;
 
+    // First person: in stereo, the eye rides the ski instead of the chase camera, and the
+    // rider is not drawn. Clicking the right thumbstick switches it during a race; this
+    // is where it starts. The anchor is where the eye sits relative to the hull's origin,
+    // in game units in the ski's own frame -- x to the right, y up, z forward -- and was
+    // read off the rider's head in the dump that found the hull: some 39 units up and 9
+    // back while racing, crouched, so a little higher and further back for the idle pose.
+    bool first_person = false;
+    float fp_x = 0.0f;
+    float fp_y = 42.0f;
+    float fp_z = -12.0f;
+
     // Seconds the morph between theater and stereo takes -- the panel opening out into the
     // world, or the world folding back onto it. 0 snaps, as it used to.
     float transition_s = 1.0f;

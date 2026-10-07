@@ -55,6 +55,14 @@ void render_set_vr_morph(float t, const float panel[16]);
 // the headset's own space and stays where it is put. 0 renders what the game draws.
 void render_set_world_pitch(float pitch_rad);
 
+// First person: the eye is fixed to the player's ski instead of to the game's chase
+// camera, (x, y, z) game units from the hull's origin in the ski's own frame -- x to the
+// right, y up, z forward -- and the rider is not drawn. Applies to the eye passes; the
+// flat view is untouched. Where the ski is and which draws are the rider are read off
+// each batch (see first_person_prepare), and a frame with no racer in it falls back to
+// the chase camera.
+void render_set_first_person(bool on, float x, float y, float z);
+
 // Draw one eye's view of a batch into `fbo`. Both eyes share the vertex buffer, the
 // CPU-side transform and any render-to-texture results, so only uniforms and draw
 // calls are repeated. Pass do_copies for the first eye only.

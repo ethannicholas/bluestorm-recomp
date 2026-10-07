@@ -48,8 +48,8 @@ three are read, one job each: `0x80602160` counts what the course loaded and is 
 clears when a race is *quit*, so it gates the rest; `0x80625A54` is the start sequence's state and
 brings stereo up with the starting lights; `0x806193BC` is the course's wave height, which is what
 notices a race *finishing*. Stereo is `on_course > 0 && (wave_height || start_state == countdown)`.
-Clicking the
-right thumbstick pins the view manually, which is also the way to compare the two.
+There is no manual override any more: the right thumbstick click used to pin the view, and now
+switches between the chase camera and [first person](#first-person) within stereo.
 
 A switch either way is a morph rather than a cut, `transition_s` long (1 s by default). Theater
 is reachable from the stereo renderer: run every draw through the chain the HUD already uses —
@@ -539,6 +539,86 @@ game's layout faithfully, sits where the geometry says it should, and is anchore
 rather than to the head. Whether four metres is a comfortable place to read it from is still a
 question only the headset can answer.
 
+## First person
+
+In stereo, clicking the right thumbstick moves the eye from the game's chase camera to the rider's
+seat: a point fixed to the ski (`fp_x`/`fp_y`/`fp_z` in `vr.txt`, game units in the ski's own
+frame, x right, y up, z forward), turning and pitching with the hull, with the rider not drawn.
+Deliberately naive for now -- no smoothing, no levelling, the eye goes wherever the hull goes --
+to see what that is like before deciding what to damp. The chase camera's pitch correction
+(`world_pitch_deg`) does not apply here; the hull's own frame replaces it. `render_set_first_person`
+turns it on, `first_person_prepare` in `render_gl.cpp` does the work.
+
+### Finding the ski in a batch
+
+The vertices reach the renderer already in the chase camera's view space, and the game's own idea
+of where the player is was not gone looking for. What *is* in the batch is the position matrix each
+draw went through, which `Cmd::mtx` now carries (`Batch::mtxs`, deduplicated against the previous
+draw's, and a draw no longer merges with its predecessor across a change of matrix). Reading a
+`WR_MTXLOG` dump of Ocean City Harbor 300 frames into a race, which now prints the copies and
+textures beside the matrices, the structure of a frame is this:
+
+- The main scene is 3,790 draws, and all but 270 go through one matrix: the world's view matrix,
+  loaded at `GX_PNMTX0`. The course, the water, the spray, and the **other racers too**: the game
+  transforms them into the world on the CPU, so there is nothing in the matrices to confuse with
+  the player.
+- The 270 are the player's racer, through four matrices at `GX_PNMTX1..4`: 87 draws of the
+  rider's head, 18 of the arms, 55 of the torso, and 108 draws (677 vertices) of the hull. The hull
+  is unmistakable by size: its vertices span 81 units along the ski against 40 or so for any part
+  of the rider.
+- The hull's model frame is **X to the ski's left, Y up, Z forward**: its matrix's columns come out
+  as view-space -X, the same up the world matrix has, and the direction of travel. That is a proper
+  rotation, not a mirror -- the world matrix negates X too.
+- The racer's reflection, the 128x128 off-screen pass, draws him with *ten* matrices of his own,
+  mirrored. So the reflection is skinned per bone and the main scene is not; whatever the reason,
+  it means the main scene's four cannot be found by matching the reflection's.
+
+The rule is therefore: among the draws an eye replays, the matrix most vertices go through is
+the world's; every other rigid matrix within 600 units of the camera is a piece of the racer,
+provided its draws sample a texture the off-screen passes drew near the camera through a rigid
+non-world matrix (the reflection pass is the one place in the batch that says what the racer looks
+like) and it is under 300 units across; the hull is the longest piece that is at least twice as
+long, along its own forward axis, as it is wide; the pieces within 60 units of the hull's origin
+are the rider and are left out of every pass, the flat one included. A frame with no racer -- the
+menus, the course flyover, or a course that does without the reflection -- falls back to the chase
+camera, and `WR_FPLOG=1` says so.
+
+Each of those conditions was added after the rule before it picked something else, so they are
+worth keeping even where they look redundant:
+
+- *A texture from the reflection pass.* On the title screen a menu quad, 640x480, drawn with a
+  perspective projection through a matrix turned a quarter turn, was rigid and near the camera and
+  nothing else said it was not a ski. With no reflection pass in the frame there is no racer.
+- *Under 300 units.* The sky is a rotation at the origin, 8,000 units wide, and wears the same
+  environment map the ski's paint reflects, so it passed the texture test however that set was
+  built -- from the reflection pass alone, or from every off-screen pass.
+- *Long and narrow.* The course intro flies the camera past a buoy: rigid, within reach, about 90
+  units every way, and textured like the buoys the reflection pass draws at that moment. It was
+  the hull for the two seconds before the countdown, and the eye sat inside it. A hull is 28
+  across and 82 long; nothing else near a ski has that shape.
+
+One thing in the dump worth recording because it looked wrong for a while: the hull's origin is
+*above* the camera's forward axis (view-space y of +8 at a depth of 151) though the racer is drawn
+at the bottom quarter of the frame. The game's projection is off-centre -- `p[3]` is 0.48, which
+shifts the whole image down by a quarter of its height -- so the chase camera's axis points at the
+ski and the frustum looks mostly above it. The eye paths use their own projections and never see
+that shift; it only matters when reading view-space numbers against a screenshot.
+
+The anchor's default, 42 up and 12 back, is read off the same dump: racing, crouched, the head is
+39 units above the hull's origin and 9 behind it, so idle and upright is a little more of each.
+50 units is a metre.
+
+### What is left alone
+
+- The rider's reflection is still drawn: the 128x128 pass is untouched, and the patch of water
+  under the ski shows a rider who is not there. Arguably right -- the viewer has a body, it just
+  is not drawn -- and cheap to change if it reads wrongly.
+- The morph between theater and stereo blends from the panel to wherever the eye is, so with first
+  person on it is a blend from the chase camera's frame to the rider's seat, and the crop planes
+  are the chase camera's. It lasts a second.
+- `offset_x/y/z` still apply, now relative to the anchor.
+- Switching is a cut, not a morph.
+
 ### Levelling the sea
 
 The game's chase camera looks down **23.2 degrees**, and vertices reach the renderer already in its
@@ -584,6 +664,10 @@ Not a VR problem but found through this harness, and the tools stay because the 
   up as two draws with identical vertex counts and textures.
 - `WR_DRAW_SKIP=a-b` drops a range of draw indices, `WR_NO_COMP` / `WR_ONLY_COMP` drop or isolate
   the draws sampling a whole-frame copy, and `WR_NO_EFBTEX` drops those sampling a partial one.
+- `WR_MTXLOG=<n>` dumps the nth frame after the race flag comes up: every draw with its position
+  matrix, vertex count, state index and textures, and every EFB copy where it falls among them, so
+  the draws can be read against the pass boundaries. It is what the first-person section above is
+  read from.
 - `WR_PNMLOG=a-b` lists the position matrices a frame uses over a window of frames, one line each
   time the matrix changes. It is what showed that the countdown rig does not tilt as it arrives — it
   turns about the vertical axis while descending — and that of 6,464 matrices over sixteen frames

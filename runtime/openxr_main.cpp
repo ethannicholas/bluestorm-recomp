@@ -186,7 +186,7 @@ struct Xr {
 
     XrActionSet action_set = XR_NULL_HANDLE;
     XrAction a_btn, b_btn, x_btn, y_btn, menu, trig_l, trig_r, grip_r, stick_l, stick_r;
-    XrAction toggle;   // right thumbstick click: force between theater and stereo
+    XrAction toggle;   // right thumbstick click: chase camera or first person, in stereo
 };
 static Xr g_xr;
 static VrConfig g_vrcfg;
@@ -477,7 +477,7 @@ static bool xr_create_actions() {
     g_xr.grip_r  = make_action("grip_r", "Right grip", XR_ACTION_TYPE_FLOAT_INPUT);
     g_xr.stick_l = make_action("stick_l", "Left stick", XR_ACTION_TYPE_VECTOR2F_INPUT);
     g_xr.stick_r = make_action("stick_r", "Right stick", XR_ACTION_TYPE_VECTOR2F_INPUT);
-    g_xr.toggle  = make_action("view_toggle", "Toggle view", XR_ACTION_TYPE_BOOLEAN_INPUT);
+    g_xr.toggle  = make_action("view_toggle", "First person", XR_ACTION_TYPE_BOOLEAN_INPUT);
 
     const XrActionSuggestedBinding binds[] = {
         {g_xr.a_btn,   xr_path("/user/hand/right/input/a/click")},
@@ -490,7 +490,7 @@ static bool xr_create_actions() {
         {g_xr.grip_r,  xr_path("/user/hand/right/input/squeeze/value")},
         {g_xr.stick_l, xr_path("/user/hand/left/input/thumbstick")},
         {g_xr.stick_r, xr_path("/user/hand/right/input/thumbstick")},
-        // Not bound to anything in the game, so it is free for switching views.
+        // Not bound to anything in the game, so it is free for switching the view.
         {g_xr.toggle,  xr_path("/user/hand/right/input/thumbstick/click")},
     };
     XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
@@ -639,6 +639,7 @@ void android_main(android_app* app) {
     const std::string iso = dir + "/game.iso";
     g_vrcfg = vr_config_load(dir);
     gx::render_set_world_pitch(g_vrcfg.world_pitch_deg * 3.14159265f / 180.0f);
+    gx::render_set_first_person(g_vrcfg.first_person, g_vrcfg.fp_x, g_vrcfg.fp_y, g_vrcfg.fp_z);
     static std::string dump_dir;
     if (g_vrcfg.dump_every > 0) {
         dump_dir = dir + "/frames";
@@ -688,7 +689,8 @@ void android_main(android_app* app) {
     uint32_t xr_frames = 0, game_frames = 0, skipped = 0;
     uint64_t disp_frames = 0;  // monotonic, unlike xr_frames which the stats line resets
     bool have_content = false;
-    bool stereo = g_vrcfg.start_in_stereo, manual_override = false, toggle_was_down = false;
+    bool stereo = g_vrcfg.start_in_stereo, toggle_was_down = false;
+    bool first_person = g_vrcfg.first_person;
     // Kept across frames: a display frame with no new game frame re-submits these
     // rather than re-rendering. They carry the pose each image was rendered for, so
     // the compositor reprojects them for the current head pose.
@@ -784,15 +786,15 @@ void android_main(android_app* app) {
         input_script_apply(p);
         pad_set_state(0, p);
 
-        // Which view to present. The game's own frames decide: a race submits several
-        // hundred perspective draws, menus submit a handful. Held for a number of
-        // frames so a brief spike cannot flap the view back and forth. Clicking the
-        // right thumbstick pins it manually.
+        // Clicking the right thumbstick switches between the chase camera and first
+        // person. Only in stereo: theater shows the game's own frame, which has no other
+        // view to offer. It used to pin the view between theater and stereo, which the
+        // game's own state now decides well enough that nobody needed the override.
         if (action_bool(g_xr.toggle)) {
-            if (!toggle_was_down) {
-                manual_override = true;
-                stereo = !stereo;
-                LOGI("view pinned to %s", stereo ? "stereo" : "theater");
+            if (!toggle_was_down && stereo) {
+                first_person = !first_person;
+                gx::render_set_first_person(first_person, g_vrcfg.fp_x, g_vrcfg.fp_y, g_vrcfg.fp_z);
+                LOGI("view: %s", first_person ? "first person" : "chase camera");
             }
             toggle_was_down = true;
         } else {
@@ -805,60 +807,61 @@ void android_main(android_app* app) {
         std::unique_ptr<gx::Batch> batch = gx::take_batch(0);
         if (batch) {
             game_frames++;
-            if (!manual_override) {
-                // The game's own "on a course" value; see kOnCourseAddr. Found by
-                // diffing guest RAM across labelled snapshots and then tracing every
-                // frame, which is the only way to tell a steady value from one that
-                // blinks -- see docs/dev/vr.md.
-                //
-                // It is a *count*, not a flag, which cost a crash to learn. It is field
-                // +0x20 of the descriptor at 0x80602140, written once at 0x8004561C
-                // (`stw r3,0x20(r30)`) from whatever fn_80047320 returns: a loop counter,
-                // zeroed at 0x80047348 and incremented per entry at 0x800473CC, or -1
-                // from the error path at 0x80047578. Every session traced while this was
-                // being worked out counted exactly one entry, so it read 0 and 1 and
-                // looked boolean. It is not, and a build that insisted it was aborted in
-                // someone's headset mid-session.
-                //
-                // Positive is on a course; -1 is a load that failed, which is not.
-                const int32_t on_course = (int32_t)mem_r32(kOnCourseAddr);
-                if (on_course < 0) {
-                    static bool said = false;
-                    if (!said) {
-                        said = true;
-                        LOGE("on-course count at %#x reads %d; treating as off-course",
-                             kOnCourseAddr, on_course);
-                    }
+            // Which view to present. The game's own state decides, held for a number of
+            // frames so a transient cannot flap the view back and forth.
+            //
+            // The game's own "on a course" value; see kOnCourseAddr. Found by
+            // diffing guest RAM across labelled snapshots and then tracing every
+            // frame, which is the only way to tell a steady value from one that
+            // blinks -- see docs/dev/vr.md.
+            //
+            // It is a *count*, not a flag, which cost a crash to learn. It is field
+            // +0x20 of the descriptor at 0x80602140, written once at 0x8004561C
+            // (`stw r3,0x20(r30)`) from whatever fn_80047320 returns: a loop counter,
+            // zeroed at 0x80047348 and incremented per entry at 0x800473CC, or -1
+            // from the error path at 0x80047578. Every session traced while this was
+            // being worked out counted exactly one entry, so it read 0 and 1 and
+            // looked boolean. It is not, and a build that insisted it was aborted in
+            // someone's headset mid-session.
+            //
+            // Positive is on a course; -1 is a load that failed, which is not.
+            const int32_t on_course = (int32_t)mem_r32(kOnCourseAddr);
+            if (on_course < 0) {
+                static bool said = false;
+                if (!said) {
+                    said = true;
+                    LOGE("on-course count at %#x reads %d; treating as off-course",
+                         kOnCourseAddr, on_course);
                 }
-                // Three variables, one job each, because no one of them spans a race at
-                // both ends. kOnCourseAddr is the only one that clears when a race is
-                // quit, so it gates everything. Within that, the countdown phase brings
-                // stereo up with the starting lights, and the race flag carries it from
-                // there to the chequered flag -- it is what notices a race *finishing*,
-                // which kOnCourseAddr does not do until 170 frames later, well into the
-                // results.
-                const uint32_t start_state = mem_r32(kStartStateAddr);
-                const uint32_t racing = mem_r32(kRaceActiveAddr);
-                const bool want_stereo = on_course > 0 &&
-                                         (racing != 0 || start_state == kStartCountdown);
-                // The flag is written by the guest thread and read here, so a sample can
-                // land on a transient: tracing the old race flag from this side caught it
-                // reading non-zero for a single frame on the results screen and twice
-                // before a race. One game frame of agreement drops those, and costs 33 ms
-                // on a switch that used to be a second late anyway.
-                static bool pending = false;
-                static int agree = 0;
-                if (want_stereo != stereo) {
-                    agree = (want_stereo == pending) ? agree + 1 : 1;
-                    pending = want_stereo;
-                    if (agree >= 2) {
-                        stereo = want_stereo;
-                        agree = 0;
-                        LOGI("switching to %s", stereo ? "stereo" : "theater");
-                    }
-                } else {
+            }
+            // Three variables, one job each, because no one of them spans a race at
+            // both ends. kOnCourseAddr is the only one that clears when a race is
+            // quit, so it gates everything. Within that, the countdown phase brings
+            // stereo up with the starting lights, and the race flag carries it from
+            // there to the chequered flag -- it is what notices a race *finishing*,
+            // which kOnCourseAddr does not do until 170 frames later, well into the
+            // results.
+            const uint32_t start_state = mem_r32(kStartStateAddr);
+            const uint32_t racing = mem_r32(kRaceActiveAddr);
+            const bool want_stereo = on_course > 0 &&
+                                     (racing != 0 || start_state == kStartCountdown);
+            // The flag is written by the guest thread and read here, so a sample can
+            // land on a transient: tracing the old race flag from this side caught it
+            // reading non-zero for a single frame on the results screen and twice
+            // before a race. One game frame of agreement drops those, and costs 33 ms
+            // on a switch that used to be a second late anyway.
+            static bool pending = false;
+            static int agree = 0;
+            if (want_stereo != stereo) {
+                agree = (want_stereo == pending) ? agree + 1 : 1;
+                pending = want_stereo;
+                if (agree >= 2) {
+                    stereo = want_stereo;
                     agree = 0;
+                    LOGI("switching to %s", stereo ? "stereo" : "theater");
                 }
+            } else {
+                agree = 0;
             }
         }
 
