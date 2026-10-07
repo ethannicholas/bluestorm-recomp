@@ -1,5 +1,7 @@
 // MMIO dispatch for 0xC8000000-0xCFFFFFFF (EFB + hardware registers) and the PI.
 #include "../runtime.h"
+#include "../platform.h"
+#include <algorithm>
 #include <atomic>
 
 std::atomic<uint32_t> g_pi_intsr{0}, g_pi_intmr{0};
@@ -139,4 +141,26 @@ extern "C" void mmio_write8(uint32_t a, uint8_t v) {
     uint32_t off = a & 0xFFFF;
     if ((off >> 12) == 0x8) { gp_write8(v); return; }
     LOG(LOG_HW, "unhandled MMIO write8 %08X = %02X", a, v);
+}
+
+// ---------------------------------------------------------------------------
+// DMA bounds. See dma_fit() in runtime.h for why this exists.
+// ---------------------------------------------------------------------------
+uint32_t dma_fit(const char* engine, uint32_t pa, uint32_t len) {
+    const uint32_t addr = pa & 0x01FFFFFF;   // the address phys_ptr() will actually use
+    const uint32_t fit = addr >= RAM_SIZE ? 0u : std::min(len, RAM_SIZE - addr);
+    if (fit == len) return fit;
+    static int shown;
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "%s DMA runs past main memory: %08X + %X bytes, RAM ends at %X (%u bytes dropped)",
+             engine, pa, len, RAM_SIZE, len - fit);
+    if (shown == 0) {
+        // The first one goes into the platform's crash record as well. If the guest does
+        // not survive what this corrupted, the tombstone then names the engine that did
+        // it -- which is the whole difficulty with this class of bug.
+        plat_record_fatal(msg);
+    }
+    if (shown++ < 16) fprintf(stderr, "[dma] %s\n", msg);
+    return fit;
 }

@@ -36,6 +36,20 @@ inline void mem_w8(uint32_t a, uint8_t v) { *HOST(a) = v; }
 // Physical address (as used by DMA engines) -> host pointer into main RAM.
 inline uint8_t* phys_ptr(uint32_t pa) { return g_mem + (pa & 0x01FFFFFF); }
 
+// How much of a DMA at physical address `pa` fits inside main memory.
+//
+// The engines take their address and their length from registers the guest writes, and
+// nothing downstream checked either: phys_ptr() masks to 32 MB against 24 MB of RAM, so
+// a transfer aimed past the end writes over whatever is there rather than faulting. What
+// that looks like is a crash minutes later somewhere unrelated -- OSAllocFromHeap
+// walking a free list whose `next` field now holds a word of someone else's data.
+//
+// Returns how many bytes may be transferred, and says so the first few times that is
+// fewer than asked for, naming the engine. Clamping cannot rescue a transfer that was
+// already aimed at the wrong place; what it does is keep the mistake inside the
+// transfer, and make it visible where it happens instead of where it is noticed.
+uint32_t dma_fit(const char* engine, uint32_t pa, uint32_t len);
+
 // ---- timing ----
 constexpr uint64_t TB_FREQ = 40500000;  // timebase / decrementer ticks per second
 uint64_t now_ticks();                   // monotonic, TB units

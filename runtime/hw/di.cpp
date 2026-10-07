@@ -39,7 +39,8 @@ static void di_execute() {
         uint64_t offset = sub == 0x40 ? 0 : (uint64_t)g_cmd[1] << 2;
         uint32_t len = g_dilen;
         LOG(LOG_DVD, "read off=%09llX len=%X -> %08X", (unsigned long long)offset, len, g_dimar);
-        if (!iso_read(offset, phys_ptr(g_dimar), len))
+        const uint32_t fit = dma_fit("DVD", g_dimar, len);
+        if (fit && !iso_read(offset, phys_ptr(g_dimar), fit))
             LOG(LOG_DVD, "read past end of image");
         g_dimar += len;
         g_dilen = 0;
@@ -48,7 +49,7 @@ static void di_execute() {
     }
     case 0x12: {  // inquiry
         static const uint8_t inq[0x20] = {0x00, 0x00, 0x00, 0x02, 0x20, 0x06, 0x05, 0x26, 0x41};
-        memcpy(phys_ptr(g_dimar), inq, sizeof(inq));
+        memcpy(phys_ptr(g_dimar), inq, dma_fit("DVD inquiry", g_dimar, sizeof(inq)));
         g_dimar += 0x20;
         g_dilen = 0;
         break;

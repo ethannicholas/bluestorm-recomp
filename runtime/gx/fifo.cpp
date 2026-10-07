@@ -95,7 +95,7 @@ static void cp_drain() {
 static void gp_flush32() {
     uint32_t& wptr = pi_fifo_wptr();
     uint32_t addr = wptr & 0x03FFFFFF;
-    memcpy(phys_ptr(addr), g_gp_buf, 32);
+    memcpy(phys_ptr(addr), g_gp_buf, dma_fit("write-gather", addr, 32));
     addr += 32;
     if (addr >= pi_fifo_end()) {
         addr = pi_fifo_base();

@@ -72,8 +72,12 @@ static void aram_dma() {
     bool to_mram = g_ar_cnt & 0x80000000u;
     uint32_t aram = g_ar_aram & (ARAM_SIZE - 1);
     if (aram + len > ARAM_SIZE) len = ARAM_SIZE - aram;
-    if (to_mram) memcpy(phys_ptr(g_ar_mm), g_aram + aram, len);
-    else memcpy(g_aram + aram, phys_ptr(g_ar_mm), len);
+    // The ARAM side is clamped above; this is the main-memory side, which nothing was
+    // checking. `len` itself is left alone so that the log line and the completion delay
+    // still describe the transfer the guest asked for.
+    const uint32_t moved = dma_fit(to_mram ? "ARAM->MRAM" : "MRAM->ARAM", g_ar_mm, len);
+    if (to_mram) memcpy(phys_ptr(g_ar_mm), g_aram + aram, moved);
+    else memcpy(g_aram + aram, phys_ptr(g_ar_mm), moved);
     LOG(LOG_DSP, "ARAM DMA %s mm=%08X ar=%08X len=%X", to_mram ? "ARAM->MRAM" : "MRAM->ARAM", g_ar_mm, g_ar_aram, len);
     g_ar_cnt &= 0x80000000u;
     g_dspcr |= CR_DMA;
@@ -120,6 +124,7 @@ static void aid_block_done() {
     uint32_t bytes = g_aid_blocks_left * 32;
     static int n;
     if (getenv("WR_AXSTATS") && n++ % 400 == 0) fprintf(stderr, "[aid] block addr=%08X bytes=%u ctrl=%04X\n", g_aid_cur_addr, bytes, g_aid_ctrl);
+    bytes = dma_fit("AI", g_aid_cur_addr, bytes);
     if (bytes) audio_push_dma((const int16_t*)phys_ptr(g_aid_cur_addr), bytes / 4);
     g_aid_blocks_left = 0;
     if (g_aid_ctrl & 0x8000) aid_start_block();
