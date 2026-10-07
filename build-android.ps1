@@ -9,7 +9,7 @@
 #                   PNGs -- validates the GL ES back end on the device before there is
 #                   any VR frontend.             .\build-android.ps1 -Render
 #
-# See the Benchmarking and Graphics sections of README.md.
+# See docs/dev/diagnostics.md for both; the README covers the installable app.
 param(
     [switch]$Run,
     [switch]$Render,
@@ -31,7 +31,7 @@ $sdk = "$env:LOCALAPPDATA\Android\Sdk"
 $ndkRoot = Join-Path $sdk 'ndk'
 $ndk = Get-ChildItem $ndkRoot -Directory -ErrorAction SilentlyContinue |
        Sort-Object Name -Descending | Select-Object -First 1
-if (-not $ndk) { throw "No NDK found under $ndkRoot. See the Benchmarking section of README.md." }
+if (-not $ndk) { throw "No NDK found under $ndkRoot. See the Quest section of README.md." }
 
 $toolchain = Join-Path $ndk.FullName 'build\cmake\android.toolchain.cmake'
 if (-not (Test-Path $toolchain)) { throw "NDK toolchain file not found: $toolchain" }

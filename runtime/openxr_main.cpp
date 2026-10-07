@@ -809,7 +809,7 @@ void android_main(android_app* app) {
                 // The game's own "on a course" value; see kOnCourseAddr. Found by
                 // diffing guest RAM across labelled snapshots and then tracing every
                 // frame, which is the only way to tell a steady value from one that
-                // blinks -- see the Tools section of README.md.
+                // blinks -- see docs/dev/vr.md.
                 //
                 // It is a *count*, not a flag, which cost a crash to learn. It is field
                 // +0x20 of the descriptor at 0x80602140, written once at 0x8004561C

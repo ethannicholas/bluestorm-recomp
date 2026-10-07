@@ -195,7 +195,7 @@ else()
 endif()
 
 # Headless benchmark: reports how fast the guest advances, with no graphics or audio
-# in the way. Used to compare host CPUs -- see the Benchmarking section in README.md.
+# in the way. Used to compare host CPUs -- see docs/dev/diagnostics.md.
 if(HAVE_GAME_ISO)
   add_executable(waverace_bench ${BENCH_SOURCES})
   target_include_directories(waverace_bench PRIVATE ${CMAKE_SOURCE_DIR}/runtime ${RECOMP_GEN_DIR})
