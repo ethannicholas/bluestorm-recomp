@@ -1153,6 +1153,35 @@ instrumentation at all — which is what `--sample` reports, and what makes attr
 release build. `ENTER`/`RET` give an exact stack with names for the price of the instrumentation;
 the backchain gives one for free, and misses frames that have none.
 
+### When the game stops on purpose
+
+The game has its own assert: `OSPanic(file, line, format, ...)` at `0x8010A700`, which prints a
+message and a backtrace and then falls into `PPCHalt` at `0x80108110`, four instructions ending
+in a branch to themselves, with interrupts disabled. Recompiled faithfully, that is a disaster to
+diagnose. The process sits
+there spinning on `IRQ_CHECK`, producing no frames and no audio, with every profile sample in
+`irq_poll`, and **says nothing**: the panic text goes through the SDK's own vprintf, not through
+`OSReport`, which is the only printing path the runtime listens to. It looks precisely like the
+port having deadlocked, and on a headset it cost a session of profiling to tell the two apart.
+
+So `OSPanic` is HLE'd (`recomp/names.txt` names it, `recomp/hle.txt` lists it, `hle_OSPanic` in
+`runtime/hle_os.cpp` implements it). It formats the game's own message, walks the backchain for a
+guest backtrace with names, and then stops instead of spinning — the game is over either way, and
+a process that dies explaining itself beats one that freezes:
+
+```
+guest panic: wrMainMenu.c:13626: sInitCourseMenu: error, cannot allocate memory for the frame buffer copy
+guest backtrace (innermost first):
+    800AFDC0  fn_800AFCDC+0xE4
+    ...
+```
+
+It lands in three places, because each loses in a different way. stderr, which on a headset is a
+log ring the app can lap within a minute. `fatal()`'s crash record, which survives that but holds
+only the first line. And `<files>/panic.txt` (`saves/panic.txt` on desktop), which keeps the whole
+report including the backtrace until the next panic overwrites it — that is the one to read after
+the fact, and the one that does not need anyone to have been watching.
+
 ## How it works
 
 ```

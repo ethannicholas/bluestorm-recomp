@@ -74,6 +74,21 @@ const char* func_name(uint32_t addr) {
     return "?";
 }
 
+// The function `addr` falls inside, rather than the one it starts. A backtrace is made of
+// return addresses, which point into the middle of their function and so match nothing in
+// func_name(); the nearest start at or below is what names them. `start` takes that start,
+// so a caller can print the offset. Linear because this runs on failure paths only.
+const char* func_containing(uint32_t addr, uint32_t* start) {
+    uint32_t best = 0;
+    const char* name = nullptr;
+    for (uint32_t i = 0; i < g_recomp_func_count; i++) {
+        uint32_t a = g_recomp_funcs[i].addr;
+        if (a <= addr && a >= best) { best = a; name = g_recomp_funcs[i].name; }
+    }
+    if (start) *start = best;
+    return name ? name : "?";
+}
+
 static void build_fn_table() {
     for (uint32_t i = 0; i < g_recomp_func_count; i++) {
         uint32_t a = g_recomp_funcs[i].addr;

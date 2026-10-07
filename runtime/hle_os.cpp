@@ -75,3 +75,71 @@ extern "C" void hle_OSReport(CPU* c) {
     while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
     LOG(LOG_OS, "%s", s.c_str());
 }
+
+// Walks the guest's stack, innermost first, into `out`. PowerPC EABI: a frame's first word
+// is the back chain to its caller's frame, and a function's return address is saved at
+// offset 4 of the frame below it -- which is why each step needs both. The innermost return
+// address is still in lr, since the callee's prologue has not run.
+static void guest_backtrace(CPU* c, std::string& out, int max_frames) {
+    char line[256];
+    auto frame = [&](uint32_t pc) {
+        uint32_t start = 0;
+        const char* name = func_containing(pc, &start);
+        snprintf(line, sizeof(line), "    %08X  %s+0x%X\n", pc, name, pc - start);
+        out += line;
+    };
+    frame(c->lr);
+    uint32_t sp = c->r[1];
+    for (int i = 0; i < max_frames; i++) {
+        // Stack grows down, so the back chain must climb; anything else is a wild pointer
+        // and following it would walk off into guest RAM printing noise.
+        if (sp < 0x80000000u || sp >= 0x81800000u) break;
+        uint32_t next = mem_r32(sp);
+        if (next <= sp || next >= 0x81800000u) break;
+        uint32_t lr = mem_r32(next + 4);
+        if (lr < 0x80003000u || lr >= 0x81800000u) break;
+        frame(lr);
+        sp = next;
+    }
+}
+
+// The game's own OSPanic: (file, line, format, ...). Its real body prints through the SDK's
+// vprintf -- not the OSReport path above, the only one the runtime logs -- and then falls
+// into PPCHalt, an infinite loop with interrupts disabled. In a recomp that is faithful and
+// useless: the process sits there spinning on the interrupt poll, producing no frames and
+// saying nothing, and looks exactly like the port having deadlocked. One such panic cost a
+// long session of profiling to identify as the game stopping on purpose.
+//
+// So the body is replaced by this: say what the game was going to say, with the guest's own
+// backtrace, and stop. Stopping rather than spinning is the point -- the game is over either
+// way, and a process that dies explaining itself beats one that freezes. fatal() puts the
+// first line somewhere the app's own logging cannot lap it (see plat_record_fatal).
+extern "C" void hle_OSPanic(CPU* c) {
+    // Both of these are arbitrary guest text -- the message usually ends in a newline, and
+    // neither pointer is trustworthy on the path that gets here. Flattened, so that the one
+    // line fatal() records stays one line and one log entry.
+    auto flatten = [](std::string s) {
+        for (char& ch : s)
+            if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
+        while (!s.empty() && s.back() == ' ') s.pop_back();
+        return s;
+    };
+    const std::string file = flatten(guest_str(c->r[3], 256));
+    const uint32_t line = c->r[4];
+    const std::string msg = flatten(guest_format(c, c->r[5], 6, 1));
+    std::string report = "guest panic: " + file + ":" + std::to_string(line) + ": " + msg +
+                         "\nguest backtrace (innermost first):\n";
+    guest_backtrace(c, report, 16);
+    fprintf(stderr, "%s", report.c_str());
+    // And once more where a log ring cannot lap it. On a headset the only reader is adb
+    // after the fact, by which time a session's worth of logging has usually pushed the
+    // backtrace out; fatal() preserves its one line in the crash record but has nowhere to
+    // put sixteen more. Best effort -- a panic that cannot write a file still has to report.
+    const std::string path = (g_save_dir ? std::string(g_save_dir) : std::string(".")) + "/panic.txt";
+    if (FILE* f = fopen(path.c_str(), "wb")) {
+        fwrite(report.data(), 1, report.size(), f);
+        fclose(f);
+        fprintf(stderr, "panic report written to %s\n", path.c_str());
+    }
+    fatal("guest panic: %s:%u: %s", file.c_str(), line, msg.c_str());
+}

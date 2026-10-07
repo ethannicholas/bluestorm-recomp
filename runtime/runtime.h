@@ -84,6 +84,11 @@ void hle_os_report(CPU* c);
 std::string guest_format(CPU* c, uint32_t fmt_addr, int first_gpr, int first_fpr);
 std::string guest_str(uint32_t addr, size_t max = 4096);
 
+// Names a guest address. func_name wants a function's first instruction; func_containing
+// takes any address inside one, which is what a return address off the stack is.
+const char* func_name(uint32_t addr);
+const char* func_containing(uint32_t addr, uint32_t* start);
+
 // ---- hw modules ----
 void vi_init(); uint16_t vi_read16(uint32_t off); void vi_write16(uint32_t off, uint16_t v);
 void di_init(const char* iso_path); uint32_t di_read32(uint32_t off); void di_write32(uint32_t off, uint32_t v);

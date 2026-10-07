@@ -2,3 +2,4 @@
 OSSaveContext
 OSLoadContext
 OSReport
+OSPanic

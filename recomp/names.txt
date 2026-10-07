@@ -4,3 +4,4 @@
 8010A2E0 OSGetStackPointer
 8010E828 SelectThreadToRun
 8010C4F0 __OSDispatchInterrupt
+8010A700 OSPanic
