@@ -71,8 +71,43 @@ std::unique_ptr<Batch> take_batch(int timeout_ms) {
     return b;
 }
 
+// The storage pool; see Batch in render.h. Bounded so that a frontend that lets batches
+// pile up somewhere does not keep that many frames' worth of capacity alive.
+// Never destroyed: batches are recycled from static destructors at exit, and the pool
+// must still be there when they are.
+static std::mutex& pool_mutex() { static auto* m = new std::mutex; return *m; }
+static std::vector<Batch>& pool() { static auto* p = new std::vector<Batch>; return *p; }
+static constexpr size_t kMaxPooled = 12;
+
+Batch::~Batch() {
+    if (pooled) return;
+    Batch b;
+    b.pooled = true;
+    b.cmds.swap(cmds);
+    b.verts.swap(verts);
+    b.indices.swap(indices);
+    b.states.swap(states);
+    b.new_textures.swap(new_textures);
+    // Emptied now, on the thread that is done with it: the decoded textures go with it.
+    b.cmds.clear();
+    b.verts.clear();
+    b.indices.clear();
+    b.states.clear();
+    b.new_textures.clear();
+    std::lock_guard<std::mutex> lk(pool_mutex());
+    if (pool().size() < kMaxPooled) pool().push_back(std::move(b));
+}
+
 static Batch& batch() {
-    if (!g_batch) g_batch = std::make_unique<Batch>();
+    if (!g_batch) {
+        g_batch = std::make_unique<Batch>();
+        std::lock_guard<std::mutex> lk(pool_mutex());
+        if (!pool().empty()) {
+            *g_batch = std::move(pool().back());
+            pool().pop_back();
+            g_batch->pooled = false;
+        }
+    }
     return *g_batch;
 }
 

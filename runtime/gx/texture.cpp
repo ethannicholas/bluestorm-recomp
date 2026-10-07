@@ -185,17 +185,34 @@ static void decode_level(const uint8_t* src, uint32_t fmt, uint32_t w, uint32_t 
     }
 }
 
+// FNV-1a over 8-byte words, for texture change detection. Every texture a frame samples
+// is hashed once per frame, several megabytes in a race, and a single FNV chain is bound
+// by the latency of its multiply: four independent lanes run in parallel and are folded
+// together at the end, which is about three times the throughput on the same data.
 static uint64_t hash_bytes(const uint8_t* p, size_t n, uint64_t seed) {
-    // FNV-1a over 8-byte words (fast enough for texture change detection).
-    uint64_t h = 0xcbf29ce484222325ull ^ seed;
+    constexpr uint64_t kPrime = 0x100000001b3ull;
+    uint64_t h0 = 0xcbf29ce484222325ull ^ seed, h1 = h0 ^ 0x9e3779b97f4a7c15ull,
+             h2 = h0 ^ 0x3c6ef372fe94f82bull, h3 = h0 ^ 0xdaa66d2b78dd3b40ull;
     size_t i = 0;
+    for (; i + 32 <= n; i += 32) {
+        uint64_t w0, w1, w2, w3;
+        memcpy(&w0, p + i, 8);
+        memcpy(&w1, p + i + 8, 8);
+        memcpy(&w2, p + i + 16, 8);
+        memcpy(&w3, p + i + 24, 8);
+        h0 = (h0 ^ w0) * kPrime; h0 ^= h0 >> 29;
+        h1 = (h1 ^ w1) * kPrime; h1 ^= h1 >> 29;
+        h2 = (h2 ^ w2) * kPrime; h2 ^= h2 >> 29;
+        h3 = (h3 ^ w3) * kPrime; h3 ^= h3 >> 29;
+    }
+    uint64_t h = (h0 ^ (h1 * kPrime)) ^ ((h2 ^ (h3 * kPrime)) * kPrime);
     for (; i + 8 <= n; i += 8) {
         uint64_t w;
         memcpy(&w, p + i, 8);
-        h = (h ^ w) * 0x100000001b3ull;
+        h = (h ^ w) * kPrime;
         h ^= h >> 29;
     }
-    for (; i < n; i++) h = (h ^ p[i]) * 0x100000001b3ull;
+    for (; i < n; i++) h = (h ^ p[i]) * kPrime;
     return h;
 }
 

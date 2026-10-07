@@ -75,6 +75,19 @@ struct Batch {
     std::vector<uint32_t> indices;
     std::vector<PixelState> states;
     std::vector<std::shared_ptr<TexData>> new_textures;
+
+    // A race frame's batch is eight megabytes or so, and a fresh one grew into that
+    // from nothing every frame -- reallocating and copying the vertex array a dozen
+    // times over on the guest thread, then freeing it all on the render thread. So a
+    // batch that is destroyed hands its storage, capacity intact, to a pool the front
+    // end builds the next one from. The hand-off is in the destructor so that no
+    // frontend has to know; `pooled` marks the copies resting in the pool, which must
+    // not hand themselves over again.
+    Batch() = default;
+    Batch(Batch&&) = default;
+    Batch& operator=(Batch&&) = default;
+    ~Batch();
+    bool pooled = false;
 };
 
 // Submission queue (guest thread -> render thread)
