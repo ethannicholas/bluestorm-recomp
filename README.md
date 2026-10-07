@@ -56,12 +56,27 @@ In rough priority order. Everything here reproduces; where there is a lead it is
 the next attempt does not start from nothing.
 
 1. **Performance.** Ocean City Harbor did not hold 30 fps. Dropping the per-display-frame repaint
-   bought about 15%; the next candidates are deduplicating `PixelState` by content and the triple
-   scene render the stereo path does (one flat into the EFB, then one per eye). It is **not** the
-   pixel pipeline: raising the EFB from 640×528 to 2560×2112, sixteen times the pixels, costs
-   about 2% and nothing beyond that scales with area — see
-   [How many pixels the theater panel gets](#how-many-pixels-the-theater-panel-gets). Look in the
-   recompiled guest code and in the per-draw CPU work instead.
+   bought about 15%. It is **not** the pixel pipeline: raising the EFB from 640×528 to 2560×2112,
+   sixteen times the pixels, costs about 2% and nothing beyond that scales with area — see
+   [How many pixels the theater panel gets](#how-many-pixels-the-theater-panel-gets). It is CPU
+   work, on both threads, and `WR_FRAMETIME=1` says which.
+
+   Done so far, profiled on a Mac with the scripted route under *Debugging*: the brief drop to
+   single digits at a fixed spot was the render thread compiling a burst of new TEV shaders on
+   first use, now built at startup from a cache (see [Shader cache](#shader-cache)); the GX
+   front end on the guest thread went from 5.5 to 3.1 ms a frame (a pixel-state snapshot per
+   draw command that was identical 12 times in 13, vertices repeated to make triangle lists
+   rather than indexed, a batch reallocated from nothing every frame, a serial texture hash);
+   and the render thread from 4.9 to 3.2 ms (a full state re-application per draw where 94% of
+   them change one texture). The guest ceiling in the race is now ~115 fps on an M-series Mac,
+   8.7 ms a frame, two thirds of it the recompiled game code — which `-O3` does not help.
+
+   What is left, in order of likely value on the headset: the stereo path issues every draw
+   three times (one flat pass into the EFB, then one per eye); the flat pass's main-scene draws
+   feed only copies the eyes substitute, except the partial copy the submerged tint samples,
+   which is why they cannot simply be skipped. A thousand draws per pass is a thousand driver
+   calls, and the remaining per-vertex work (a matrix multiply, the texgens, a 116-byte vertex)
+   only moves off the guest thread by doing the transform in the vertex shader.
 
 ## Supported version
 
