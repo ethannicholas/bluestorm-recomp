@@ -476,6 +476,11 @@ static bool pos_matrix_is_view_space(uint8_t pnmtx) {
 // `view_space` is pos_matrix_is_view_space() for the draw: the game put these vertices in
 // view space itself instead of placing them in the world. See PixelState.
 static uint32_t snapshot_state(bool view_space) {
+    // Nothing the state is built from has changed since the last draw, so the answer is
+    // the last answer. This is the common case by a wide margin -- see State::pixel_dirty.
+    if (g_have_last_state && !g_state.pixel_dirty && g_last_state.view_space == view_space)
+        return g_last_state_idx;
+    g_state.pixel_dirty = false;
     PixelState st;
     memset(&st, 0, sizeof(st));
     st.view_space = view_space;

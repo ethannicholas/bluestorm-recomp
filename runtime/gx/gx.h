@@ -17,6 +17,11 @@ struct State {
     uint32_t xf_mem[0x800];   // 0x0000-0x07FF: matrices, lights
     uint32_t xf_regs[0x100];  // 0x1000-0x10FF
     uint32_t bp_mask = 0xFFFFFF;
+    // Set whenever a BP or XF register the pixel state is built from takes a new value;
+    // cleared by the front end once it has snapshotted. A race frame issues some 13,000
+    // draw commands but changes this state only about 1,000 times, so between changes the
+    // front end hands back the last snapshot without building one to compare.
+    bool pixel_dirty = true;
 };
 
 extern State g_state;

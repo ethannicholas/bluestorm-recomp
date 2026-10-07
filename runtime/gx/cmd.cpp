@@ -104,7 +104,15 @@ static void load_xf(uint32_t addr, uint32_t n, const uint8_t* data) {
     for (uint32_t i = 0; i < n; i++, addr++) {
         uint32_t v = be32(data + 4 * i);
         if (addr < 0x800) g_state.xf_mem[addr] = v;
-        else if (addr >= 0x1000 && addr < 0x1100) g_state.xf_regs[addr - 0x1000] = v;
+        else if (addr >= 0x1000 && addr < 0x1100) {
+            const uint32_t reg = addr - 0x1000;
+            uint32_t& r = g_state.xf_regs[reg];
+            if (r == v) continue;
+            r = v;
+            // The ones the pixel state is built from: colour channel count, viewport,
+            // projection, texgen count. The rest feed the vertex transform only.
+            if (reg == 0x09 || (reg >= 0x1A && reg <= 0x26) || reg == 0x3F) g_state.pixel_dirty = true;
+        }
     }
 }
 
@@ -128,6 +136,7 @@ static void load_bp(uint32_t w) {
         v = (g_state.bp[reg] & ~g_state.bp_mask) | (v & g_state.bp_mask);
         g_state.bp_mask = 0xFFFFFF;
     }
+    if (g_state.bp[reg] != v) g_state.pixel_dirty = true;
     g_state.bp[reg] = v;
     switch (reg) {
     case 0x45:  // PE_DONE
@@ -138,8 +147,11 @@ static void load_bp(uint32_t w) {
     case 0x52: {  // copy execute
         uint32_t dest = (g_state.bp[0x4B] & 0x1FFFFF) << 5;
         renderer_efb_copy(dest, (v >> 14) & 1);
+        // The copy may have minted a texture id for an address a draw samples.
+        g_state.pixel_dirty = true;
         break;
     }
+    case 0x65: g_state.pixel_dirty = true; break;  // TLUT load: palette contents changed
     }
     renderer_bp_write(reg, v);
 }
