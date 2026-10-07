@@ -10,6 +10,12 @@ namespace gx {
 // Vertex after the XF stage (except projection): view-space position, lit colors,
 // generated texture coordinates.
 struct GpuVertex {
+    // Does nothing on purpose. The batch's vertex array is grown with resize(), which
+    // value-initialises what it adds -- and for a trivial type that means zeroing all
+    // 116 of these bytes immediately before the transform writes every one of them. A
+    // user-provided constructor makes that default-initialisation instead, which leaves
+    // them alone.
+    GpuVertex() {}
     float pos[3];
     uint8_t col[2][4];
     float tex[8][3];
