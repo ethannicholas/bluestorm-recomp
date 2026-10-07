@@ -234,12 +234,16 @@ static const uint8_t* attr_ptr(const uint8_t*& p, uint32_t desc, int array, uint
     return phys_ptr(base + idx * stride);
 }
 
+// The matrix indices a vertex that does not carry its own falls back to. XF registers,
+// so they belong to the per-draw plan rather than to the CP-derived Layout.
+static uint8_t g_defpnmtx, g_deftex[8];
+
 static void decode_vertex(const Layout& L, const uint8_t*& p, InVertex& v) {
-    uint32_t mi0 = g_state.xf_regs[0x18], mi1 = g_state.xf_regs[0x19];
-    v.pnmtx = L.pnmtx ? *p++ : (mi0 & 63);
-    uint32_t deftex[8] = {(mi0 >> 6) & 63, (mi0 >> 12) & 63, (mi0 >> 18) & 63, (mi0 >> 24) & 63,
-                          mi1 & 63, (mi1 >> 6) & 63, (mi1 >> 12) & 63, (mi1 >> 18) & 63};
-    for (int i = 0; i < 8; i++) v.texmtx[i] = (L.texmtx & (1u << i)) ? *p++ : deftex[i];
+    v.pnmtx = L.pnmtx ? *p++ : g_defpnmtx;
+    memcpy(v.texmtx, g_deftex, sizeof(v.texmtx));
+    if (L.texmtx)
+        for (int i = 0; i < 8; i++)
+            if (L.texmtx & (1u << i)) v.texmtx[i] = *p++;
     if (L.pos_desc) {
         const uint8_t* q = attr_ptr(p, L.pos_desc, 0, L.pos_cnt * comp_size(L.pos_fmt));
         v.pos[0] = read_comp(q, L.pos_fmt, L.pos_scale);
@@ -284,14 +288,58 @@ struct Vec3 { float x, y, z; };
 static inline Vec3 v3(float x, float y, float z) { return {x, y, z}; }
 static inline float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static inline Vec3 sub(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+// One division and three multiplies rather than three divisions. This is the hottest
+// floating-point operation in the front end -- once for the normal and once per light
+// per vertex -- and a division is not pipelined on the cores this runs on.
+//
+// The reciprocal costs up to an ulp against dividing three times. The result is a
+// direction fed to the lighting, whose output is quantised to eight bits per channel
+// before it leaves this file, so the difference cannot reach a pixel; if an accuracy
+// question ever lands here, this is the line to put back.
 static inline Vec3 normalize(Vec3 a) {
     float l = sqrtf(dot(a, a));
-    return l > 0 ? Vec3{a.x / l, a.y / l, a.z / l} : a;
+    if (!(l > 0)) return a;
+    const float inv = 1.0f / l;
+    return Vec3{a.x * inv, a.y * inv, a.z * inv};
 }
 
-static void unpack_rgba(uint32_t c, float out[4]) {
-    out[0] = ((c >> 24) & 0xFF) / 255.0f; out[1] = ((c >> 16) & 0xFF) / 255.0f;
-    out[2] = ((c >> 8) & 0xFF) / 255.0f;  out[3] = (c & 0xFF) / 255.0f;
+// Eight-bit channel to float, by table. Four divisions per unpack and up to eight
+// unpacks per vertex made this one of the most expensive things in the transform, and a
+// table of the 256 possible results is exactly equal to the division it replaces.
+static const float kU8toF[256] = {
+#define WR_U8_ROW(n) (n) / 255.0f, (n + 1) / 255.0f, (n + 2) / 255.0f, (n + 3) / 255.0f,                      (n + 4) / 255.0f, (n + 5) / 255.0f, (n + 6) / 255.0f, (n + 7) / 255.0f
+#define WR_U8_ROW32(n) WR_U8_ROW(n), WR_U8_ROW(n + 8), WR_U8_ROW(n + 16), WR_U8_ROW(n + 24)
+    WR_U8_ROW32(0),   WR_U8_ROW32(32),  WR_U8_ROW32(64),  WR_U8_ROW32(96),
+    WR_U8_ROW32(128), WR_U8_ROW32(160), WR_U8_ROW32(192), WR_U8_ROW32(224),
+#undef WR_U8_ROW32
+#undef WR_U8_ROW
+};
+
+static inline void unpack_rgba(uint32_t c, float out[4]) {
+    out[0] = kU8toF[(c >> 24) & 0xFF]; out[1] = kU8toF[(c >> 16) & 0xFF];
+    out[2] = kU8toF[(c >> 8) & 0xFF];  out[3] = kU8toF[c & 0xFF];
+}
+
+// A light's parameters, read out of XF memory once per draw rather than once per vertex
+// per light. Twelve unpacked floats, a colour unpack and a normalise is a great deal of
+// work to repeat for every vertex when none of it changes within a draw, and this game
+// lights most of what it draws.
+struct LightParams {
+    float col[4];
+    Vec3 pos, dir, cosatt, distatt, distatt_n;
+};
+static LightParams g_lights[8];
+static uint32_t g_lights_loaded;   // which of g_lights are valid for the current draw
+
+static void load_light(int i) {
+    const uint32_t base = 0x600 + i * 0x10;
+    LightParams& L = g_lights[i];
+    unpack_rgba(g_state.xf_mem[base + 3], L.col);
+    L.pos = v3(xf_f(base + 10), xf_f(base + 11), xf_f(base + 12));
+    L.dir = v3(xf_f(base + 13), xf_f(base + 14), xf_f(base + 15));
+    L.cosatt = v3(xf_f(base + 4), xf_f(base + 5), xf_f(base + 6));
+    L.distatt = v3(xf_f(base + 7), xf_f(base + 8), xf_f(base + 9));
+    L.distatt_n = normalize(L.distatt);
 }
 
 // Compute light accumulation for one channel component set (rgb or alpha).
@@ -301,21 +349,20 @@ static void light_channel(uint32_t ctrl, Vec3 pos, Vec3 nrm, float lacc[4], bool
     uint32_t attn = (ctrl >> 9) & 3;
     for (int i = 0; i < 8; i++) {
         if (!(mask & (1u << i))) continue;
-        uint32_t base = 0x600 + i * 0x10;
-        uint32_t lc = g_state.xf_mem[base + 3];
-        float col[4];
-        unpack_rgba(lc, col);
-        Vec3 lpos = v3(xf_f(base + 10), xf_f(base + 11), xf_f(base + 12));
-        Vec3 ldir_param = v3(xf_f(base + 13), xf_f(base + 14), xf_f(base + 15));
-        Vec3 cosatt = v3(xf_f(base + 4), xf_f(base + 5), xf_f(base + 6));
-        Vec3 distatt = v3(xf_f(base + 7), xf_f(base + 8), xf_f(base + 9));
+        if (!(g_lights_loaded & (1u << i))) {
+            load_light(i);
+            g_lights_loaded |= 1u << i;
+        }
+        const LightParams& L = g_lights[i];
+        const float* col = L.col;
+        const Vec3 lpos = L.pos, ldir_param = L.dir, cosatt = L.cosatt, distatt = L.distatt;
         Vec3 ldir;
         float a = 1.0f;
         if (attn == 1) {  // specular
             ldir = normalize(sub(lpos, pos));  // GXInitSpecularDir puts the light "far away" along -dir
             float nd = dot(nrm, ldir);
             float h = nd >= 0 ? std::max(0.0f, dot(nrm, ldir_param)) : 0.0f;
-            Vec3 da = diff == 0 ? distatt : normalize(distatt);
+            Vec3 da = diff == 0 ? distatt : L.distatt_n;
             float num = std::max(0.0f, cosatt.x + cosatt.y * h + cosatt.z * h * h);
             float den = da.x + da.y * h + da.z * h * h;
             a = den != 0 ? num / den : 0.0f;
@@ -339,13 +386,35 @@ static void light_channel(uint32_t ctrl, Vec3 pos, Vec3 nrm, float lacc[4], bool
     }
 }
 
+// One colour channel's registers, unpacked once per draw. The material and ambient
+// registers were unpacked four times per vertex between them, and all four readings are
+// of the same two registers.
+struct ChanParams {
+    uint32_t cctrl, actrl;
+    float mat[4], amb[4];
+};
+static ChanParams g_chan[2];
+
+static void load_chan(int chan) {
+    ChanParams& C = g_chan[chan];
+    C.cctrl = g_state.xf_regs[0x0E + chan];
+    C.actrl = g_state.xf_regs[0x10 + chan];
+    unpack_rgba(g_state.xf_regs[0x0C + chan], C.mat);
+    unpack_rgba(g_state.xf_regs[0x0A + chan], C.amb);
+}
+
 static uint32_t compute_color(int chan, const InVertex& v, Vec3 pos, Vec3 nrm) {
-    uint32_t cctrl = g_state.xf_regs[0x0E + chan], actrl = g_state.xf_regs[0x10 + chan];
-    uint32_t amb_reg = g_state.xf_regs[0x0A + chan], mat_reg = g_state.xf_regs[0x0C + chan];
-    float mat[4], amb[4], out[4];
+    const ChanParams& C = g_chan[chan];
+    const uint32_t cctrl = C.cctrl, actrl = C.actrl;
+    // The vertex's own colour, needed only where one of the four selectors asks for it.
+    float vcol[4];
+    if ((cctrl | actrl) & 0x41) unpack_rgba(v.col[chan], vcol);
+    const float* mat = (cctrl & 1) ? vcol : C.mat;
+    const float* amb = (cctrl & 0x40) ? vcol : C.amb;
+    const float* amat = (actrl & 1) ? vcol : C.mat;
+    const float* aamb = (actrl & 0x40) ? vcol : C.amb;
+    float out[4];
     // color
-    unpack_rgba((cctrl & 1) ? v.col[chan] : mat_reg, mat);
-    unpack_rgba((cctrl & 0x40) ? v.col[chan] : amb_reg, amb);
     float rgb[3] = {mat[0], mat[1], mat[2]};
     if (cctrl & 2) {
         float lacc[4] = {amb[0], amb[1], amb[2], 0};
@@ -353,9 +422,6 @@ static uint32_t compute_color(int chan, const InVertex& v, Vec3 pos, Vec3 nrm) {
         for (int k = 0; k < 3; k++) rgb[k] = mat[k] * std::clamp(lacc[k], 0.0f, 1.0f);
     }
     // alpha
-    float amat[4], aamb[4];
-    unpack_rgba((actrl & 1) ? v.col[chan] : mat_reg, amat);
-    unpack_rgba((actrl & 0x40) ? v.col[chan] : amb_reg, aamb);
     float al = amat[3];
     if (actrl & 2) {
         float lacc[4] = {0, 0, 0, aamb[3]};
@@ -371,35 +437,98 @@ static uint32_t compute_color(int chan, const InVertex& v, Vec3 pos, Vec3 nrm) {
 // ---------------------------------------------------------------------------
 // Transform one vertex
 // ---------------------------------------------------------------------------
+
+// What the transform reads that cannot change within a draw: the channel and texgen
+// counts, and each texgen's bit-packed description. A draw here averages under eight
+// vertices, so unpacking these per vertex was a large share of the transform.
+struct GenParams {
+    uint32_t proj, form, type, row, srcrow, light, post, postnorm;
+};
+// Whether any texgen embosses, which is the only thing that uses the transformed
+// binormal and tangent. Without one, normalising them per vertex -- two square roots
+// and six divisions -- produced values nothing read.
+static bool g_need_tangents;
+static GenParams g_gen[8];
+static uint32_t g_numcol, g_ntex;
+static bool g_dualtex;
+
+// The position and normal matrices for the pnmtx last seen, so a draw whose vertices all
+// index one matrix -- every draw in this game -- reads it out of XF memory once. Reset
+// per draw, since a matrix may be loaded between draws.
+static uint32_t g_mtx_cached;
+static float g_posmtx[12], g_nrmmtx[9];
+
+static void load_matrices(uint8_t pnmtx) {
+    const uint32_t m = (pnmtx & 63) * 4;
+    for (int i = 0; i < 12; i++) g_posmtx[i] = xf_f(m + i);
+    const uint32_t n = 0x400 + ((pnmtx & 31) * 3);
+    for (int i = 0; i < 9; i++) g_nrmmtx[i] = xf_f(n + i);
+    g_mtx_cached = pnmtx;
+}
+
+// Called once per draw, before the vertex loop.
+static void load_xf_plan() {
+    g_numcol = g_state.xf_regs[0x09] & 3;
+    g_ntex = g_state.xf_regs[0x3F] & 15;
+    g_dualtex = g_state.xf_regs[0x12] & 1;
+    const uint32_t mi0 = g_state.xf_regs[0x18], mi1 = g_state.xf_regs[0x19];
+    g_defpnmtx = (uint8_t)(mi0 & 63);
+    g_deftex[0] = (uint8_t)((mi0 >> 6) & 63);  g_deftex[1] = (uint8_t)((mi0 >> 12) & 63);
+    g_deftex[2] = (uint8_t)((mi0 >> 18) & 63); g_deftex[3] = (uint8_t)((mi0 >> 24) & 63);
+    g_deftex[4] = (uint8_t)(mi1 & 63);         g_deftex[5] = (uint8_t)((mi1 >> 6) & 63);
+    g_deftex[6] = (uint8_t)((mi1 >> 12) & 63); g_deftex[7] = (uint8_t)((mi1 >> 18) & 63);
+    g_need_tangents = false;
+    for (uint32_t t = 0; t < g_ntex && t < 8; t++) {
+        const uint32_t info = g_state.xf_regs[0x40 + t];
+        const uint32_t post = g_state.xf_regs[0x50 + t];
+        GenParams& G = g_gen[t];
+        G.proj = (info >> 1) & 1;
+        G.form = (info >> 2) & 1;
+        G.type = (info >> 4) & 7;
+        G.row = (info >> 7) & 31;
+        G.srcrow = (info >> 12) & 7;
+        G.light = (info >> 15) & 7;
+        G.post = post & 63;
+        G.postnorm = (post >> 8) & 1;
+        if (G.type == 1) g_need_tangents = true;   // emboss
+    }
+    load_chan(0);
+    load_chan(1);
+    g_lights_loaded = 0;
+    g_mtx_cached = 0xFFFFFFFFu;
+}
+
 static void transform_vertex(const InVertex& v, GpuVertex& o, bool has_nrm) {
-    uint32_t m = (v.pnmtx & 63) * 4;
+    if (v.pnmtx != g_mtx_cached) load_matrices(v.pnmtx);
+    const float* pm = g_posmtx;
     const float px = v.pos[0], py = v.pos[1], pz = v.pos[2];
-    Vec3 pos = v3(xf_f(m + 0) * px + xf_f(m + 1) * py + xf_f(m + 2) * pz + xf_f(m + 3),
-                  xf_f(m + 4) * px + xf_f(m + 5) * py + xf_f(m + 6) * pz + xf_f(m + 7),
-                  xf_f(m + 8) * px + xf_f(m + 9) * py + xf_f(m + 10) * pz + xf_f(m + 11));
+    Vec3 pos = v3(pm[0] * px + pm[1] * py + pm[2] * pz + pm[3],
+                  pm[4] * px + pm[5] * py + pm[6] * pz + pm[7],
+                  pm[8] * px + pm[9] * py + pm[10] * pz + pm[11]);
     o.pos[0] = pos.x; o.pos[1] = pos.y; o.pos[2] = pos.z;
-    uint32_t n = 0x400 + ((v.pnmtx & 31) * 3);
+    const float* nm = g_nrmmtx;
     auto nmul = [&](const float* a) {
-        return normalize(v3(xf_f(n + 0) * a[0] + xf_f(n + 1) * a[1] + xf_f(n + 2) * a[2],
-                            xf_f(n + 3) * a[0] + xf_f(n + 4) * a[1] + xf_f(n + 5) * a[2],
-                            xf_f(n + 6) * a[0] + xf_f(n + 7) * a[1] + xf_f(n + 8) * a[2]));
+        return normalize(v3(nm[0] * a[0] + nm[1] * a[1] + nm[2] * a[2],
+                            nm[3] * a[0] + nm[4] * a[1] + nm[5] * a[2],
+                            nm[6] * a[0] + nm[7] * a[1] + nm[8] * a[2]));
     };
     Vec3 nrm = has_nrm ? nmul(v.nrm) : v3(0, 0, 1);
-    Vec3 bin = has_nrm ? nmul(v.bin) : v3(0, 0, 0);
-    Vec3 tan = has_nrm ? nmul(v.tan) : v3(0, 0, 0);
+    // Only an emboss texgen reads these; see g_need_tangents.
+    Vec3 bin = v3(0, 0, 0), tan = v3(0, 0, 0);
+    if (has_nrm && g_need_tangents) { bin = nmul(v.bin); tan = nmul(v.tan); }
 
-    uint32_t numcol = g_state.xf_regs[0x09] & 3;
+    const uint32_t numcol = g_numcol;
     for (int ch = 0; ch < 2; ch++) {
         uint32_t c = ch < (int)numcol ? compute_color(ch, v, pos, nrm) : 0xFFFFFFFF;
         o.col[ch][0] = c >> 24; o.col[ch][1] = c >> 16; o.col[ch][2] = c >> 8; o.col[ch][3] = (uint8_t)c;
     }
 
-    uint32_t ntex = g_state.xf_regs[0x3F] & 15;
-    bool dualtex = g_state.xf_regs[0x12] & 1;
+    const uint32_t ntex = g_ntex;
+    const bool dualtex = g_dualtex;
     for (uint32_t t = 0; t < 8; t++) {
         if (t >= ntex) { o.tex[t][0] = o.tex[t][1] = 0; o.tex[t][2] = 1; continue; }
-        uint32_t info = g_state.xf_regs[0x40 + t];
-        uint32_t proj = (info >> 1) & 1, form = (info >> 2) & 1, type = (info >> 4) & 7, row = (info >> 7) & 31;
+        const GenParams& G = g_gen[t];
+        const uint32_t proj = G.proj, form = G.form, type = G.type, row = G.row;
         float src[4] = {0, 0, 1, 1};
         switch (row) {
         case 0: src[0] = v.pos[0]; src[1] = v.pos[1]; src[2] = v.pos[2]; break;
@@ -417,28 +546,30 @@ static void transform_vertex(const InVertex& v, GpuVertex& o, bool has_nrm) {
             tt = xf_f(tm + 4) * src[0] + xf_f(tm + 5) * src[1] + xf_f(tm + 6) * src[2] + xf_f(tm + 7);
             if (proj) q = xf_f(tm + 8) * src[0] + xf_f(tm + 9) * src[1] + xf_f(tm + 10) * src[2] + xf_f(tm + 11);
         } else if (type == 1) {  // emboss
-            uint32_t srcrow = (info >> 12) & 7, light = (info >> 15) & 7;
-            uint32_t base = 0x600 + light * 0x10;
-            Vec3 ldir = normalize(sub(v3(xf_f(base + 10), xf_f(base + 11), xf_f(base + 12)), pos));
+            const uint32_t srcrow = G.srcrow, light = G.light;
+            if (!(g_lights_loaded & (1u << light))) {
+                load_light((int)light);
+                g_lights_loaded |= 1u << light;
+            }
+            Vec3 ldir = normalize(sub(g_lights[light].pos, pos));
             s = o.tex[srcrow][0] + dot(ldir, tan);
             tt = o.tex[srcrow][1] + dot(ldir, bin);
             q = o.tex[srcrow][2];
         } else {  // color0/color1 -> s,t
             int ch = type == 2 ? 0 : 1;
-            s = o.col[ch][0] / 255.0f;
-            tt = o.col[ch][1] / 255.0f;
+            s = kU8toF[o.col[ch][0]];
+            tt = kU8toF[o.col[ch][1]];
         }
         if (dualtex && type == 0) {
-            uint32_t post = g_state.xf_regs[0x50 + t];
-            uint32_t pm = 0x500 + (post & 63) * 4;
+            const uint32_t ptm = 0x500 + G.post * 4;
             float in[3] = {s, tt, q};
-            if ((post >> 8) & 1) {
+            if (G.postnorm) {
                 float l = sqrtf(in[0] * in[0] + in[1] * in[1] + in[2] * in[2]);
                 if (l > 0) { in[0] /= l; in[1] /= l; in[2] /= l; }
             }
-            s = xf_f(pm + 0) * in[0] + xf_f(pm + 1) * in[1] + xf_f(pm + 2) * in[2] + xf_f(pm + 3);
-            tt = xf_f(pm + 4) * in[0] + xf_f(pm + 5) * in[1] + xf_f(pm + 6) * in[2] + xf_f(pm + 7);
-            q = xf_f(pm + 8) * in[0] + xf_f(pm + 9) * in[1] + xf_f(pm + 10) * in[2] + xf_f(pm + 11);
+            s = xf_f(ptm + 0) * in[0] + xf_f(ptm + 1) * in[1] + xf_f(ptm + 2) * in[2] + xf_f(ptm + 3);
+            tt = xf_f(ptm + 4) * in[0] + xf_f(ptm + 5) * in[1] + xf_f(ptm + 6) * in[2] + xf_f(ptm + 7);
+            q = xf_f(ptm + 8) * in[0] + xf_f(ptm + 9) * in[1] + xf_f(ptm + 10) * in[2] + xf_f(ptm + 11);
         }
         o.tex[t][0] = s; o.tex[t][1] = tt; o.tex[t][2] = q;
     }
@@ -582,7 +713,12 @@ void renderer_draw(const DrawCall& dc) {
 static void draw_impl(const DrawCall& dc) {
     if (dc.count == 0) return;
     const Layout& L = layout_for(dc.vat);
-    g_in.resize(dc.count);
+    // Grown, never shrunk: resize() value-initialises whatever it adds, and this buffer
+    // is refilled from scratch by decode_vertex every draw, so letting it follow a draw
+    // count that swings between one and a few hundred spent its time zeroing bytes that
+    // were about to be overwritten.
+    if (g_in.size() < dc.count) g_in.resize(dc.count);
+    load_xf_plan();
     const uint8_t* p = dc.data;
     for (uint32_t i = 0; i < dc.count; i++) decode_vertex(L, p, g_in[i]);
     // Transformed straight into the batch, each vertex once; the primitive's shape is
