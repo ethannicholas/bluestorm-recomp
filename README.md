@@ -110,9 +110,8 @@ The build uses the first `.iso` it finds in `rom/`. To use an image elsewhere, p
 Run it from the repository root: the memory card is created in `saves/` relative to the
 current directory.
 
-The first time through a course the game pauses briefly now and then while shaders are
-compiled. They are cached in `saves/shaders.bin` and built before the game starts on later
-runs, so this only happens once. Deleting the cache is always safe.
+There may be some shader compilation stutters during your first playthrough, but the shaders cache
+should take care of this on subsequent runs.
 
 ## Running on a Quest 3
 
@@ -206,14 +205,6 @@ msaa 4                   # samples per eye pixel; 0 for none
 start_in_stereo 0        # start in stereo rather than theater
 transition_s 1           # seconds the morph between the two views takes; 0 snaps
 ```
-
-`world_pitch_deg` is the one most worth knowing about. The game's chase camera looks down at
-the water by about 23 degrees; the default takes that tilt back out so the sea is level with
-your room, which means you look down at your own ski the way you would on a real one. `0`
-renders the view exactly as the game frames it. If stereo feels heavy on a warm headset, try
-`eye_scale 1.2`.
-
-The values in use are logged at startup (`adb logcat -s waverace`).
 
 ## Controls
 
