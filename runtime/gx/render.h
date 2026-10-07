@@ -61,13 +61,18 @@ struct Cmd {
     CmdType type;
     uint8_t prim;       // GL-ish: 0 = triangles, 1 = lines, 2 = points
     uint32_t state;     // index into Batch::states
-    uint32_t first, count;
+    uint32_t first, count;  // range of Batch::indices
     EfbCopyCmd copy;
 };
 
 struct Batch {
     std::vector<Cmd> cmds;
+    // Each GX vertex once, in the order the draws delivered them; the quads, strips and
+    // fans the game draws with are turned into lists by the indices instead of by
+    // repeating vertices, which would nearly double the buffer -- and this buffer is
+    // uploaded and fetched for every pass of every frame.
     std::vector<GpuVertex> verts;
+    std::vector<uint32_t> indices;
     std::vector<PixelState> states;
     std::vector<std::shared_ptr<TexData>> new_textures;
 };

@@ -516,7 +516,6 @@ static uint32_t snapshot_state(bool view_space) {
 // Draw
 // ---------------------------------------------------------------------------
 static std::vector<InVertex> g_in;
-static std::vector<GpuVertex> g_out;
 
 static void draw_impl(const DrawCall& dc);
 
@@ -534,9 +533,14 @@ static void draw_impl(const DrawCall& dc) {
     g_in.resize(dc.count);
     const uint8_t* p = dc.data;
     for (uint32_t i = 0; i < dc.count; i++) decode_vertex(L, p, g_in[i]);
-    g_out.resize(dc.count);
+    // Transformed straight into the batch, each vertex once; the primitive's shape is
+    // expressed by the indices below.
+    Batch& b = batch();
+    const uint32_t base = (uint32_t)b.verts.size();
+    b.verts.resize(base + dc.count);
+    GpuVertex* out = b.verts.data() + base;
     bool has_nrm = L.nrm_desc != 0;
-    for (uint32_t i = 0; i < dc.count; i++) transform_vertex(g_in[i], g_out[i], has_nrm);
+    for (uint32_t i = 0; i < dc.count; i++) transform_vertex(g_in[i], out[i], has_nrm);
 
     // WR_MTXLOG=<n> prints the position matrix and projection of every draw in the nth
     // frame after the race starts. It keys off the game's own race flag rather than a
@@ -580,14 +584,13 @@ static void draw_impl(const DrawCall& dc) {
                 xf_f(m + 0), xf_f(m + 1), xf_f(m + 2), xf_f(m + 3),
                 xf_f(m + 4), xf_f(m + 5), xf_f(m + 6), xf_f(m + 7),
                 xf_f(m + 8), xf_f(m + 9), xf_f(m + 10), xf_f(m + 11),
-                g_out[0].pos[0], g_out[0].pos[1], g_out[0].pos[2]);
+                out[0].pos[0], out[0].pos[1], out[0].pos[2]);
         fprintf(stderr, "[prj] %3u type=%d %9.4f %9.4f %9.4f %9.4f %9.4f %9.4f\n", mtx_draw,
                 (int)g_state.xf_regs[0x26], xfr_f(0x20), xfr_f(0x21), xfr_f(0x22),
                 xfr_f(0x23), xfr_f(0x24), xfr_f(0x25));
         mtx_draw++;
     }
 
-    Batch& b = batch();
     // WR_PNMLOG=a-b lists the position matrices a frame actually uses, one line each time
     // the matrix changes, over a window of frames. What it is for: an object the game
     // places in front of the camera is told apart from world geometry by its rotation
@@ -620,12 +623,10 @@ static void draw_impl(const DrawCall& dc) {
                     cur[4], cur[5], cur[6], cur[7], cur[8], cur[9], cur[10], cur[11]);
         }
     }
-    // The guard matters: a draw with no vertices reaches here, and the empty-vertex exit
-    // is further down, past this.
-    uint32_t state = snapshot_state(dc.count && pos_matrix_is_view_space(g_in[0].pnmtx));
-    uint32_t first = (uint32_t)b.verts.size();
+    uint32_t state = snapshot_state(pos_matrix_is_view_space(g_in[0].pnmtx));
+    uint32_t first = (uint32_t)b.indices.size();
     uint8_t prim = 0;
-    auto push = [&](uint32_t i) { b.verts.push_back(g_out[i]); };
+    auto push = [&](uint32_t i) { b.indices.push_back(base + i); };
     switch (dc.prim) {
     case PRIM_QUADS: case PRIM_QUADS2:
         for (uint32_t i = 0; i + 3 < dc.count; i += 4) { push(i); push(i + 1); push(i + 2); push(i); push(i + 2); push(i + 3); }
@@ -655,7 +656,7 @@ static void draw_impl(const DrawCall& dc) {
         for (uint32_t i = 0; i < dc.count; i++) push(i);
         break;
     }
-    uint32_t count = (uint32_t)b.verts.size() - first;
+    uint32_t count = (uint32_t)b.indices.size() - first;
     if (!count) return;
     // Merge with the previous draw when state and primitive type match.
     if (!b.cmds.empty()) {
@@ -761,7 +762,8 @@ void renderer_efb_copy(uint32_t dest_addr, bool /*unused*/) {
             }
             fprintf(stderr, "      num_texgens=%u (bp genmode %u) xf texgen0=%08X texgen1=%08X\n", ps.num_texgens, ps.bp[0] & 15,
                     g_state.xf_regs[0x40], g_state.xf_regs[0x41]);
-            for (uint32_t v = cmd.first; v < cmd.first + 2; v++) {
+            for (uint32_t i = cmd.first; i < cmd.first + 2 && i < bb.indices.size(); i++) {
+                const uint32_t v = bb.indices[i];
                 fprintf(stderr, "      v%u pos=(%g,%g,%g) col0=%02X%02X%02X%02X col1=%02X%02X%02X%02X\n", v,
                         bb.verts[v].pos[0], bb.verts[v].pos[1], bb.verts[v].pos[2],
                         bb.verts[v].col[0][0], bb.verts[v].col[0][1], bb.verts[v].col[0][2], bb.verts[v].col[0][3],
@@ -801,8 +803,8 @@ void renderer_efb_copy(uint32_t dest_addr, bool /*unused*/) {
                 for (auto& l : t->levels) decoded += l.size() * 4;
             const auto now = std::chrono::steady_clock::now();
             const double interval = g_last_present.time_since_epoch().count() ? ms_since(g_last_present) : 0.0;
-            fprintf(stderr, "[ft] f%u guest %6.2fms  fe %6.2fms (tex %5.2f)  draws %4u/%4zu  verts %6zu  states %4zu  newtex %3zu (%zuKB)  queue %zu\n",
-                    g_frame_counter, interval, g_fe_ms, g_tex_ms, g_fe_draws, bb.cmds.size(), bb.verts.size(),
+            fprintf(stderr, "[ft] f%u guest %6.2fms  fe %6.2fms (tex %5.2f)  draws %4u/%4zu  verts %6zu  idx %6zu  states %4zu  newtex %3zu (%zuKB)  queue %zu\n",
+                    g_frame_counter, interval, g_fe_ms, g_tex_ms, g_fe_draws, bb.cmds.size(), bb.verts.size(), bb.indices.size(),
                     bb.states.size(), bb.new_textures.size(), decoded / 1024, queue_depth());
             g_last_present = now;
             g_fe_ms = g_tex_ms = 0;

@@ -87,7 +87,7 @@ static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
 // Copy of the EFB as it looked at the last present. The display copy is immediately
 // followed by an EFB clear, so repainting has to come from here, not the live EFB.
 
-static GLuint g_vao, g_vbo;
+static GLuint g_vao, g_vbo, g_ebo;
 static GLuint g_copy_prog, g_copy_vao;
 static GLint g_copy_u_src, g_copy_u_rect, g_copy_u_mode, g_copy_u_depth;
 static GLuint g_blit_prog;
@@ -457,6 +457,10 @@ void render_init(int internal_scale) {
     glBindVertexArray(g_vao);
     glGenBuffers(1, &g_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+    // The element buffer binding is part of the VAO's state, so binding it once here
+    // keeps it bound whenever g_vao is.
+    glGenBuffers(1, &g_ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ebo);
     const GLsizei stride = sizeof(GpuVertex);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(GpuVertex, pos));
@@ -1381,7 +1385,7 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
             cur_prim = c.prim;
         }
         static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
-        glDrawArrays(mode[c.prim], c.first, c.count);
+        glDrawElements(mode[c.prim], c.count, GL_UNSIGNED_INT, (const void*)(uintptr_t)(c.first * sizeof(uint32_t)));
     }
     if (eyelog && do_copies)
         fprintf(stderr, "[eye]   drawn=%d skipped_composite=%d spray=%d\n", n_drawn,
@@ -1425,6 +1429,7 @@ static bool execute_batch(Batch& b, bool do_present) {
     glBindVertexArray(g_vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     glBufferData(GL_ARRAY_BUFFER, b.verts.size() * sizeof(GpuVertex), b.verts.data(), GL_STREAM_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, b.indices.size() * sizeof(uint32_t), b.indices.data(), GL_STREAM_DRAW);
     const double ms_vbo = g_frametime ? ms_since(t_start) - ms_tex : 0.0;
     uint32_t n_apply = 0;
     note_fullscreen_copies(b);
@@ -1436,8 +1441,8 @@ static bool execute_batch(Batch& b, bool do_present) {
             nc += c.type == CmdType::EfbCopy;
             np += c.type == CmdType::Present;
         }
-        fprintf(stderr, "[batch] f%u cmds=%zu draws=%d copies=%d present=%d verts=%zu\n",
-                g_render_frame, b.cmds.size(), nd, nc, np, b.verts.size());
+        fprintf(stderr, "[batch] f%u cmds=%zu draws=%d copies=%d present=%d verts=%zu indices=%zu\n",
+                g_render_frame, b.cmds.size(), nd, nc, np, b.verts.size(), b.indices.size());
     }
     bool presented = false;
     uint32_t cur_state = UINT32_MAX;
@@ -1478,7 +1483,7 @@ static bool execute_batch(Batch& b, bool do_present) {
                 // from the camera is in front of the viewer's face either way.
                 float zlo = 1e30f, zhi = -1e30f;
                 for (uint32_t v = 0; v < c.count; v++) {
-                    const float z = b.verts[c.first + v].pos[2];
+                    const float z = b.verts[b.indices[c.first + v]].pos[2];
                     if (z < zlo) zlo = z;
                     if (z > zhi) zhi = z;
                 }
@@ -1528,7 +1533,7 @@ static bool execute_batch(Batch& b, bool do_present) {
                 n_apply++;
             }
             static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
-            glDrawArrays(mode[c.prim], c.first, c.count);
+            glDrawElements(mode[c.prim], c.count, GL_UNSIGNED_INT, (const void*)(uintptr_t)(c.first * sizeof(uint32_t)));
             break;
         }
         case CmdType::EfbCopy:
