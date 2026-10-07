@@ -1452,7 +1452,29 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     glDisable(GL_SCISSOR_TEST);
     glColorMask(1, 1, 1, 1);
     glDepthMask(GL_TRUE);
-    glClearColor(0, 0, 0, 1);
+    // The eye's background has to be the EFB's. Where the scene draws nothing behind the
+    // water -- open sea, past where the course gives the sea a bottom -- the water
+    // refracts whatever the buffer was cleared to, and an eye cleared to black turned
+    // that into a black sea in stereo while the flat view, cleared to the game's own
+    // colour, showed open water. So take the clear the game set for the main scene: the
+    // last copy to clear the colour buffer ahead of the first draw an eye replays.
+    float bg[3] = {0, 0, 0};
+    for (size_t i = 0; i < b.cmds.size(); i++) {
+        if (b.cmds[i].type == CmdType::Draw) {
+            if (!skip[i]) break;
+            continue;
+        }
+        if (b.cmds[i].type != CmdType::EfbCopy) continue;
+        const EfbCopyCmd& c = b.cmds[i].copy;
+        if (c.clear && c.clear_color) {
+            bg[0] = ((c.clear_rgba >> 24) & 0xFF) / 255.0f;
+            bg[1] = ((c.clear_rgba >> 16) & 0xFF) / 255.0f;
+            bg[2] = ((c.clear_rgba >> 8) & 0xFF) / 255.0f;
+        }
+    }
+    if (eyelog && do_copies)
+        fprintf(stderr, "[eye]   background %.3f %.3f %.3f\n", bg[0], bg[1], bg[2]);
+    glClearColor(bg[0], bg[1], bg[2], 1);
     clear_depth(1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glBindVertexArray(g_vao);

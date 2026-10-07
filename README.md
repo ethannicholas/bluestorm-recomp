@@ -658,6 +658,16 @@ keeps the coordinate the game computed, which is right there. Dropping these dra
 (`WR_EYE_SKIPCOMP=1`) leaves the seabed showing through bare sand, and sending them down the overlay
 path puts the ocean on the HUD frame, racer and all.
 
+What the eye is *cleared* to is part of that same lookup. The water refracts whatever stands
+behind it, and out past the point where a course gives the sea a bottom that is nothing at all --
+just the colour the buffer was cleared to, which in a race is a blue-grey the game sets with the
+copy ahead of the main scene (`WR_EYELOG=1` prints it). An eye cleared to black turned the open
+sea black in stereo while the flat view, cleared to the game's own colour, showed water. On
+Southern Island that took most of the distance with it, and it was neither the geometry nor the
+projection: it survived the game's own frustum (`WR_EYE_GAMEPROJ=1`) and it survived fog being
+switched off. So the eye takes its clear from the batch -- the last copy to clear the colour
+buffer ahead of the first draw the eye replays.
+
 Fog is the other thing an eye cannot read off the hardware's depth. GX fogs on the 24-bit screen
 z it writes, and the generated shader recovered that from `gl_FragCoord.z` -- which in an eye is
 the headset's frustum, 0.1 m to 2000 m, nothing like the game's. Handed to a curve calibrated for
