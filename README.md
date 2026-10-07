@@ -36,35 +36,6 @@ Only the North American release is supported:
 
 The build verifies this hash and stops with an error for any other version.
 
-## Status
-
-Working:
-
-- Boots, attract-mode movie, title, menus, memory card save/load, character select, course
-  flyovers and full races.
-- Graphics: the full GX pipeline, including indirect texturing, all texture formats, EFB copies
-  and render-to-texture, on OpenGL 3.3 (desktop) or OpenGL ES 3.2 (Quest), at a configurable
-  internal resolution.
-- Audio: sound effects and streamed music.
-- Input: keyboard, any SDL-compatible gamepad, or Touch controllers on the Quest.
-- VR: on the Quest the menus are shown on a large flat screen in space, and races are rendered
-  in true stereo 3D, with the camera levelled to the water and the HUD on a frame in front of
-  you.
-- Memory card: an emulated slot A card. A blank card is created automatically the first time
-  you run the game, and the game saves to it as usual.
-
-Known limitations:
-
-- Builds on **macOS (Apple Silicon)**, **Windows (x64 and ARM64)** and **Android/arm64
-  (Quest 2, Pro and 3)**. Other desktop platforms should need little beyond a CMake branch: the
-  POSIX/Win32 split is confined to `runtime/platform.cpp`.
-- Windows needs a real OpenGL 3.3 driver, which some virtual machines do not provide; see
-  [Graphics](#graphics).
-- Runs at the game's native 30 fps. On the Quest 3 the busiest courses can dip a little below
-  that during a race.
-- Accuracy is still being validated. Expect some visual and audio differences from real
-  hardware.
-
 ## Building
 
 ### Requirements
@@ -157,10 +128,9 @@ runs, so this only happens once. Deleting the cache is always safe.
 
 ## Running on a Quest 3
 
-The headset build is an immersive OpenXR app. It also runs on the Quest 2 and Quest Pro, but
-has only been tuned on a Quest 3. The Android build and packaging scripts are PowerShell, so
-these steps are written for a Windows PC; the same CMake configuration works from any host
-with the NDK (see `build-android.ps1`), but you would need to package the APK by hand.
+The Android build and packaging scripts are PowerShell, so these steps are written for a Windows PC;
+the same CMake configuration works from any host with the NDK (see `build-android.ps1`), but you
+would need to package the APK by hand.
 
 ### Requirements
 
@@ -186,33 +156,27 @@ On the headset:
 
 ### Build and install
 
-With your disc image in `rom/` as above:
+With your disc image in `rom/` as described above:
 
 ```powershell
 .\build-android.ps1          # cross-compiles libwaverace.so for arm64
 .\package-apk.ps1 -Install   # packages the APK, installs it, and pushes the disc image
 ```
 
-The disc image is **not** part of the APK — it is yours, and far too large. It is copied to the
-app's data directory on the headset, `/sdcard/Android/data/com.example.waverace/files/game.iso`,
-which takes a few minutes the first time. Your save file (the emulated memory card) and the
-shader cache live in the same directory, and survive reinstalling the app.
+The disc image is not part of the APK. It is copied to the app's data directory on the headset,
+`/sdcard/Android/data/com.example.waverace/files/game.iso`, which takes a few minutes the first
+time. Your save file (the emulated memory card) and the shader cache live in the same directory, and
+survive reinstalling the app.
 
 ### Playing
 
-The app appears on the headset under **Library → Unknown Sources → Wave Race**. It only runs
-while the headset is being worn.
+The app appears on the headset under **Library → Unknown Sources → Wave Race**.
 
-- Menus, the course flyover and the results screen are shown on a large flat screen in front of
-  you (*theater* view).
-- When a race starts, the screen opens out into the world and the race is rendered in stereo 3D
-  around you. The HUD stays on a frame in front of you. At the chequered flag, or if you quit
-  the race, the picture folds back onto the screen.
-- Click the right thumbstick to switch between theater and stereo yourself. Once you have, the
-  view stays where you put it until the app is next launched.
+Outside of races, your view will be a 2D screen in front of you. It will transition to stereoscopic
+3D at the beginning of the race.
 
 Like the desktop build, the first run through a course hitches briefly while shaders are
-compiled; later runs build them at startup.
+compiled; later runs will take advantage of cached copies.
 
 | GameCube | Touch controller |
 |---|---|
@@ -306,24 +270,6 @@ and reports how fast the recompiled code advances, for comparing machines:
 The renderer needs an **OpenGL 3.3 core profile** driver on the desktop, or **OpenGL ES 3.2** on
 Android. It uses nothing newer than GL 3.3 / ES 3.0, so compatibility layers that stop there
 (such as Mesa on Direct3D 12) work.
-
-If the game exits with `OpenGL 1.1 is too old (got "1.1.0" / "GDI Generic")`, the host has no
-OpenGL driver at all and Windows is falling back to its software 1.1 implementation. This is
-common in virtual machines: VMware's and VirtualBox's Windows guest drivers expose Direct3D but
-no OpenGL ICD, and on Windows ARM64 there is no vendor GL driver to fall back on. Options:
-
-- Enable 3D acceleration in the VM's settings, and install the guest additions / VMware Tools
-  that match it.
-- Install Microsoft's **OpenCL, OpenGL, and Vulkan Compatibility Pack** (`winget install
-  9NQPSL29BFFF --source msstore`), a Mesa build that maps OpenGL 3.3 onto Direct3D 12. It needs
-  a D3D12-capable adapter; `dxdiag` reports the feature levels your adapter supports.
-- Drop a Mesa `opengl32.dll` (llvmpipe) next to `waverace.exe` to render in software.
-  `opengl32.dll` is not a KnownDLL, so a local copy takes precedence.
-- Run on the host rather than in the VM.
-
-`tools/glprobe.c` and `tools/d3d12probe.cpp` (see [Tools](#tools)) report what the host can
-actually create. `--headless` skips graphics and audio entirely, which is useful for checking
-that everything below the renderer works.
 
 ## Files the game writes
 
