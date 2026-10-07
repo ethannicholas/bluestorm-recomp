@@ -636,6 +636,47 @@ that has been warm for an hour, which a 150 s run does not measure.
 That the frame rate does not move at sixteen times the pixels is also the clearest evidence yet for
 the first open issue: whatever is keeping this below 30 fps, it is not the pixel pipeline.
 
+#### How many pixels the eyes get
+
+The eyes used to render at exactly what the runtime recommends, 1680×1760 on a Quest 3, with no
+antialiasing. That is less than the panel's own 2064×2208, and the lens magnifies the middle of
+the image further, so stereo looked soft and stair-stepped. They now render at `eye_scale` times
+the recommendation (1.4 by default: 2352×2464) with `msaa` samples (4 by default).
+
+The antialiasing is `GL_EXT_multisampled_render_to_texture` (`runtime/gx/gl_msrtt.h`). On a
+tiled GPU the samples live only in tile memory and are averaged as each tile is written out, so
+the swapchain image stays single-sampled and the cost is mostly extra shading at edges. The water
+and spray read the eye's own image back part way through a frame, and that still works: the
+read-back sees the resolved image, and the frames show the same water, reflection and depth order
+with and without it.
+
+`waverace_egl --eye` measures this without a headset: `--eyes=2` renders both eyes as the headset
+does, `--eye-size=WxH` and `--msaa=N` set the target, and `WR_EYE_GPU=1` reports the eye passes'
+GPU time from timer queries every 2 s. On a Quest 3, mid-race on the scripted route:
+
+| eyes | GPU per game frame | render-thread time for the eyes | lowest fps |
+|---|---|---|---|
+| 1680×1760, no AA | 5.8 ms | 9.8 ms | 29.5 |
+| 2016×2112, 4× MSAA | 10.8 ms | 8.8 ms | 29.5 |
+| 2352×2464, 4× MSAA | 11.7 ms | 9.1 ms | 29.5 |
+
+A game frame is 33 ms, so this leaves the GPU most of it; what the table cannot show is the
+compositor's own share, or a headset that has been warm for an hour. 1.2 is the step down if
+either turns out to matter.
+
+The render-thread column depends on a fix made along the way. The renderer refilled one vertex
+buffer every frame, and the driver made that wait until the GPU had finished the previous
+frame's eyes, so GPU time leaked into CPU time. At 1.4× with 4× MSAA the flat pass sat at 27 ms
+a race frame, nearly all of it in `glBufferData`, and the frame rate fell to 25. The vertex and
+index buffers are now a ring of three (`g_vaos` in `render_gl.cpp`), which took that to 4.9 ms.
+
+Measuring it also turned up a fault in the harness: it never called `glFlush`, which the headset
+app does after every eye, so the driver queued whole frames up and the next frame's upload waited
+for them to drain. With no flush, even the old eye size showed a 17–21 ms flat pass; with one, 6.
+It now flushes after every frame in both modes. The `theater_scale` table above was measured
+before that, so its absolute frame rates are likely low; the comparison between its rows is
+unaffected.
+
 #### Splitting a frame for the eyes
 
 A frame is not one pass. A race frame holds about a thousand draws and five EFB copies: three
@@ -1000,6 +1041,8 @@ hud_pitch_deg 0          # frame tilt; 0 is square to the room, which a levelled
 world_pitch_deg 23.2     # degrees of chase-camera pitch taken back out of the world; 0 keeps it
 theater_scale 3          # EFB samples per hardware pixel, per axis, in theater
 stereo_scale 1           #   and in stereo, where the EFB is only scratch space
+eye_scale 1.4            # eye render size, as a multiple of what the runtime recommends
+msaa 4                   # samples per eye pixel; 0 for none
 start_in_stereo 0          # start in stereo rather than theater
 transition_s 1           # seconds the morph between the two views takes; 0 snaps
 ```

@@ -88,6 +88,17 @@ struct VrConfig {
     int theater_scale = 3;
     int stereo_scale = 1;
 
+    // The eyes' own render targets: a multiple of the size the runtime recommends, and
+    // how many samples each pixel gets (0 or 1 is none). Read once, at startup.
+    //
+    // The recommendation alone -- 1680x1760 on a Quest 3 -- is under the panel's own
+    // 2064x2208, and the lens magnifies the middle of the image further, so it looked
+    // soft and stair-stepped. 1.4x with 4x MSAA measured 11.7 ms of GPU per game frame
+    // against 5.8 at 1x with none, with the render thread's own time unchanged: see
+    // "How many pixels the eyes get" in README.md.
+    float eye_scale = 1.4f;
+    int msaa = 4;
+
     // Trace the theater path one display frame at a time (adb logcat -s waverace).
     bool log_frames = false;
 

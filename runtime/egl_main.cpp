@@ -15,6 +15,7 @@
 #include "gx/render_gl.h"
 #include "input_script.h"
 #include "gx/gl.h"
+#include "gx/gl_msrtt.h"
 #include "hw/pad.h"
 #include <EGL/egl.h>
 #include <dlfcn.h>
@@ -29,6 +30,7 @@ uint32_t boot_load(const char* iso_path);
 bool audio_open();
 void debug_dump_threads();
 bool write_png(const char* path, const uint8_t* rgba, int w, int h);
+static void* gl_proc(const char* name);
 
 // ---------------------------------------------------------------------------
 // --eye renders through render_execute_eye into an offscreen target and dumps that,
@@ -45,18 +47,37 @@ static float g_eye_yaw = 0.0f;  // --eye-yaw: degrees of head turn, for spotting
 static GLuint g_eye_fbo, g_eye_tex, g_eye_depth;
 static int g_eye_w = 960, g_eye_h = 720;
 
+// --eyes=2 renders the second eye as well, as the headset does; --eye-size=WxH renders at
+// the headset's size rather than this harness's; --msaa=N multisamples the eye the way the
+// headset can. Together with WR_EYE_GPU=1, which times the eye passes on the GPU, they are
+// what answers "what does a higher eye resolution or antialiasing cost" without a headset.
+static int g_eye_count = 1, g_eye_msaa = 0;
+
 static void eye_init() {
     glGenTextures(1, &g_eye_tex);
     glBindTexture(GL_TEXTURE_2D, g_eye_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_eye_w, g_eye_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    const gx::Msrtt ms = g_eye_msaa > 1 ? gx::msrtt_load(gl_proc) : gx::Msrtt{};
+    if (g_eye_msaa > 1 && ms.max_samples < g_eye_msaa) {
+        fprintf(stderr, "--msaa=%d unavailable (max %d); rendering without\n", g_eye_msaa,
+                ms.max_samples);
+        g_eye_msaa = 0;
+    }
     glGenRenderbuffers(1, &g_eye_depth);
     glBindRenderbuffer(GL_RENDERBUFFER, g_eye_depth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, g_eye_w, g_eye_h);
+    if (g_eye_msaa > 1)
+        ms.renderbuffer_storage(GL_RENDERBUFFER, g_eye_msaa, GL_DEPTH_COMPONENT24, g_eye_w, g_eye_h);
+    else
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, g_eye_w, g_eye_h);
     glGenFramebuffers(1, &g_eye_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, g_eye_fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_eye_tex, 0);
+    if (g_eye_msaa > 1)
+        ms.framebuffer_texture_2d(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_eye_tex, 0,
+                                  g_eye_msaa);
+    else
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_eye_tex, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_eye_depth);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         fprintf(stderr, "eye fbo incomplete\n");
@@ -135,6 +156,76 @@ static void morph_panel(float* m) {
 }
 
 // ---------------------------------------------------------------------------
+// WR_EYE_GPU=1: how long the eye passes take on the GPU, from GL_EXT_disjoint_timer_query,
+// and on the CPU to issue, averaged and printed every 2 s. The GPU figure covers both eyes
+// and the flat pass the first eye runs to produce the frame's copies. Queries are read a few
+// frames late from a ring, so measuring does not itself stall the pipeline.
+static bool g_gpu_timing = false;
+static void (*g_query_u64)(GLuint, GLenum, uint64_t*) = nullptr;
+static GLuint g_queries[8];
+static int g_q_head = 0, g_q_live = 0;
+static double g_gpu_ms_sum = 0, g_cpu_ms_sum = 0;
+static int g_gpu_n = 0, g_cpu_n = 0;
+static constexpr GLenum kTimeElapsed = 0x88BF;   // GL_TIME_ELAPSED_EXT
+
+static void gpu_timer_init() {
+    g_gpu_timing = getenv("WR_EYE_GPU") != nullptr;
+    if (!g_gpu_timing) return;
+    g_query_u64 = (void (*)(GLuint, GLenum, uint64_t*))gl_proc("glGetQueryObjectui64vEXT");
+    if (!g_query_u64) {
+        fprintf(stderr, "WR_EYE_GPU: no GL_EXT_disjoint_timer_query; CPU times only\n");
+        return;
+    }
+    glGenQueries(8, g_queries);
+}
+
+static void gpu_timer_collect(bool all) {
+    // A disjoint event -- the GPU changing clock, say -- makes the queries in flight
+    // meaningless; they came back as hours. Drop them. The flag alone did not catch every
+    // such sample on a Quest 3, so anything over a second goes too.
+    GLint disjoint = 0;
+    glGetIntegerv(0x8FBB /* GL_GPU_DISJOINT_EXT */, &disjoint);
+    while (g_q_live > 0) {
+        const GLuint q = g_queries[(g_q_head - g_q_live + 8) % 8];
+        GLuint ready = 0;
+        if (!all) glGetQueryObjectuiv(q, GL_QUERY_RESULT_AVAILABLE, &ready);
+        if (!all && !ready) break;
+        uint64_t ns = 0;
+        g_query_u64(q, GL_QUERY_RESULT, &ns);
+        if (!disjoint && ns < 1000000000ull) {
+            g_gpu_ms_sum += ns * 1e-6;
+            g_gpu_n++;
+        }
+        g_q_live--;
+    }
+}
+
+static void gpu_timer_begin() {
+    if (!g_query_u64) return;
+    if (g_q_live == 8) gpu_timer_collect(true);
+    glBeginQuery(kTimeElapsed, g_queries[g_q_head]);
+}
+
+static void gpu_timer_end(double cpu_ms) {
+    if (!g_gpu_timing) return;
+    g_cpu_ms_sum += cpu_ms;
+    g_cpu_n++;
+    if (!g_query_u64) return;
+    glEndQuery(kTimeElapsed);
+    g_q_head = (g_q_head + 1) % 8;
+    g_q_live++;
+    gpu_timer_collect(false);
+}
+
+static void gpu_timer_report() {
+    if (!g_gpu_timing || !g_cpu_n) return;
+    printf("  eyes: cpu %.2f ms", g_cpu_ms_sum / g_cpu_n);
+    if (g_gpu_n) printf("  gpu %.2f ms", g_gpu_ms_sum / g_gpu_n);
+    printf("  (%d frames)\n", g_cpu_n);
+    g_gpu_ms_sum = g_cpu_ms_sum = 0;
+    g_gpu_n = g_cpu_n = 0;
+}
+
 static void on_interrupt() {
     plat_watchdog(2, 2);
     debug_dump_threads();
@@ -232,6 +323,9 @@ int main(int argc, char** argv) {
         else if (!strncmp(argv[i], "--seconds=", 10)) seconds = atoi(argv[i] + 10);
         else if (!strcmp(argv[i], "--eye")) g_eye_mode = true;
         else if (!strncmp(argv[i], "--eye-yaw=", 10)) g_eye_yaw = (float)atof(argv[i] + 10);
+        else if (!strncmp(argv[i], "--eye-size=", 11)) sscanf(argv[i] + 11, "%dx%d", &g_eye_w, &g_eye_h);
+        else if (!strncmp(argv[i], "--eyes=", 7)) g_eye_count = atoi(argv[i] + 7);
+        else if (!strncmp(argv[i], "--msaa=", 7)) g_eye_msaa = atoi(argv[i] + 7);
         else if (!strncmp(argv[i], "--dump-dir=", 11)) gx::g_dump_dir = argv[i] + 11;
         else if (!strncmp(argv[i], "--dump-every=", 13)) gx::g_dump_every = atoi(argv[i] + 13);
         else if (argv[i][0] != '-') iso = argv[i];
@@ -264,6 +358,7 @@ int main(int argc, char** argv) {
     gx::render_init(scale);
     if (g_eye_mode) {
         eye_init();
+        gpu_timer_init();
         gx::render_set_world_pitch(kWorldPitch);
         if (const char* s = getenv("WR_EYE_MORPH")) {
             for (const char* q = s; *q;) {
@@ -347,9 +442,26 @@ int main(int argc, char** argv) {
             if (g_eye_mode) {
                 float P[16], V[16], H[16];
                 eye_matrices(P, V, H);
-                gx::render_set_vr_eye(P, V, H);
                 gx::render_set_vr_morph(1.0f, nullptr);
-                gx::render_execute_eye(*b, g_eye_fbo, g_eye_w, g_eye_h, true);
+                gpu_timer_begin();
+                const auto t_eyes = clock::now();
+                if (g_eye_count > 1) {
+                    // The other eye first, into the same target, so what is dumped is the
+                    // left one. 64 mm apart at this harness's 100 units to the metre.
+                    float V2[16];
+                    memcpy(V2, V, sizeof(V2));
+                    V2[12] -= 6.4f;
+                    gx::render_set_vr_eye(P, V2, H);
+                    gx::render_execute_eye(*b, g_eye_fbo, g_eye_w, g_eye_h, true);
+                }
+                gx::render_set_vr_eye(P, V, H);
+                gx::render_execute_eye(*b, g_eye_fbo, g_eye_w, g_eye_h, g_eye_count < 2);
+                gpu_timer_end(std::chrono::duration<double, std::milli>(clock::now() - t_eyes).count());
+                // As the headset does after each eye. Nothing else here hands the GPU its
+                // work, and a driver left to queue frames up stalls the next frame's vertex
+                // upload until they drain: without this the flat pass measured 17-21 ms a
+                // race frame, almost all of it waiting in glBufferData, against 6 ms with it.
+                glFlush();
                 presented++;
                 // WR_DUMP_COPIES=N dumps whenever a frame holds at least N EFB copies,
                 // which is how a frame thick with spray is caught: the faults that only
@@ -401,13 +513,17 @@ int main(int argc, char** argv) {
                         dump_fbo(g_flat_fbo, 640, 480, path);
                     }
                 }
-            } else if (gx::render_execute(*b)) presented++;
+            } else {
+                if (gx::render_execute(*b)) presented++;
+                glFlush();  // as the eye path does; see there
+            }
         }
 
         const auto now = clock::now();
         const double elapsed = std::chrono::duration<double>(now - t0).count();
         if (std::chrono::duration<double>(now - t_mark).count() >= 2.0) {
             printf("  %4.0fs  presented %u (+%u)\n", elapsed, presented, presented - presented_at_mark);
+            gpu_timer_report();
             fflush(stdout);
             presented_at_mark = presented;
             t_mark = now;

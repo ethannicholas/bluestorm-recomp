@@ -96,6 +96,17 @@ static GLuint g_efb_fbo, g_efb_color, g_efb_depth;
 // Copy of the EFB as it looked at the last present. The display copy is immediately
 // followed by an EFB clear, so repainting has to come from here, not the live EFB.
 
+// The vertex and index buffers a batch is drawn from, and the VAO holding both. There are
+// several, used in turn, because refilling one the GPU is still drawing from makes the
+// driver wait for it. At the headset's own eye size that wait is rare, but the eyes' GPU
+// time is what decides it: at 1.4x with 4x MSAA, one set left the flat pass at 27 ms a
+// race frame on a Quest 3 (p50), nearly all of it in glBufferData waiting for the last
+// frame's eyes; three sets took it to 4.9 ms, the same as at the old size. The GPU runs
+// at most a frame or two behind, so three is enough. g_vao, g_vbo and g_ebo are the set
+// in use; execute_batch moves them on.
+static constexpr int kVertexRing = 3;
+static GLuint g_vaos[kVertexRing], g_vbos[kVertexRing], g_ebos[kVertexRing];
+static int g_vertex_set = 0;
 static GLuint g_vao, g_vbo, g_ebo;
 static GLuint g_copy_prog, g_copy_vao;
 static GLint g_copy_u_src, g_copy_u_rect, g_copy_u_mode, g_copy_u_depth;
@@ -490,25 +501,31 @@ void render_init(int internal_scale) {
     clear_depth(1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glGenVertexArrays(1, &g_vao);
-    glBindVertexArray(g_vao);
-    glGenBuffers(1, &g_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-    // The element buffer binding is part of the VAO's state, so binding it once here
-    // keeps it bound whenever g_vao is.
-    glGenBuffers(1, &g_ebo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ebo);
-    const GLsizei stride = sizeof(GpuVertex);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(GpuVertex, pos));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (void*)offsetof(GpuVertex, col[0]));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (void*)offsetof(GpuVertex, col[1]));
-    for (int i = 0; i < 8; i++) {
-        glEnableVertexAttribArray(3 + i);
-        glVertexAttribPointer(3 + i, 3, GL_FLOAT, GL_FALSE, stride, (void*)(offsetof(GpuVertex, tex) + i * 12));
+    glGenVertexArrays(kVertexRing, g_vaos);
+    glGenBuffers(kVertexRing, g_vbos);
+    glGenBuffers(kVertexRing, g_ebos);
+    for (int r = 0; r < kVertexRing; r++) {
+        glBindVertexArray(g_vaos[r]);
+        glBindBuffer(GL_ARRAY_BUFFER, g_vbos[r]);
+        // The element buffer binding is part of the VAO's state, so binding it once here
+        // keeps it bound whenever this VAO is.
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ebos[r]);
+        const GLsizei stride = sizeof(GpuVertex);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(GpuVertex, pos));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (void*)offsetof(GpuVertex, col[0]));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (void*)offsetof(GpuVertex, col[1]));
+        for (int i = 0; i < 8; i++) {
+            glEnableVertexAttribArray(3 + i);
+            glVertexAttribPointer(3 + i, 3, GL_FLOAT, GL_FALSE, stride, (void*)(offsetof(GpuVertex, tex) + i * 12));
+        }
     }
+    g_vao = g_vaos[0];
+    g_vbo = g_vbos[0];
+    g_ebo = g_ebos[0];
+    glBindVertexArray(g_vao);
 
     GLuint cvs = compile(GL_VERTEX_SHADER, kCopyVS);
     g_copy_prog = link(cvs, compile(GL_FRAGMENT_SHADER, kCopyFS));
@@ -1806,6 +1823,12 @@ static bool execute_batch(Batch& b, bool do_present) {
     const double ms_tex = g_frametime ? ms_since(t_start) : 0.0;
     glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
     glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
+    // A set the GPU has finished with; see g_vaos. The eye passes after this draw from the
+    // same one, so a batch is still uploaded once however many views it is drawn into.
+    g_vertex_set = (g_vertex_set + 1) % kVertexRing;
+    g_vao = g_vaos[g_vertex_set];
+    g_vbo = g_vbos[g_vertex_set];
+    g_ebo = g_ebos[g_vertex_set];
     glBindVertexArray(g_vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     glBufferData(GL_ARRAY_BUFFER, b.verts.size() * sizeof(GpuVertex), b.verts.data(), GL_STREAM_DRAW);

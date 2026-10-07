@@ -54,6 +54,7 @@ static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
 #include "gx/render.h"
 #include "gx/render_gl.h"
 #include "gx/gl.h"
+#include "gx/gl_msrtt.h"
 #include "hw/pad.h"
 
 #include <android/log.h>
@@ -374,12 +375,16 @@ static bool xr_create_swapchain() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     LOGI("quad swapchain %dx%d, %u images", g_swap_w, g_swap_h, n);
 
-    // Per-eye swapchains for the stereo projection layer, at whatever the runtime
-    // recommends for this headset.
+    // Per-eye swapchains for the stereo projection layer, at what the runtime recommends
+    // for this headset times `eye_scale`.
     for (int e = 0; e < 2; e++) {
         auto& eye = g_xr.eyes[e];
-        eye.w = (int32_t)vcs[e].recommendedImageRectWidth;
-        eye.h = (int32_t)vcs[e].recommendedImageRectHeight;
+        // `eye_scale` multiplies the recommendation, within what the runtime will take.
+        const float es = g_vrcfg.eye_scale > 0.0f ? g_vrcfg.eye_scale : 1.0f;
+        eye.w = (int32_t)fminf(vcs[e].recommendedImageRectWidth * es,
+                               (float)vcs[e].maxImageRectWidth);
+        eye.h = (int32_t)fminf(vcs[e].recommendedImageRectHeight * es,
+                               (float)vcs[e].maxImageRectHeight);
         XrSwapchainCreateInfo ec{XR_TYPE_SWAPCHAIN_CREATE_INFO};
         ec.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
         ec.format = chosen;
@@ -400,16 +405,32 @@ static bool xr_create_swapchain() {
         glGenFramebuffers(en, eye.fbos.data());
     }
 
+    // Antialiasing, if asked for and available: see gl_msrtt.h for why this way.
+    int samples = g_vrcfg.msaa > 1 ? g_vrcfg.msaa : 0;
+    const gx::Msrtt ms = samples ? gx::msrtt_load(gl_proc) : gx::Msrtt{};
+    if (samples && ms.max_samples < samples) {
+        LOGE("msaa %d unavailable (max %d); eyes are not antialiased", samples, ms.max_samples);
+        samples = 0;
+    }
+
     // One depth buffer, shared: the eyes are rendered in sequence, and it is cleared
     // for each. Both eyes use the same recommended size.
     glGenRenderbuffers(1, &g_xr.eye_depth);
     glBindRenderbuffer(GL_RENDERBUFFER, g_xr.eye_depth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, g_xr.eyes[0].w, g_xr.eyes[0].h);
+    if (samples)
+        ms.renderbuffer_storage(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, g_xr.eyes[0].w,
+                                g_xr.eyes[0].h);
+    else
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, g_xr.eyes[0].w, g_xr.eyes[0].h);
     for (int e = 0; e < 2; e++) {
         for (size_t i = 0; i < g_xr.eyes[e].fbos.size(); i++) {
             glBindFramebuffer(GL_FRAMEBUFFER, g_xr.eyes[e].fbos[i]);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                                   g_xr.eyes[e].images[i].image, 0);
+            if (samples)
+                ms.framebuffer_texture_2d(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                          g_xr.eyes[e].images[i].image, 0, samples);
+            else
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                       g_xr.eyes[e].images[i].image, 0);
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
                                       g_xr.eye_depth);
             if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
@@ -417,7 +438,7 @@ static bool xr_create_swapchain() {
         }
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    LOGI("eye swapchains %dx%d", g_xr.eyes[0].w, g_xr.eyes[0].h);
+    LOGI("eye swapchains %dx%d, msaa %d", g_xr.eyes[0].w, g_xr.eyes[0].h, samples);
     return true;
 }
 
