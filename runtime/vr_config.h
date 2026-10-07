@@ -101,6 +101,10 @@ struct VrConfig {
 
     // Start in stereo rather than theater, for testing.
     bool start_in_stereo = false;
+
+    // Seconds the morph between theater and stereo takes -- the panel opening out into the
+    // world, or the world folding back onto it. 0 snaps, as it used to.
+    float transition_s = 1.0f;
 };
 
 // Reads `dir`/vr.txt. Missing file or missing keys keep the defaults above.

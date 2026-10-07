@@ -57,7 +57,7 @@ struct Program {
     GLuint prog;
     GLint u_proj, u_vp_a, u_vp_b, u_point_size, u_tex, u_reg, u_konst, u_texsize, u_indmtx, u_indscale,
         u_alpharef, u_fog, u_fogcolor, u_indcoordscale;
-    GLint u_vr, u_view, u_zproj, u_screen_uv, u_screen_px, u_screen_ripple;
+    GLint u_vr, u_view, u_crop, u_zproj, u_screen_uv, u_screen_px, u_screen_ripple;
 };
 
 // Samples kept per hardware pixel, in each axis. See render_set_internal_scale.
@@ -73,6 +73,15 @@ static float g_vr_proj[16], g_vr_view[16];
 static float g_vr_view_world[16];
 static float g_world_pitch = 0.0f;
 static float g_vr_hud[16];
+// The morph between theater and stereo; see render_set_vr_morph. 1 is plain stereo.
+static float g_morph = 1.0f;
+static float g_panel[16];
+// Whether the vertex shader can write clip distances, which is what crops the morph.
+static bool g_clip_ok = false;
+// What a draw is to the morph: where it ends up in stereo decides what it is folded from.
+enum class MorphKind { World, CameraHeld, Hud };
+static void morph_chain(const float P[16], MorphKind kind, float chain[16], float fog[16],
+                        float crop[16]);
 // What the eye has drawn so far, standing in for the game's copy of the finished frame.
 // There are two because the two users want different moments: the water refracts the
 // scene as it stood *before* the water was drawn, and the spray refracts it after, water
@@ -93,6 +102,9 @@ static GLint g_copy_u_src, g_copy_u_rect, g_copy_u_mode, g_copy_u_depth;
 static GLuint g_blit_prog;
 static GLint g_blit_u_src, g_blit_u_rect;
 static GLuint g_copy_fbo;
+// The morph's background: see draw_morph_background.
+static GLuint g_bg_prog;
+static GLint g_bg_u_mvp, g_bg_u_crop, g_bg_u_quad, g_bg_u_col;
 static GLuint g_vs;
 static std::unordered_map<ShaderKey, Program, ShaderKeyHash> g_programs;
 // `grab` marks one of the spray's screen-space grabs; see is_grab_copy().
@@ -270,6 +282,7 @@ static const Program& register_program(const ShaderKey& k, GLuint p) {
     pr.u_point_size = glGetUniformLocation(p, "u_point_size");
     pr.u_vr = glGetUniformLocation(p, "u_vr");
     pr.u_view = glGetUniformLocation(p, "u_view");
+    pr.u_crop = glGetUniformLocation(p, "u_crop");
     pr.u_zproj = glGetUniformLocation(p, "u_zproj");
     pr.u_screen_uv = glGetUniformLocation(p, "u_screen_uv");
     pr.u_screen_px = glGetUniformLocation(p, "u_screen_px");
@@ -431,6 +444,20 @@ void render_init(int internal_scale) {
                                  : (internal_scale > kMaxInternalScale ? kMaxInternalScale
                                                                        : internal_scale);
     const std::string vs_src = gen_vertex_shader();
+#ifdef WR_GL_ES
+    {
+        GLint n = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+        for (GLint i = 0; i < n && !g_clip_ok; i++) {
+            const char* e = (const char*)glGetStringi(GL_EXTENSIONS, (GLuint)i);
+            g_clip_ok = e && !strcmp(e, "GL_EXT_clip_cull_distance");
+        }
+        if (!g_clip_ok)
+            fprintf(stderr, "no GL_EXT_clip_cull_distance: the theater/stereo morph is uncropped\n");
+    }
+#else
+    g_clip_ok = true;
+#endif
     g_vs_hash = hash_str(vs_src.c_str());
     g_vs = compile(GL_VERTEX_SHADER, vs_src);
 #if WR_HAVE_PROGRAM_BINARY
@@ -494,6 +521,35 @@ void render_init(int internal_scale) {
     g_blit_u_rect = glGetUniformLocation(g_blit_prog, "u_rect");
     glGenVertexArrays(1, &g_copy_vao);
     glGenFramebuffers(1, &g_copy_fbo);
+    {
+        const std::string bvs = glsl_header_with_clip() + R"(
+uniform mat4 u_mvp;
+uniform mat4 u_crop;
+uniform vec4 u_quad;   // half-width, half-height, view-space z, unused
+void main() {
+    vec2 c = vec2(gl_VertexID & 1, gl_VertexID >> 1) * 2.0 - 1.0;
+    vec4 a = vec4(c * u_quad.xy, u_quad.z, 1.0);
+    gl_Position = u_mvp * a;
+#ifdef WR_CLIP
+    vec4 cd = u_crop * a;
+    gl_ClipDistance[0] = cd.x;
+    gl_ClipDistance[1] = cd.y;
+    gl_ClipDistance[2] = cd.z;
+    gl_ClipDistance[3] = cd.w;
+#endif
+}
+)";
+        const std::string bfs = std::string(WR_GLSL_VERSION) + R"(
+uniform vec3 u_col;
+out vec4 o;
+void main() { o = vec4(u_col, 1.0); }
+)";
+        g_bg_prog = link(compile(GL_VERTEX_SHADER, bvs), compile(GL_FRAGMENT_SHADER, bfs));
+        g_bg_u_mvp = glGetUniformLocation(g_bg_prog, "u_mvp");
+        g_bg_u_crop = glGetUniformLocation(g_bg_prog, "u_crop");
+        g_bg_u_quad = glGetUniformLocation(g_bg_prog, "u_quad");
+        g_bg_u_col = glGetUniformLocation(g_bg_prog, "u_col");
+    }
 #ifndef WR_GL_ES
     // Desktop core profile needs this to honour gl_PointSize; ES always does.
     glEnable(GL_PROGRAM_POINT_SIZE);
@@ -782,7 +838,17 @@ static void apply_state(const PixelState& st, int prim) {
     // copy, on a flat panel hanging in front of the camera while the real racer went on
     // moving in the world. The seam at the billboard's edge is the lesser problem.
     if (!same_proj) {
-        if (g_vr_active && !on_hud_frame) {
+        if (g_vr_active && g_morph < 1.0f) {
+            // Part way between theater and stereo: see morph_chain.
+            float M[16], F[16], C[16];
+            morph_chain(P, on_hud_frame ? MorphKind::Hud
+                           : view_space_3d ? MorphKind::CameraHeld : MorphKind::World,
+                        M, F, C);
+            glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, M);
+            glUniformMatrix4fv(pr.u_view, 1, GL_FALSE, F);
+            glUniformMatrix4fv(pr.u_crop, 1, GL_FALSE, C);
+            glUniform1i(pr.u_vr, 3);
+        } else if (g_vr_active && !on_hud_frame) {
             // A camera-placed 3D object is viewed with the head transform but without the
             // world's pitch correction; see view_space_3d above.
             const float* view = view_space_3d ? g_vr_view : g_vr_view_world;
@@ -944,6 +1010,14 @@ static void apply_state(const PixelState& st, int prim) {
         const float gx = fabsf(vp[0]) * p[0], gy = fabsf(vp[1]) * p[2];
         if (gx > 0.0f) ripple[0] = 0.5f * (float)g_eye_w * g_vr_proj[0] / gx;
         if (gy > 0.0f) ripple[1] = -0.5f * (float)g_eye_h * g_vr_proj[5] / gy;
+        // Mid-morph the scene is partly on the panel, where a unit of the game's frustum
+        // tangent spans the panel's (half-width / distance) * p rather than one -- so the
+        // eye's pixels cover a different share of it.
+        if (g_morph < 1.0f) {
+            const float D = -g_panel[14], k = g_morph;
+            ripple[0] *= (1.0f - k) * p[0] * g_panel[0] / D + k;
+            ripple[1] *= (1.0f - k) * p[2] * g_panel[5] / D + k;
+        }
     }
     if (!same || ripple[0] != g_applied.ripple[0] || ripple[1] != g_applied.ripple[1]) {
         glUniform2fv(pr.u_screen_ripple, 1, ripple);
@@ -1258,24 +1332,141 @@ uint32_t present_count() { return g_present_count; }
 // Executes a batch. Returns true if it contained a Present.
 void render_set_world_pitch(float pitch_rad) { g_world_pitch = pitch_rad; }
 
-void render_set_vr_eye(const float proj[16], const float view[16], const float hud[16]) {
-    memcpy(g_vr_proj, proj, sizeof(g_vr_proj));
-    memcpy(g_vr_view, view, sizeof(g_vr_view));
-    memcpy(g_vr_hud, hud, sizeof(g_vr_hud));
-    if (g_world_pitch == 0.0f) {
-        memcpy(g_vr_view_world, view, sizeof(g_vr_view_world));
-        return;
-    }
-    // The camera looks down by `pitch`, so the world's up arrives at (0, cos, sin) in the
-    // vertices' own frame. Rotating about X by -pitch takes it back to (0, 1, 0), which is
-    // the headset's up, and the sea with it.
+// The camera looks down by `pitch`, so the world's up arrives at (0, cos, sin) in the
+// vertices' own frame. Rotating about X by -pitch takes it back to (0, 1, 0), which is the
+// headset's up, and the sea with it.
+static void world_pitch_matrix(float R[16]) {
     const float c = cosf(g_world_pitch), s = sinf(g_world_pitch);
-    float R[16] = {0};
+    memset(R, 0, 16 * sizeof(float));
     R[0] = 1.0f;
     R[5] = c;  R[6] = -s;
     R[9] = s;  R[10] = c;
     R[15] = 1.0f;
+}
+
+void render_set_vr_eye(const float proj[16], const float view[16], const float hud[16]) {
+    memcpy(g_vr_proj, proj, sizeof(g_vr_proj));
+    memcpy(g_vr_view, view, sizeof(g_vr_view));
+    memcpy(g_vr_hud, hud, sizeof(g_vr_hud));
+    float R[16];
+    world_pitch_matrix(R);
     mat4_mul(view, R, g_vr_view_world);
+}
+
+void render_set_vr_morph(float t, const float panel[16]) {
+    // Exactly 0 puts every vertex on the panel's plane, where the depth test has nothing
+    // to sort by: the sea drew over the racer. Any step off it restores the order, since
+    // depth along each line of sight stays monotonic -- 0.002 already matches the flat
+    // frame on the device, and puts the scene within a few millimetres of the panel.
+    constexpr float kFloor = 0.002f;
+    g_morph = t >= 1.0f ? 1.0f : kFloor + (1.0f - kFloor) * (t < 0.0f ? 0.0f : t);
+    if (panel) memcpy(g_panel, panel, sizeof(g_panel));
+}
+
+// One draw's matrices part way between theater and stereo.
+//
+// Theater is the game's frame on a panel: a vertex goes through the game's projection P and
+// lands on the panel at the frame position that gives -- g_panel * P, the same thing the
+// HUD path does with its own frame. Stereo is wherever the eye path would put it. The two
+// are blended as homogeneous points, which keeps the whole chain one matrix per draw and
+// keeps the GPU's clipping correct all the way through: a vertex behind the game's camera
+// still has w < 0 on the panel side and is still cut, which a per-vertex divide would lose.
+//
+// Blending homogeneous points weights each by its w. The panel side's w is the vertex's
+// depth from the game's camera; the stereo side's is 1, so it is scaled by the panel's own
+// distance D. The weights then come out as (1-k)*z and k*D, which is exactly interpolation
+// in 1/depth: every vertex's disparity grows linearly with k, rather than the far scenery
+// sitting on the panel until the last moment and then leaving all at once. When the stereo
+// side was itself built from P (the HUD frame), the two share a w and no scaling is wanted.
+//
+// For the same reason, a vertex slides along a line between two points that the game's
+// camera sees in nearly the same direction; from where that camera stands the picture
+// barely moves, and only depth comes in. It is not exact, because the panel is not exactly
+// the game's field of view and the world is pitched in stereo but not on the panel.
+//
+// `crop` gives four clip distances that cut the scene to a window of the game's frustum
+// widened by s in each axis: s = 1 is the frame the panel shows, and s grows without bound
+// as k reaches 1. In stereo the eye sees far more than the game's frustum, and on the panel
+// none of that may show -- it would spill round the edges of the frame.
+static void morph_chain(const float P[16], MorphKind kind, float chain[16], float fog[16],
+                        float crop[16]) {
+    const float k = g_morph;
+    const float D = -g_panel[14];
+    float T[16], S[16], sigma = D;
+    mat4_mul(g_panel, P, T);
+    memset(fog, 0, 16 * sizeof(float));
+    fog[0] = fog[5] = fog[10] = fog[15] = 1.0f;
+    switch (kind) {
+    case MorphKind::World:
+        world_pitch_matrix(S);
+        for (int i = 0; i < 16; i++) fog[i] = (1.0f - k) * fog[i] + k * g_vr_view_world[i];
+        break;
+    case MorphKind::CameraHeld:
+        memset(S, 0, sizeof(S));
+        S[0] = S[5] = S[10] = S[15] = 1.0f;
+        for (int i = 0; i < 16; i++) fog[i] = (1.0f - k) * fog[i] + k * g_vr_view[i];
+        break;
+    case MorphKind::Hud:
+        mat4_mul(g_vr_hud, P, S);
+        sigma = 1.0f;
+        break;
+    }
+    float M[16], VM[16];
+    for (int i = 0; i < 16; i++) M[i] = (1.0f - k) * T[i] + k * sigma * S[i];
+    mat4_mul(g_vr_view, M, VM);
+    mat4_mul(g_vr_proj, VM, chain);
+
+    memset(crop, 0, 16 * sizeof(float));
+    if (kind == MorphKind::Hud) {
+        // The HUD maps the game's frame onto its own at both ends; there is nothing outside
+        // it to hide.
+        for (int i = 0; i < 4; i++) crop[12 + i] = 1.0f;
+        return;
+    }
+    const float s = 1.0f / fmaxf(1.0f - k, 1e-4f);
+    // Row r of P is (P[r], P[4+r], P[8+r], P[12+r]); distance i is crop's row i.
+    for (int c = 0; c < 4; c++) {
+        const float w = s * P[c * 4 + 3], x = P[c * 4 + 0], y = P[c * 4 + 1];
+        crop[c * 4 + 0] = w - x;
+        crop[c * 4 + 1] = w + x;
+        crop[c * 4 + 2] = w - y;
+        crop[c * 4 + 3] = w + y;
+    }
+    // However wide s opens them, planes through the game's camera still hide everything
+    // behind its image plane -- and that camera looks down, so with the head turned the
+    // sky off to the side is behind it, and stayed black until the morph finished and it
+    // popped in. So the planes also back away from the camera, by an amount that is
+    // nothing at the start and passes the far end of the world well before the end.
+    const float back = D * (s * s - 1.0f);
+    for (int i = 0; i < 4; i++) crop[12 + i] += back;
+}
+
+// Paints what the panel shows where the game drew nothing: the EFB's clear colour, inside
+// the window the crop leaves open and black outside it, as theater is black around its
+// panel. A quad well out in the main camera's frustum, morphed like the world -- so it is
+// the panel's own rectangle at the start and opens out with the crop. Drawn first, with no
+// depth, so the scene simply covers it.
+static void draw_morph_background(const float P[16], const float rgb[3]) {
+    float chain[16], fog[16], crop[16];
+    morph_chain(P, MorphKind::World, chain, fog, crop);
+    const float s = 1.0f / fmaxf(1.0f - g_morph, 1e-4f);
+    const float z = 4000.0f;   // game units; anywhere inside both frustums does
+    glUseProgram(g_bg_prog);
+    glUniformMatrix4fv(g_bg_u_mvp, 1, GL_FALSE, chain);
+    glUniformMatrix4fv(g_bg_u_crop, 1, GL_FALSE, crop);
+    // Half again past the crop on each side, so the crop and not the quad is the edge.
+    glUniform4f(g_bg_u_quad, 1.5f * s * z / P[0], 1.5f * s * z / P[5], -z, 0.0f);
+    glUniform3f(g_bg_u_col, rgb[0], rgb[1], rgb[2]);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_BLEND);
+    set_logic_op_off();
+    glDisable(GL_CULL_FACE);
+    glColorMask(1, 1, 1, 1);
+    glBindVertexArray(g_copy_vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(g_vao);
+    glDepthMask(GL_TRUE);
 }
 
 // The frame the HUD is painted on in stereo: a quad `dist` game units ahead of the game's
@@ -1474,11 +1665,37 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     }
     if (eyelog && do_copies)
         fprintf(stderr, "[eye]   background %.3f %.3f %.3f\n", bg[0], bg[1], bg[2]);
-    glClearColor(bg[0], bg[1], bg[2], 1);
+    // Mid-morph, theater's black surround comes up to the scene's clear colour as the
+    // window opens, so the edge of the background quad is gone by the time it would show.
+    const bool morph = g_morph < 1.0f;
+    const float surround = morph ? g_morph * g_morph : 1.0f;
+    glClearColor(bg[0] * surround, bg[1] * surround, bg[2] * surround, 1);
     clear_depth(1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glBindVertexArray(g_vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+    // GL_CLIP_DISTANCE0, which ES knows only by its extension's name.
+    constexpr GLenum kClipDistance0 = 0x3000;
+    if (morph) {
+        // The main camera's projection, from the first world draw an eye replays: the
+        // background is a piece of its frustum. A frame with no world in it -- a menu --
+        // gets a stand-in the shape of the panel, since only where it lands matters.
+        float P[16] = {0};
+        P[0] = 2.5f / 1.6f; P[5] = 2.5f / 1.2f; P[10] = -1.0f; P[11] = -1.0f; P[14] = -1.0f;
+        for (size_t i = 0; i < b.cmds.size(); i++) {
+            if (b.cmds[i].type != CmdType::Draw || skip[i]) continue;
+            const PixelState& st = b.states[b.cmds[i].state];
+            const float* p = st.proj;
+            if ((int)p[6] != 0 || st.view_space) continue;
+            memset(P, 0, sizeof(P));
+            P[0] = p[0]; P[8] = p[1]; P[5] = p[2]; P[9] = p[3]; P[10] = p[4]; P[14] = p[5];
+            P[11] = -1.0f;
+            break;
+        }
+        if (g_clip_ok)
+            for (GLenum i = 0; i < 4; i++) glEnable(kClipDistance0 + i);
+        draw_morph_background(P, bg);
+    }
 
     uint32_t cur_state = UINT32_MAX;
     gl_state_invalidate();
@@ -1551,6 +1768,8 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     if (eyelog && do_copies)
         fprintf(stderr, "[eye]   drawn=%d skipped_composite=%d spray=%d\n", n_drawn,
                 n_skipped, n_spray);
+    if (morph && g_clip_ok)
+        for (GLenum i = 0; i < 4; i++) glDisable(kClipDistance0 + i);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     g_vr_active = false;
     return true;

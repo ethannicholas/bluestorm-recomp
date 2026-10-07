@@ -82,8 +82,27 @@ static std::string swizzle(const ShaderKey& k, uint32_t table) {
 
 static const char* kCompare[8] = {"false", "(%s < %s)", "(%s == %s)", "(%s <= %s)", "(%s > %s)", "(%s != %s)", "(%s >= %s)", "true"};
 
-std::string gen_vertex_shader() {
+// The morph between theater and stereo crops the scene to a window that opens out of the
+// game's own frustum, which is what clip distances are for. Desktop GL has them in core; ES
+// needs an extension, and its directive has to come straight after #version, ahead of the
+// precision statements WR_GLSL_VERSION carries. Without it the morph runs uncropped rather
+// than not at all.
+std::string glsl_header_with_clip() {
     std::string s = WR_GLSL_VERSION;
+#ifdef WR_GL_ES
+    s.insert(s.find('\n') + 1,
+             "#ifdef GL_EXT_clip_cull_distance\n"
+             "#extension GL_EXT_clip_cull_distance : enable\n"
+             "#define WR_CLIP 1\n"
+             "#endif\n");
+#else
+    s += "#define WR_CLIP 1\n";
+#endif
+    return s;
+}
+
+std::string gen_vertex_shader() {
+    std::string s = glsl_header_with_clip();
     s += R"(
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec4 a_col0;
@@ -107,8 +126,12 @@ uniform float u_point_size;
 //   0 = flat, the game's own projection and GX viewport transform
 //   1 = world geometry through the eye projection
 //   2 = a 2D element, painted on the HUD frame out in front of the game's camera
+//   3 = part way between theater and stereo: u_proj is the whole morphed chain, folded
+//       on the CPU, and u_crop cuts the scene to the window opening out of the game's
+//       frustum. See render_set_vr_morph.
 uniform int u_vr;
-uniform mat4 u_view;       // eye transform, relative to the game's camera
+uniform mat4 u_view;       // eye transform, relative to the game's camera; under 3, fog's
+uniform mat4 u_crop;       // four clip distances, each linear in the vertex
 // The game's own projection reduced to what depth needs, as a function of view-space z:
 // clip z = .x * z + .y and clip w = .z * z + .w, so the last pair is (-1, 0) for a
 // frustum and (0, 1) for an ortho batch. Fog needs the depth GX would have written
@@ -137,7 +160,7 @@ void main() {
     // leaves the game's 60-degree frustum. WR_EYE_FOGZ=0 takes the game's depth instead,
     // which fogs exactly as the flat view does whatever the head is doing.
     static const bool eye_fog_z = !(getenv("WR_EYE_FOGZ") && atoi(getenv("WR_EYE_FOGZ")) == 0);
-    s += eye_fog_z ? "    float fz = (u_vr == 1) ? (u_view * vec4(a_pos, 1.0)).z : a_pos.z;\n"
+    s += eye_fog_z ? "    float fz = (u_vr == 1 || u_vr == 3) ? (u_view * vec4(a_pos, 1.0)).z : a_pos.z;\n"
                    : "    float fz = a_pos.z;\n";
     s += R"(    float gz = u_zproj.x * fz + u_zproj.y;
     float gw = u_zproj.z * fz + u_zproj.w;
@@ -154,6 +177,8 @@ void main() {
         // places the frame in the EFB, which an eye does not render into. Every term is
         // constant for the draw, so there is nothing left to do per vertex.
         gl_Position = u_proj * vec4(a_pos, 1.0);
+    } else if (u_vr == 3) {
+        gl_Position = u_proj * vec4(a_pos, 1.0);
     } else {
         vec4 clip = u_proj * vec4(a_pos, 1.0);
         vec4 p;
@@ -165,6 +190,14 @@ void main() {
         // so the flat path negates Y here to cancel it.
         gl_Position = vec4(p.x, -p.y, p.z, p.w);
     }
+#ifdef WR_CLIP
+    // Ignored unless enabled, which only the morph does.
+    vec4 cd = (u_vr == 3) ? u_crop * vec4(a_pos, 1.0) : vec4(1.0);
+    gl_ClipDistance[0] = cd.x;
+    gl_ClipDistance[1] = cd.y;
+    gl_ClipDistance[2] = cd.z;
+    gl_ClipDistance[3] = cd.w;
+#endif
     gl_PointSize = u_point_size;
     v_col0 = a_col0;
     v_col1 = a_col1;

@@ -42,6 +42,14 @@ void render_set_vr_eye(const float proj[16], const float view[16], const float h
 void render_hud_frame(float dist, float tan_half_fovy, float scale, float height,
                       float pitch_rad, float out[16]);
 
+// Fold the stereo view part of the way back into theater. At 0 an eye shows the game's own
+// frame flat on `panel` -- a matrix from the game's clip space to a rectangle in the eye's
+// space, built like render_hud_frame -- cropped to it and black around it, which is what
+// theater looks like from that eye. At 1 (or more) it is ordinary stereo. Every vertex
+// moves between the two in step with its own disparity; see morph_chain. Applies to the
+// eye passes that follow, until set again.
+void render_set_vr_morph(float t, const float panel[16]);
+
 // Rotate the world back by the game's chase-camera pitch, so the sea comes out level with
 // the room instead of sloping. Applies to world geometry only: the HUD frame is placed in
 // the headset's own space and stays where it is put. 0 renders what the game draws.

@@ -100,18 +100,38 @@ static void eye_matrices(float* proj, float* view, float* hud) {
     gx::render_hud_frame(kHudDist, fov, kHudScale, kHudHeight, kHudPitch, hud);
 }
 
-static void eye_dump(const char* dir, uint32_t n) {
-    std::vector<uint8_t> px((size_t)g_eye_w * g_eye_h * 4), fl(px.size());
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_eye_fbo);
-    glReadPixels(0, 0, g_eye_w, g_eye_h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+static void dump_fbo(GLuint fbo, int w, int h, const char* path) {
+    std::vector<uint8_t> px((size_t)w * h * 4), fl(px.size());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    const size_t stride = (size_t)g_eye_w * 4;
-    for (int y = 0; y < g_eye_h; y++)
-        memcpy(&fl[y * stride], &px[(size_t)(g_eye_h - 1 - y) * stride], stride);
+    const size_t stride = (size_t)w * 4;
+    for (int y = 0; y < h; y++)
+        memcpy(&fl[y * stride], &px[(size_t)(h - 1 - y) * stride], stride);
     for (size_t i = 3; i < fl.size(); i += 4) fl[i] = 255;
+    write_png(path, fl.data(), w, h);
+}
+
+static void eye_dump(const char* dir, uint32_t n, const char* suffix = "") {
     char path[512];
-    snprintf(path, sizeof(path), "%s/eye_%05u.png", dir, n);
-    write_png(path, fl.data(), g_eye_w, g_eye_h);
+    snprintf(path, sizeof(path), "%s/eye_%05u%s.png", dir, n, suffix);
+    dump_fbo(g_eye_fbo, g_eye_w, g_eye_h, path);
+}
+
+// WR_EYE_MORPH=0,0.5,1 renders every dumped frame once per value, as eye_NNNNN_mXXXX.png
+// (thousandths),
+// with the stereo view folded that far back towards theater -- see render_set_vr_morph --
+// plus the flat frame as flat_NNNNN.png. The panel hangs where theater hangs it, at this
+// harness's 100 game units per metre, so the identity view sees it 2.5 m ahead and 3.2 m
+// wide: at 0 the middle of the eye image should be flat_NNNNN.png, and nothing else.
+static std::vector<float> g_morphs;
+static GLuint g_flat_fbo, g_flat_tex;
+static void morph_panel(float* m) {
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = 160.0f;
+    m[5] = 120.0f;
+    m[14] = -250.0f;
+    m[15] = 1.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,8 +265,25 @@ int main(int argc, char** argv) {
     if (g_eye_mode) {
         eye_init();
         gx::render_set_world_pitch(kWorldPitch);
+        if (const char* s = getenv("WR_EYE_MORPH")) {
+            for (const char* q = s; *q;) {
+                g_morphs.push_back((float)atof(q));
+                q = strchr(q, ',');
+                if (!q) break;
+                q++;
+            }
+            glGenTextures(1, &g_flat_tex);
+            glBindTexture(GL_TEXTURE_2D, g_flat_tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 640, 480, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glGenFramebuffers(1, &g_flat_fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, g_flat_fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_flat_tex, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
     }
-    gx::render_set_window_size(640 * scale, 480 * scale);
+    // The flat frame WR_EYE_MORPH dumps is blitted at 640x480 whatever --scale says.
+    gx::render_set_window_size(g_morphs.empty() ? 640 * scale : 640,
+                               g_morphs.empty() ? 480 * scale : 480);
 
     // WR_AUDIO=1 opens the device here too. Off by default because this harness exists
     // to be run over adb on a device somebody may be wearing, but it is the only way to
@@ -311,6 +348,7 @@ int main(int argc, char** argv) {
                 float P[16], V[16], H[16];
                 eye_matrices(P, V, H);
                 gx::render_set_vr_eye(P, V, H);
+                gx::render_set_vr_morph(1.0f, nullptr);
                 gx::render_execute_eye(*b, g_eye_fbo, g_eye_w, g_eye_h, true);
                 presented++;
                 // WR_DUMP_COPIES=N dumps whenever a frame holds at least N EFB copies,
@@ -341,8 +379,28 @@ int main(int argc, char** argv) {
                                       ((int)presented >= range_lo && (int)presented <= range_hi);
                 if (gx::g_dump_dir && in_range &&
                     ((gx::g_dump_every && presented % gx::g_dump_every == 0) ||
-                     (want_copies && ncopies >= want_copies)))
+                     (want_copies && ncopies >= want_copies))) {
                     eye_dump(gx::g_dump_dir, presented);
+                    if (!g_morphs.empty()) {
+                        float panel[16];
+                        morph_panel(panel);
+                        for (float m : g_morphs) {
+                            gx::render_set_vr_morph(m, panel);
+                            gx::render_execute_eye(*b, g_eye_fbo, g_eye_w, g_eye_h, false);
+                            char suffix[16];
+                            snprintf(suffix, sizeof(suffix), "_m%04d", (int)lroundf(m * 1000.0f));
+                            eye_dump(gx::g_dump_dir, presented, suffix);
+                        }
+                        gx::render_set_vr_morph(1.0f, nullptr);
+                        // The flat frame, last: it runs the batch again, copies and all.
+                        gx::render_set_output_fbo(g_flat_fbo);
+                        gx::render_execute(*b);
+                        gx::render_set_output_fbo(0);
+                        char path[512];
+                        snprintf(path, sizeof(path), "%s/flat_%05u.png", gx::g_dump_dir, presented);
+                        dump_fbo(g_flat_fbo, 640, 480, path);
+                    }
+                }
             } else if (gx::render_execute(*b)) presented++;
         }
 

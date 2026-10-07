@@ -673,6 +673,29 @@ void android_main(android_app* app) {
     // the compositor reprojects them for the current head pose.
     XrCompositionLayerProjectionView proj_views[2]{};
     bool have_proj = false;
+    // Where the presentation stands between theater (0) and stereo (1). `stereo` says where
+    // it is going; this follows it over `transition_s`. Anywhere above 0 the eyes are
+    // rendered, with the stereo view folded part way back onto the theater panel -- see
+    // render_set_vr_morph -- so the panel is only shown again once it is all the way home.
+    float morph = stereo ? 1.0f : 0.0f;
+    XrTime last_display = 0;
+    // Whether the panel's swapchain holds a frame drawn since the eyes last took over.
+    // Until it does, the eyes' last image stays up: it was rendered almost exactly flat,
+    // and the panel's alternative is whatever it showed before the race.
+    bool quad_fresh = !stereo;
+    // The panel in the eye's space, in game units: where theater hangs it, seen from where
+    // mat_view puts the eye. It is in the headset's room, not the game's, so it takes the
+    // viewpoint offset and nothing of the world's pitch.
+    float panel[16] = {0};
+    {
+        const float u = g_vrcfg.units_per_metre;
+        panel[0] = 0.5f * kQuadW * u;
+        panel[5] = 0.5f * kQuadH * u;
+        panel[12] = g_vrcfg.offset_x;
+        panel[13] = g_vrcfg.offset_y;
+        panel[14] = g_vrcfg.offset_z - kQuadDist * u;
+        panel[15] = 1.0f;
+    }
     XrTime last_report = 0;
 
     while (!app->destroyRequested) {
@@ -816,19 +839,40 @@ void android_main(android_app* app) {
                     agree = 0;
                 }
             }
+        }
+
+        // Advance the morph on the compositor's clock. The eyes only take it up when the
+        // game delivers a frame, so it moves at the game's rate, not this one -- but
+        // stepping it here keeps its duration honest however unevenly frames arrive.
+        {
+            const float target = stereo ? 1.0f : 0.0f;
+            if (g_vrcfg.transition_s <= 0.0f || last_display == 0) {
+                morph = target;
+            } else {
+                const float step = (float)(fs.predictedDisplayTime - last_display) * 1e-9f /
+                                   g_vrcfg.transition_s;
+                morph = target > morph ? fminf(target, morph + step) : fmaxf(target, morph - step);
+            }
+            last_display = fs.predictedDisplayTime;
+        }
+        const bool eyes = morph > 0.0f;
+        if (eyes) quad_fresh = false;
+
+        if (batch) {
             // The two views want the EFB at different sizes -- see theater_scale. This is
             // the moment to change it: a whole frame is about to be drawn into it, and a
             // display frame without a new game frame repaints the panel from what is
             // already there, which a re-scale would have thrown away. A no-op otherwise.
-            gx::render_set_internal_scale(stereo ? g_vrcfg.stereo_scale
-                                                 : g_vrcfg.theater_scale);
+            // It follows the path that will draw, which mid-morph is the eyes'.
+            gx::render_set_internal_scale(eyes ? g_vrcfg.stereo_scale
+                                               : g_vrcfg.theater_scale);
         }
 
         std::vector<XrCompositionLayerBaseHeader*> layers;
         XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
         XrCompositionLayerProjection proj_layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
 
-        if (fs.shouldRender && stereo) {
+        if (fs.shouldRender && eyes) {
             // --- stereo: the world through each eye, as a projection layer ---
             XrViewState vs{XR_TYPE_VIEW_STATE};
             uint32_t nv = 0;
@@ -859,6 +903,9 @@ void android_main(android_app* app) {
                                      tan_half, g_vrcfg.hud_scale,
                                      g_vrcfg.hud_height_m * g_vrcfg.units_per_metre,
                                      g_vrcfg.hud_pitch_deg * 3.14159265f / 180.0f, H);
+                // Eased at both ends, so the world neither lurches out of the panel nor
+                // slams into place.
+                gx::render_set_vr_morph(morph * morph * (3.0f - 2.0f * morph), panel);
                 for (int e = 0; e < 2; e++) {
                     auto& eye = g_xr.eyes[e];
                     uint32_t ei = 0;
@@ -892,12 +939,6 @@ void android_main(android_app* app) {
                 // A half-filled projection layer is invalid, so only keep it when both
                 // eyes were acquired.
                 if (both_eyes) have_proj = true;
-            }
-            if (have_proj) {
-                proj_layer.space = g_xr.space;
-                proj_layer.viewCount = 2;
-                proj_layer.views = proj_views;
-                layers.push_back((XrCompositionLayerBaseHeader*)&proj_layer);
             }
         } else if (fs.shouldRender) {
             // Touch the swapchain only when there is a new game frame to put in it.
@@ -933,7 +974,7 @@ void android_main(android_app* app) {
                     // here was tried against the character-select flicker and changed
                     // nothing, at about a tenth of the game's frame rate.
                     glFlush();
-                    if (drew) have_content = true;
+                    if (drew) have_content = quad_fresh = true;
                 }
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
                 xrReleaseSwapchainImage(g_xr.swapchain, &ri);
@@ -942,11 +983,24 @@ void android_main(android_app* app) {
             skipped++;
         }
 
-        // Submit the quad on every frame that has content, including ones the runtime
+        // Once the panel has a frame of its own, the eyes' last images are history.
+        // Forgetting them keeps the next race from opening on the end of the last one
+        // should its first eye frame fail to render.
+        if (quad_fresh) have_proj = false;
+
+        // Submit whichever layer is current on every frame, including ones the runtime
         // told us not to render. Dropping the layer shows the user an empty frame,
         // which strobes against the frames that do carry it; re-submitting it just
-        // re-displays the last released image.
-        if (have_content && !stereo) {
+        // re-displays the last released image -- reprojected for the current head pose.
+        if (have_proj && !quad_fresh) {
+            proj_layer.space = g_xr.space;
+            proj_layer.viewCount = 2;
+            proj_layer.views = proj_views;
+            layers.push_back((XrCompositionLayerBaseHeader*)&proj_layer);
+        }
+        // The panel also holds until the eyes have drawn something: a manual toggle can
+        // land on a display frame with no game frame to render them from.
+        if (have_content && (quad_fresh || !have_proj)) {
             quad.layerFlags = 0;
             quad.space = g_xr.space;
             quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;

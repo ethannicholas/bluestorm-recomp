@@ -403,7 +403,33 @@ clears when a race is *quit*, so it gates the rest; `0x80625A54` is the start se
 brings stereo up with the starting lights; `0x806193BC` is the course's wave height, which is what
 notices a race *finishing*. Stereo is `on_course > 0 && (wave_height || start_state == countdown)`.
 Clicking the
-right thumbstick pins the view manually, which is also the way to compare the two. The sections
+right thumbstick pins the view manually, which is also the way to compare the two.
+
+A switch either way is a morph rather than a cut, `transition_s` long (1 s by default). Theater
+is reachable from the stereo renderer: run every draw through the chain the HUD already uses —
+the game's own projection onto a flat rectangle, seen from each eye — with the rectangle where
+theater hangs its panel, and each eye sees the game's frame on that panel. So the eyes are drawn
+with every vertex blended between that point and its real one (`render_set_vr_morph`), and the
+picture opens out of the panel into the world, or folds back onto it. Details that matter:
+
+- The blend is of homogeneous points, one matrix per draw, so the GPU's clipping still works on
+  the panel side: a vertex behind the game's camera stays behind it. Weighted as it is, it is
+  interpolation in 1/depth — each vertex's disparity grows evenly, rather than distant scenery
+  waiting on the panel and leaving all at once.
+- A crop, as clip distances, cuts the scene to the game's frustum at the start and opens out from
+  it; outside it is theater's black, coming up to the scene's clear colour. On ES this needs
+  `GL_EXT_clip_cull_distance`; without it the morph runs uncropped and says so once.
+- Exactly flat is degenerate — every vertex on one plane, with nothing for the depth test to sort
+  by — so the morph never goes below 0.002, which already matches the flat frame.
+- Only the eyes draw during a morph, and only when the game delivers a frame, so it advances at
+  the game's rate. The panel comes back once it has a frame of its own; until then the eyes'
+  last, nearly flat image stays up.
+
+`WR_EYE_MORPH=0,0.5,1` makes `waverace_egl --eye` dump every dumped frame at each value, plus
+the flat frame beside it, which is how the morph is checked without a headset: at 0 the middle of
+the eye image is the flat frame, and nothing else.
+
+The sections
 below are the working: how they were found, and why the earlier answers were wrong.
 
 They replaced counting a frame's perspective draws, which was wrong in both directions: the course
@@ -975,6 +1001,7 @@ world_pitch_deg 23.2     # degrees of chase-camera pitch taken back out of the w
 theater_scale 3          # EFB samples per hardware pixel, per axis, in theater
 stereo_scale 1           #   and in stereo, where the EFB is only scratch space
 start_in_stereo 0          # start in stereo rather than theater
+transition_s 1           # seconds the morph between the two views takes; 0 snaps
 ```
 
 The defaults are starting guesses, `units_per_metre` especially. The logged values appear in

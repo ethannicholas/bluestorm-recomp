@@ -31,6 +31,8 @@ struct ShaderKeyHash {
 
 ShaderKey make_shader_key(const PixelState& st);
 std::string gen_vertex_shader();
+// WR_GLSL_VERSION, plus what writing gl_ClipDistance needs; defines WR_CLIP where it can.
+std::string glsl_header_with_clip();
 std::string gen_pixel_shader(const ShaderKey& k);
 
 }  // namespace gx
