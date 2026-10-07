@@ -57,10 +57,6 @@ brew install cmake ninja sdl2 python
 - The Windows SDK and MSVC headers/libraries (the "Desktop development with C++" workload of
   Visual Studio or the standalone Build Tools) — clang targets the MSVC ABI and uses them
 
-Clang is used rather than MSVC: the runtime and the generated code rely on GCC-style flags and
-builtins, and clang copes better with the very large generated translation units. SDL2 is built
-from source automatically (`FetchContent`), since there are no prebuilt ARM64 Windows binaries.
-
 With [winget](https://learn.microsoft.com/windows/package-manager/):
 
 ```powershell
@@ -103,14 +99,6 @@ The build uses the first `.iso` it finds in `rom/`. To use an image elsewhere, p
 ```powershell
 .\build.ps1         # Windows
 ```
-
-The first run configures CMake, extracts `main.dol` from your image into `build/`, verifies it,
-recompiles all 2,572 game functions to C (`build/gen/`) and builds the `build/waverace`
-executable. Recompilation plus compilation takes well under a minute on a recent Mac.
-
-Without a game image, only `ninja -C build runtime_check` is available: it compiles the runtime
-(but cannot link, which needs the recompiled game code). That is enough to check a change to the
-runtime or a port to a new platform.
 
 ### 3. Run
 
