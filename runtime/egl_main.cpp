@@ -14,6 +14,7 @@
 #include "gx/render.h"
 #include "gx/render_gl.h"
 #include "start_rig.h"
+#include "first_person.h"
 #include "input_script.h"
 #include "gx/gl.h"
 #include "gx/gl_msrtt.h"
@@ -525,7 +526,9 @@ int main(int argc, char** argv) {
                     static int was = -1;
                     if ((int)on != was) {
                         was = on;
-                        gx::render_set_first_person(on, g_fp_anchor[0], g_fp_anchor[1], g_fp_anchor[2]);
+                        // The headset's default easing (vr_config.h), with this harness's anchor.
+                        wr::first_person_configure(g_fp_anchor, 0.0f, 0.1f, 0.6f, 0.15f);
+                        gx::render_set_first_person(on);
                         fprintf(stderr, "[fp] frame %u: first person %s\n", presented, on ? "on" : "off");
                     }
                 }

@@ -26,8 +26,9 @@ gcn_add_game(
 if(ANDROID AND GCN_HAVE_GAME_ISO)
   # The same core with real audio instead of the stub: the mix in gcn-recomp is portable,
   # only the device belongs to a platform.
-  set(CORE_SOURCES_AUDIO ${GCN_CORE_SOURCES} ${GCN_AUDIO_SOURCES}
-    ${CMAKE_SOURCE_DIR}/runtime/audio_aaudio.cpp)
+  set(CORE_SOURCES_AUDIO ${GCN_CORE_SOURCES})
+  list(REMOVE_ITEM CORE_SOURCES_AUDIO ${GCN_RT}/audio_stub.cpp)
+  list(APPEND CORE_SOURCES_AUDIO ${GCN_AUDIO_SOURCES} ${CMAKE_SOURCE_DIR}/runtime/audio_aaudio.cpp)
   # The starting-light rig detector, which the VR frontend keys stereo off, and the
   # first-person eye on the ski.
   set(GAME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/start_rig.cpp ${CMAKE_SOURCE_DIR}/runtime/first_person.cpp)

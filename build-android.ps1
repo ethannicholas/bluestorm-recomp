@@ -43,7 +43,12 @@ if (-not (Test-Path gcn-recomp/CMakeLists.txt)) {
 }
 
 $buildDir = 'build-android'
-if (-not (Test-Path "$buildDir/build.ninja")) {
+# Configure when there is no build, and also when the cache does not have GCN_BENCH_ONLY
+# on: a directory configured before the gcn-recomp split has WR_BENCH_ONLY instead, and
+# would otherwise go looking for the desktop SDL2.
+$cache = "$buildDir/CMakeCache.txt"
+if (-not (Test-Path "$buildDir/build.ninja") -or
+    -not (Select-String -Path $cache -Pattern '^GCN_BENCH_ONLY:BOOL=ON$' -Quiet -ErrorAction SilentlyContinue)) {
     # ANDROID_STL=c++_static keeps the binaries self-contained, so there is no
     # libc++_shared.so to push alongside them. GCN_BENCH_ONLY skips SDL2 and the desktop
     # renderer targets; waverace_egl is added separately and brings its own frontend.
