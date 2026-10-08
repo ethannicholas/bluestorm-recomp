@@ -34,9 +34,9 @@ static bool stream_start();
 static aaudio_data_callback_result_t on_data(AAudioStream*, void*, void* audio_data,
                                              int32_t frames) {
     g_callbacks.fetch_add(1, std::memory_order_relaxed);
-    // WR_AUDIO_TEST=1 fills the buffer here instead of asking for the mix, which
+    // GCN_AUDIO_TEST=1 fills the buffer here instead of asking for the mix, which
     // separates "the device is not pulling" from "the mix is not returning".
-    static const bool test = getenv("WR_AUDIO_TEST") != nullptr;
+    static const bool test = getenv("GCN_AUDIO_TEST") != nullptr;
     if (test) {
         static double ph;
         int16_t* o = (int16_t*)audio_data;
@@ -116,13 +116,13 @@ static bool stream_start() {
                             AAudio_convertResultToText(r));
         return false;
     }
-    // WR_AUDIO_PERF=none asks for the ordinary mixer path rather than the low-latency
-    // one, and WR_AUDIO_BURSTS=N sets the device buffer in bursts (0 leaves AAudio's own
+    // GCN_AUDIO_PERF=none asks for the ordinary mixer path rather than the low-latency
+    // one, and GCN_AUDIO_BURSTS=N sets the device buffer in bursts (0 leaves AAudio's own
     // choice alone). Both are here because what a given device will actually start
     // playing is not something the documentation settles.
-    const char* perf = getenv("WR_AUDIO_PERF");
+    const char* perf = getenv("GCN_AUDIO_PERF");
     const bool low_latency = !(perf && !strcmp(perf, "none"));
-    const int bursts = getenv("WR_AUDIO_BURSTS") ? atoi(getenv("WR_AUDIO_BURSTS")) : 2;
+    const int bursts = getenv("GCN_AUDIO_BURSTS") ? atoi(getenv("GCN_AUDIO_BURSTS")) : 2;
 
     AAudioStreamBuilder_setDirection(b, AAUDIO_DIRECTION_OUTPUT);
     AAudioStreamBuilder_setSharingMode(b, AAUDIO_SHARING_MODE_SHARED);

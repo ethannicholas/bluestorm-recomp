@@ -4,14 +4,14 @@ What the renderer requires of GL, what the ES profile cannot do, and how the sha
 The user-facing summary is in the top-level README's Graphics section.
 
 The renderer needs an **OpenGL 3.3 core profile**, or **OpenGL ES 3.2** when built with
-`-DWR_GL_ES=ON` (the default for Android). It uses nothing newer than GL 3.3 / ES 3.0:
+`-DGCN_GL_ES=ON` (the default for Android). It uses nothing newer than GL 3.3 / ES 3.0:
 samplers, VAOs, FBOs and explicit attribute locations are the whole requirement, so a 3.3 floor
 keeps the mapping layers that stop there usable. One source serves both profiles; where they
 differ, the difference is confined to a small block of helpers at the top of
-`runtime/gx/render_gl.cpp`.
+`gcn-recomp/runtime/gx/render_gl.cpp`.
 
 On macOS the system framework is linked directly; elsewhere the entry points are resolved at
-runtime by a vendored [glad](https://gen.glad.sh/) loader (`runtime/gx/glad/` and
+runtime by a vendored [glad](https://gen.glad.sh/) loader (`gcn-recomp/runtime/gx/glad/` and
 `glad_es/`, regenerated with `glad --api gl:core=3.3 --extensions ""` and
 `--api gles2:core=3.2`).
 

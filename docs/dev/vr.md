@@ -4,7 +4,7 @@ Everything learned building the headset frontend: how the app is put together, h
 switches between the flat theater panel and per-eye stereo, how the game's frame is split for the
 eyes, where the HUD goes, and the investigations behind each of those answers, including the ones
 that were wrong first. Read the relevant section before changing anything in
-`runtime/openxr_main.cpp`, `runtime/egl_main.cpp` or the eye paths in `runtime/gx/render_gl.cpp`.
+`runtime/openxr_main.cpp`, `runtime/egl_main.cpp` or the eye paths in `gcn-recomp/runtime/gx/render_gl.cpp`.
 
 The user-facing instructions (building, installing, controls, `vr.txt`) are in the top-level
 README. The headless harness used throughout (`waverace_egl --eye`) is described in
@@ -56,7 +56,7 @@ so the test must not depend on the model. What they share is how the game draws 
 perspective through an identity position matrix, hung in view space in front of the camera
 (`PixelState::view_space`). That is not the only thing drawn that way -- Championship's opening
 screen and every course flyover draw the whole course through the identity too, transformed on
-the CPU -- but nothing else so drawn stays near the camera. `WR_RIGLOG=1` in `waverace_egl` logs
+the CPU -- but nothing else so drawn stays near the camera. `GCN_RIGLOG=1` in `waverace_egl` logs
 those draws per frame, and the detector's verdict when it changes; on all five reachable courses:
 
 | on screen | draws | vertices | extent |
@@ -76,7 +76,7 @@ Two variables were tried for the start and failed:
 - `0x80625A54`, the start sequence's phase, reads 12 during the intro and 5 from the lights to
   just after the start. But 5 is not only the countdown. Championship -> Exhibition -> Dolphin
   Park opens on a screen that cycles views of the course until A is pressed, and five seconds in
-  the phase goes to 5 and stays there (traced with `WR_WATCH=0x80602160,0x80625A54,0x806193BC`,
+  the phase goes to 5 and stays there (traced with `GCN_WATCH=0x80602160,0x80625A54,0x806193BC`,
   no input after picking the course) -- the headset switched to stereo on it every time. In Time
   Attack the phase never leaves 0.
 - The wave height alone starts stereo up to a second and a half into the countdown, with the
@@ -104,7 +104,7 @@ picture opens out of the panel into the world, or folds back onto it. Details th
   the game's rate. The panel comes back once it has a frame of its own; until then the eyes'
   last, nearly flat image stays up.
 
-`WR_EYE_MORPH=0,0.5,1` makes `waverace_egl --eye` dump every dumped frame at each value, plus
+`GCN_EYE_MORPH=0,0.5,1` makes `waverace_egl --eye` dump every dumped frame at each value, plus
 the flat frame beside it, which is how the morph is checked without a headset: at 0 the middle of
 the eye image is the flat frame, and nothing else.
 
@@ -121,15 +121,15 @@ could only read 0 or 1, and that belief was wrong — see
 
 ### Finding it, and why the first two answers were wrong
 
-`WR_RAMSNAP=<dir>` makes `waverace_egl` write the low 8 MB of guest RAM beside a PNG every
-`WR_RAMSNAP_EVERY` frames; the PNGs say which snapshot is a menu, the overview, a race or the
-results. `WR_RAMSNAP_RANGE=a-b` bounds it to a window of frames: a transition that takes a second
+`GCN_RAMSNAP=<dir>` makes `waverace_egl` write the low 8 MB of guest RAM beside a PNG every
+`GCN_RAMSNAP_EVERY` frames; the PNGs say which snapshot is a menu, the overview, a race or the
+results. `GCN_RAMSNAP_RANGE=a-b` bounds it to a window of frames: a transition that takes a second
 needs a snapshot every few frames to bracket, and a whole run at that interval is gigabytes, while
 the states either side of one boundary are all a diff for that boundary needs. Asking for words holding one value across every racing snapshot and a different single
 value across every non-racing one is then a few lines of numpy.
 
 Sampled every 150 frames that gave `0x80631FA4`, apparently a perfect 0/1 race flag. It is not:
-traced every frame with `WR_WATCH=<addr,...>` it drops to 0 for ten frames in every seventy-four,
+traced every frame with `GCN_WATCH=<addr,...>` it drops to 0 for ten frames in every seventy-four,
 which would have flapped the view exactly as the draw count did. **Snapshots can only disprove a
 flag, never confirm one** — a blink shorter than the sampling interval is invisible, and seven
 samples landing on the steady phase of an 86%-duty signal is a coin toss, not evidence.
@@ -230,20 +230,20 @@ It is not a variable. It is field `+0x20` of a 3840-byte object, whose first `0x
 at `+0x18` that is freed when non-null. Identically shaped descriptors sit at `0x80632ED8` and
 `0x80632F68`.
 
-A `WR_WATCH` build then named the two instructions that touch it across a whole race. That build is
-not one of the presets — `WR_WATCH` has to reach the generated C as well as the runtime, since the
+A `GCN_WATCH` build then named the two instructions that touch it across a whole race. That build is
+not one of the presets — `GCN_WATCH` has to reach the generated C as well as the runtime, since the
 hook sits on every store the recompiler emits:
 
 ```
 cmake -S . -B build-android-watch -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_static \
-  -DWR_BENCH_ONLY=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_C_FLAGS=-DWR_WATCH -DCMAKE_CXX_FLAGS=-DWR_WATCH
+  -DGCN_BENCH_ONLY=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_C_FLAGS=-DGCN_WATCH -DCMAKE_CXX_FLAGS=-DGCN_WATCH
 ninja -C build-android-watch waverace_egl
 ```
 
-Run it with `WR_WATCH_ADDR=<hex address>` and it reports every change to that word, with the guest
+Run it with `GCN_WATCH_ADDR=<hex address>` and it reports every change to that word, with the guest
 PC of the instruction responsible:
 
 ```
@@ -322,7 +322,7 @@ antialiasing. That is less than the panel's own 2064×2208, and the lens magnifi
 the image further, so stereo looked soft and stair-stepped. They now render at `eye_scale` times
 the recommendation (1.4 by default: 2352×2464) with `msaa` samples (4 by default).
 
-The antialiasing is `GL_EXT_multisampled_render_to_texture` (`runtime/gx/gl_msrtt.h`). On a
+The antialiasing is `GL_EXT_multisampled_render_to_texture` (`gcn-recomp/runtime/gx/gl_msrtt.h`). On a
 tiled GPU the samples live only in tile memory and are averaged as each tile is written out, so
 the swapchain image stays single-sampled and the cost is mostly extra shading at edges. The water
 and spray read the eye's own image back part way through a frame, and that still works: the
@@ -330,7 +330,7 @@ read-back sees the resolved image, and the frames show the same water, reflectio
 with and without it.
 
 `waverace_egl --eye` measures this without a headset: `--eyes=2` renders both eyes as the headset
-does, `--eye-size=WxH` and `--msaa=N` set the target, and `WR_EYE_GPU=1` reports the eye passes'
+does, `--eye-size=WxH` and `--msaa=N` set the target, and `GCN_EYE_GPU=1` reports the eye passes'
 GPU time from timer queries every 2 s. On a Quest 3, mid-race on the scripted route:
 
 | eyes | GPU per game frame | render-thread time for the eyes | lowest fps |
@@ -401,16 +401,16 @@ keeps its wobble. It costs one full-target copy per eye on frames that have such
 
 The coordinate swap is a uniform rather than a shader variant, so the flat path is untouched: it
 keeps the coordinate the game computed, which is right there. Dropping these draws instead
-(`WR_EYE_SKIPCOMP=1`) leaves the seabed showing through bare sand, and sending them down the overlay
+(`GCN_EYE_SKIPCOMP=1`) leaves the seabed showing through bare sand, and sending them down the overlay
 path puts the ocean on the HUD frame, racer and all.
 
 What the eye is *cleared* to is part of that same lookup. The water refracts whatever stands
 behind it, and out past the point where a course gives the sea a bottom that is nothing at all --
 just the colour the buffer was cleared to, which in a race is a blue-grey the game sets with the
-copy ahead of the main scene (`WR_EYELOG=1` prints it). An eye cleared to black turned the open
+copy ahead of the main scene (`GCN_EYELOG=1` prints it). An eye cleared to black turned the open
 sea black in stereo while the flat view, cleared to the game's own colour, showed water. On
 Southern Island that took most of the distance with it, and it was neither the geometry nor the
-projection: it survived the game's own frustum (`WR_EYE_GAMEPROJ=1`) and it survived fog being
+projection: it survived the game's own frustum (`GCN_EYE_GAMEPROJ=1`) and it survived fog being
 switched off. So the eye takes its clear from the batch -- the last copy to clear the colour
 buffer ahead of the first draw the eye replays.
 
@@ -426,7 +426,7 @@ delivers the exact value where a single interpolated z/w would not. The depth fe
 own and not the game camera's: fog is a distance cue, and the distance that matters to a viewer
 who has turned their head is the one along their own line of sight, where the game's z would fog
 something off to the side as though it were only as far away as its forward depth.
-`WR_EYE_FOGZ=0` takes the game's depth instead, which fogs exactly as the flat view does whatever
+`GCN_EYE_FOGZ=0` takes the game's depth instead, which fogs exactly as the flat view does whatever
 the head is doing.
 
 The spray grabs are the same mechanism one size down — partial EFB copies replayed as billboards at
@@ -441,7 +441,7 @@ the texture instead.
 Measured on the device, a frame at speed holds 30–65 copies, of which 33 or so are grabs; the
 other partial copies in such a frame (480×480, 128×128, 320×240) all clear, so the clear flag
 alone separates them and the size test is only belt and braces. A droplet draw is one TEV stage
-with one indirect stage, a static indirect matrix and no wrap — `WR_EYELOG=1` prints that
+with one indirect stage, a static indirect matrix and no wrap — `GCN_EYELOG=1` prints that
 configuration for the first substituted draw of a frame, which is what settled the next paragraph.
 
 Two things differ from the water. The spray composites itself over the *finished* scene, water
@@ -454,7 +454,7 @@ the offset is converted by the ratio of the two grids' pixels per unit of frustu
 negated in y (an EFB copy's row 0 is the top of its source rect, an eye grab's is the bottom).
 Without that conversion a droplet keeps a displacement of a few pixels on a target several times the
 EFB's width, a small fraction of the distortion asked for: it degenerates into a near-exact copy of
-its own background, so the spray disappears instead of reading wrongly. `WR_EYE_RIPPLE=0` leaves the
+its own background, so the spray disappears instead of reading wrongly. `GCN_EYE_RIPPLE=0` leaves the
 offset unconverted, which is what the water shipped with, and separates "the lookup is in the wrong
 space" from "the distortion is the wrong size".
 
@@ -469,7 +469,7 @@ reads the copy picks it up; the indirect lookup keeps `uv<n>`. Shaders with no E
 generate exactly as before either way.
 
 Verified on the device through the `--eye` harness in [diagnostics.md](diagnostics.md): at 103 km/h the rectangles over the HUD,
-the turbo bar and the water are gone, and the ski and its spray read as themselves. `WR_EYE_SPRAY=0`
+the turbo bar and the water are gone, and the ski and its spray read as themselves. `GCN_EYE_SPRAY=0`
 brings them back in the same run for comparison.
 
 `--eye-yaw=N` turns the head N degrees. With the view left at identity nothing in the image can be
@@ -478,14 +478,14 @@ face went through this harness looking perfectly correct. Dump a frame at two ya
 not move is locked to the head, and nothing in this game should be — not even the HUD, which is
 anchored to the game's camera rather than to the viewer.
 
-`WR_DUMP_RANGE=a-b` narrows dumping to a window of frames in both the flat and the eye path, so a
+`GCN_DUMP_RANGE=a-b` narrows dumping to a window of frames in both the flat and the eye path, so a
 short stretch can be caught every few frames without writing a gigabyte — anything that is only on
 screen for three seconds, the countdown among them, is missed by any interval coarse enough to run
 a whole race with.
 
-`WR_EYELOG=1` prints each frame's split — every copy with its size, source rect, clear flag, the
+`GCN_EYELOG=1` prints each frame's split — every copy with its size, source rect, clear flag, the
 draws ahead of it and whether they were replayed — and is the quickest way to tell "the eye
-rendered the wrong part" from "the eye rendered nothing". `WR_DUMP_COPIES=20` dumps whenever a
+rendered the wrong part" from "the eye rendered nothing". `GCN_DUMP_COPIES=20` dumps whenever a
 frame holds at least that many copies, which is how a frame thick with spray gets caught: the
 faults that only appear at speed are in exactly those frames, and a fixed dump interval almost
 never lands on one.
@@ -520,7 +520,7 @@ lost the occlusion that hides each lamp behind its lens and the lamps showed thr
 squares on the glass. Those draws keep the eye's projection and stay 3D, and they take `g_vr_view`
 rather than `g_vr_view_world`, because the world pitch is taken out of the *world* to level the sea
 and applying it to something attached to the camera is what stood the rig over at 23 degrees.
-`WR_EYE_VS3D=0` puts them back on the frame. Across 4,871 frames the only view-space perspective
+`GCN_EYE_VS3D=0` puts them back on the frame. Across 4,871 frames the only view-space perspective
 geometry is the rig, so this reaches nothing else.
 
 Writing those elements straight into each eye's NDC — what this replaced — cannot work, and the
@@ -555,7 +555,7 @@ perspective batch lands on the plane the same way an orthographic one does.
 
 An identity position matrix is what tells those draws from the scene, and it is a sharp test rather
 than a threshold: GX position matrices carry the modelview, so world geometry can never have one.
-Two frames dumped with `WR_MTXLOG`, one during the countdown and one mid-race, say so exactly —
+Two frames dumped with `GCN_MTXLOG`, one during the countdown and one mid-race, say so exactly —
 the countdown frame has 327 perspective draws with an identity matrix, all of them the rig, in one
 contiguous block just before the 2D overlay, and the mid-race frame has **none at all**. Only the
 first vertex's matrix is tested, which no draw in this game disagrees with.
@@ -613,7 +613,7 @@ The vertices reach the renderer already in the chase camera's view space, and th
 of where the player is was not gone looking for. What *is* in the batch is the position matrix each
 draw went through, which `Cmd::mtx` now carries (`Batch::mtxs`, deduplicated against the previous
 draw's, and a draw no longer merges with its predecessor across a change of matrix). Reading a
-`WR_MTXLOG` dump of Ocean City Harbor 300 frames into a race, which now prints the copies and
+`GCN_MTXLOG` dump of Ocean City Harbor 300 frames into a race, which now prints the copies and
 textures beside the matrices, the structure of a frame is this:
 
 - The main scene is 3,790 draws, and all but 270 go through one matrix: the world's view matrix,
@@ -658,7 +658,7 @@ which the reflection pass never uses -- but each also wears one the rest of the 
 
 A frame with no racer -- the
 menus, the course flyover, or a course that does without the reflection -- falls back to the chase
-camera, and `WR_FPLOG=1` says so.
+camera, and `GCN_FPLOG=1` says so.
 
 Each of those conditions was added after the rule before it picked something else, so they are
 worth keeping even where they look redundant:
@@ -688,7 +688,7 @@ set by eye in the headset with `fp_up_m`/`fp_forward_m` (offsets in metres from 
 exactly that). His eyes themselves, 45 up and 9 back, felt too low and too far forward. They are
 his eyes in his idle pose: standing at rest
 after the start, his head's centre is 43.5 units above the hull's origin and 11 behind it, its
-face 7 behind (`WR_MTXLOG=200` with no throttle, 200 frames after the race flag). Racing,
+face 7 behind (`GCN_MTXLOG=200` with no throttle, 200 frames after the race flag). Racing,
 crouched, it is 40 up; kneeling at the start line, before he stands, 16. The grips are at 28 up,
 so his head is only some 15 units -- 30 cm at 50 units to the metre -- above his hands.
 
@@ -745,7 +745,7 @@ matter for the headset: 0 renders the tilt the game draws, and intermediate valu
 
 That 23.2 is measured, not fitted. GX position matrices are modelview, so for any scenery whose
 model is unrotated the matrix *is* the view matrix, and the dot of its second row with world up is
-`cos(pitch)` whatever the camera's yaw. Across a `WR_MTXLOG` frame the dominant rotation — 4800 of
+`cos(pitch)` whatever the camera's yaw. Across a `GCN_MTXLOG` frame the dominant rotation — 4800 of
 13274 draws in one frame, 4218 of 10942 in another a thousand frames later — gives **23.20°** and
 **23.27°**. The second cluster sits at exactly 180° minus that, which is the reflection pass:
 mirroring about the water plane negates the up component and takes the angle to its supplement, so
@@ -768,23 +768,23 @@ which is what the game looks like on a television. What gave it away was the HUD
 Not a VR problem but found through this harness, and the tools stay because the question recurs:
 *which draw put that there?* A race frame is ~390 draws in the flat path.
 
-- `WR_COMPLOG=1` logs every draw that samples a render-to-texture result, with its vertex count,
+- `GCN_COMPLOG=1` logs every draw that samples a render-to-texture result, with its vertex count,
   texgens and texture ids.
-- `WR_DRAWLOG=<frame>` lists every draw in one frame with its index, so geometry drawn twice shows
+- `GCN_DRAWLOG=<frame>` lists every draw in one frame with its index, so geometry drawn twice shows
   up as two draws with identical vertex counts and textures.
-- `WR_DRAW_SKIP=a-b` drops a range of draw indices, `WR_NO_COMP` / `WR_ONLY_COMP` drop or isolate
-  the draws sampling a whole-frame copy, and `WR_NO_EFBTEX` drops those sampling a partial one.
-- `WR_MTXLOG=<n>` dumps the nth frame after the race flag comes up: every draw with its position
+- `GCN_DRAW_SKIP=a-b` drops a range of draw indices, `GCN_NO_COMP` / `GCN_ONLY_COMP` drop or isolate
+  the draws sampling a whole-frame copy, and `GCN_NO_EFBTEX` drops those sampling a partial one.
+- `GCN_MTXLOG=<n>` dumps the nth frame after the race flag comes up: every draw with its position
   matrix, vertex count, state index and textures, and every EFB copy where it falls among them, so
   the draws can be read against the pass boundaries. It is what the first-person section above is
   read from.
-- `WR_PNMLOG=a-b` lists the position matrices a frame uses over a window of frames, one line each
+- `GCN_PNMLOG=a-b` lists the position matrices a frame uses over a window of frames, one line each
   time the matrix changes. It is what showed that the countdown rig does not tilt as it arrives — it
   turns about the vertical axis while descending — and that of 6,464 matrices over sixteen frames
   only three leave the view-space Y axis alone.
-- `WR_EYE_SPRAY=0` and `WR_EYE_RIPPLE=0` turn off the spray substitution and the conversion of its
+- `GCN_EYE_SPRAY=0` and `GCN_EYE_RIPPLE=0` turn off the spray substitution and the conversion of its
   distortion, in that order of bluntness. Both select on content rather than draw index, so they
-  are safe to A/B across runs. With `WR_EYELOG=1` the eye summary carries `spray=N`, the number of
+  are safe to A/B across runs. With `GCN_EYELOG=1` the eye summary carries `spray=N`, the number of
   substituted droplet draws, and the first of them prints its indirect configuration.
 
 One caution that has cost time twice: **the emulated timebase is wall-clock driven, so frame N is
@@ -800,7 +800,7 @@ at all. `dump_every N` makes the app write its own EFB to `<files>/frames`, whic
 see what the app rendered rather than what a different frontend renders from the same code.
 
 The app runs on a headset nobody is wearing, so both can be captured without help: push a
-`wr_input.txt` script beside `vr.txt`, `am start` the activity, and read `adb logcat -s waverace`.
+`gcn_input.txt` script beside `vr.txt`, `am start` the activity, and read `adb logcat -s waverace`.
 
 **Capturing can destroy what you are capturing.** The character-select tear was timing-sensitive: it
 reproduced reliably on a clean build and vanished under per-frame image dumping, which shifts the

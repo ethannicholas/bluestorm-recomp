@@ -100,6 +100,10 @@ The build uses the first `.iso` it finds in `rom/`. To use an image elsewhere, p
 .\build.ps1         # Windows
 ```
 
+The recompiler and runtime are the `gcn-recomp` git submodule; the build scripts fetch it if
+it is missing (or clone with `--recurse-submodules`). After pulling, `git submodule update`
+brings it to the commit this repository expects.
+
 ### 3. Run
 
 ```sh
@@ -270,35 +274,42 @@ Android. It uses nothing newer than GL 3.3 / ES 3.0, so compatibility layers tha
 | `saves/memcard_a.raw` | The emulated memory card. Back this up to keep your save. |
 | `saves/shaders.bin` | The shader cache. Safe to delete; the next run rebuilds it. |
 | `saves/panic.txt` | Written if the game stops with its own `guest panic:` assertion. |
+| `saves/inputs/` | One directory per run: the controller input it read, with a copy of the memory card as it was. Safe to delete. |
 
-On the Quest all three are in `/sdcard/Android/data/com.example.waverace/files/`, beside the
+On the Quest all of these are in `/sdcard/Android/data/com.example.waverace/files/`, beside the
 disc image.
 
 ## How it works
 
+The recompiler, the GameCube runtime, the renderer and the desktop frontend are
+[gcn-recomp](https://github.com/ethannicholas/gcn-recomp), a git submodule shared with
+[prime-recomp](https://github.com/ethannicholas/prime-recomp); they were first written here.
+This repository holds what is specific to Wave Race: the function layout (`analysis/`), the
+recompiler's steering tables (`recomp/*.txt`) and the headset frontends (`runtime/`).
+
 ```
 rom/game.iso ──extract_dol.py──> build/main.dol ──recomp.py──> build/gen/*.c ──┐
                                                                               ├─> waverace
-                                          runtime/ (hardware + renderer) ─────┘
+                               gcn-recomp/runtime/ (hardware + renderer) ─────┘
 ```
 
-- **Recompiler** (`recomp/`): a Gekko (PowerPC 750CL with paired singles) to C translator.
-  Function boundaries and jump tables come from
+- **Recompiler** (`gcn-recomp/recomp/`): a Gekko (PowerPC 750CL with paired singles) to C
+  translator. Function boundaries and jump tables come from
   [decomp-toolkit](https://github.com/encounter/decomp-toolkit) analysis (`analysis/symbols.txt`);
   every function becomes a C function operating on a CPU state struct. Indirect branches go
   through a lookup table; `recomp/patches.txt` can replace individual instructions.
-- **CPU/OS** (`runtime/cpu.cpp`, `runtime/threads.cpp`): memory is a flat host allocation
+- **CPU/OS** (`gcn-recomp/runtime/cpu.cpp`, `threads.cpp`): memory is a flat host allocation
   indexed by guest address. The game's own OS runs unmodified. Only context switching
   (`OSSaveContext`/`OSLoadContext`) is replaced: each guest thread runs on a host thread and
   resumes via `setjmp`/`longjmp`. Interrupts are delivered at loop back-edges.
-- **Hardware** (`runtime/hw/`): register-level emulation of the processor interface, video
+- **Hardware** (`gcn-recomp/runtime/hw/`): register-level emulation of the processor interface, video
   interface, DVD interface, serial interface (controllers), EXI (IPL/RTC/SRAM, memory card),
   audio interface and DSP interface, with high-level emulation of the DSP's boot ROM, the AX
   audio ucode and the memory card unlock ucode.
-- **Graphics** (`runtime/gx/`): the GX FIFO is parsed as the game writes it. Vertex transform,
+- **Graphics** (`gcn-recomp/runtime/gx/`): the GX FIFO is parsed as the game writes it. Vertex transform,
   lighting and texture coordinate generation run on the CPU, and the per-pixel TEV stages are
   compiled into GLSL shaders. Draw batches are handed to an OpenGL renderer on the main thread.
-- **Audio** (`runtime/audio.cpp`): the AX mix and the DVD-streamed music are resampled into one
+- **Audio** (`gcn-recomp/runtime/audio.cpp`): the AX mix and the DVD-streamed music are resampled into one
   stereo stream, played through SDL on the desktop and AAudio on Android.
 - **VR** (`runtime/openxr_main.cpp`): an OpenXR frontend that shows the flat frame on a quad
   layer, or re-projects the game's draws per eye for stereo, switching on the game's own state.
@@ -308,13 +319,13 @@ Design notes, measurements and the record of how the harder problems were solved
 
 ## Tools
 
-- `tools/fetch_dtk.sh`: downloads decomp-toolkit, used to regenerate `analysis/`
+- `gcn-recomp/tools/fetch_dtk.sh`: downloads decomp-toolkit, used to regenerate `analysis/`
   (`dtk dol split analysis/config.yml analysis/out` after a build has produced `build/main.dol`).
 - `tools/dis`: prints the disassembly of a function from dtk's output.
-- `tools/contact.py`: tiles dumped frames into a contact sheet.
-- `tools/glprobe.c` (Windows): reports the OpenGL versions the host can actually create, to
-  diagnose the "too old" failure in [Graphics](#graphics).
-  Build with `clang tools/glprobe.c -o build/glprobe.exe -lopengl32 -lgdi32 -luser32`.
+- `gcn-recomp/tools/contact.py`: tiles dumped frames into a contact sheet.
+- `gcn-recomp/tools/glprobe.c` (Windows): reports the OpenGL versions the host can actually
+  create, to diagnose the "too old" failure in [Graphics](#graphics).
+  Build with `clang gcn-recomp/tools/glprobe.c -o build/glprobe.exe -lopengl32 -lgdi32 -luser32`.
 - `tools/d3d12probe.cpp` (Windows): reports which adapters can create a D3D12 device, i.e.
   whether the OpenGL compatibility pack has anything to map onto.
   Build with `clang++ tools/d3d12probe.cpp -o build/d3d12probe.exe -ld3d12 -ldxgi -lole32`.

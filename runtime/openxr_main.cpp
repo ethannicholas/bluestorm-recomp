@@ -12,6 +12,7 @@
 #include "runtime.h"
 #include "platform.h"
 #include "input_script.h"
+#include "input_log.h"
 #include "vr_config.h"
 #include <sys/stat.h>
 
@@ -55,6 +56,7 @@ static constexpr uint32_t kOnCourseAddr = 0x80602160;
 static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
 #include "gx/render.h"
 #include "gx/render_gl.h"
+#include "start_rig.h"
 #include "gx/gl.h"
 #include "gx/gl_msrtt.h"
 #include "hw/pad.h"
@@ -74,6 +76,7 @@ static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -633,7 +636,7 @@ static void poll_xr_events() {
 static void on_cmd(android_app*, int32_t) {}
 
 static std::string read_script(const std::string& dir) {
-    FILE* f = fopen((dir + "/wr_input.txt").c_str(), "rb");
+    FILE* f = fopen((dir + "/gcn_input.txt").c_str(), "rb");
     if (!f) return {};
     char buf[1024];
     size_t n = fread(buf, 1, sizeof(buf) - 1, f);
@@ -645,14 +648,14 @@ static std::string read_script(const std::string& dir) {
     return s;
 }
 
-// The runtime's WR_* diagnostics are environment variables, and an APK launched from the
-// headset's own launcher has no environment to speak of. `wr_env.txt` beside `vr.txt`, one
+// The runtime's GCN_* diagnostics are environment variables, and an APK launched from the
+// headset's own launcher has no environment to speak of. `gcn_env.txt` beside `vr.txt`, one
 // KEY=VALUE per line, stands in for it: each line is put into the environment before the
-// runtime starts, so WR_HEAP=1 there does what WR_HEAP=1 on a desktop shell does. Only
+// runtime starts, so GCN_HEAP=1 there does what GCN_HEAP=1 on a desktop shell does. Only
 // variables read lazily see it -- a static initializer that called getenv at library load
 // has already run -- which is most of them.
 static void apply_env_file(const std::string& dir) {
-    FILE* f = fopen((dir + "/wr_env.txt").c_str(), "rb");
+    FILE* f = fopen((dir + "/gcn_env.txt").c_str(), "rb");
     if (!f) return;
     char line[256];
     while (fgets(line, sizeof(line), f)) {
@@ -715,7 +718,7 @@ void android_main(android_app* app) {
 
     if (!egl_init()) app_exit("EGL init failed");
     int glver = gl_load_with(gl_proc);
-    if (glver < WR_GL_VERSION_MIN) { LOGE("GL ES %d.%d too old", glver / 10, glver % 10); app_exit("GL too old"); }
+    if (glver < GCN_GL_VERSION_MIN) { LOGE("GL ES %d.%d too old", glver / 10, glver % 10); app_exit("GL too old"); }
     LOGI("GL %s / %s", (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
 
     if (!xr_create_instance(app)) { LOGE("no OpenXR instance"); app_exit("no OpenXR instance"); }
@@ -741,6 +744,26 @@ void android_main(android_app* app) {
     // has to land there or the game starts from a blank one every launch.
     static std::string save_dir = dir;
     if (!save_dir.empty()) g_save_dir = save_dir.c_str();
+
+    // Every run records what the guest read from the controllers, into
+    // <files>/inputs/<stamp>/ with a snapshot of the memory card, so that a route to
+    // wherever something went wrong can be played back: on a desktop with
+    // --replay=<dir> after an adb pull, or here with GCN_REPLAY=<dir> in gcn_env.txt
+    // (relative to the files directory). GCN_NO_INPUT_LOG=1 turns the recording off.
+    // See gcn-recomp/docs/diagnostics.md; the replay runs on a scratch copy of the
+    // logged card, never the real one.
+    static std::string replay_card;
+    if (const char* r = getenv("GCN_REPLAY")) {
+        const std::string replay_dir = r[0] == '/' ? std::string(r) : dir + "/" + r;
+        if (!input_replay_load(replay_dir, replay_card)) LOGE("no replay at %s", replay_dir.c_str());
+        else if (!replay_card.empty()) g_memcard_path = replay_card.c_str();
+    }
+    if (!getenv("GCN_NO_INPUT_LOG")) {
+        char stamp[64];
+        time_t now = time(nullptr);
+        strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", localtime(&now));
+        input_log_start(dir + "/inputs/" + stamp, replay_card.empty() ? dir + "/memcard_a.raw" : replay_card);
+    }
 
     // Before the guest runs, so the AI DMA has somewhere to go from its first block.
     // A device that will not open is not fatal: the game is still playable silently, and

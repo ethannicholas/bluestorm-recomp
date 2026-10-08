@@ -1,7 +1,7 @@
 # Performance: open issues and measurements
 
 Working notes on where the frame rate stands, what has been fixed, and what is left. The
-measurement tools these refer to (`WR_FRAMETIME`, `WR_TIMESCALE`, the scripted route to Ocean
+measurement tools these refer to (`GCN_FRAMETIME`, `GCN_TIMESCALE`, the scripted route to Ocean
 City Harbor) are described in [diagnostics.md](diagnostics.md).
 
 ## Open issues
@@ -13,7 +13,7 @@ the next attempt does not start from nothing.
    bought about 15%. It is **not** the pixel pipeline: raising the EFB from 640×528 to 2560×2112,
    sixteen times the pixels, costs about 2% and nothing beyond that scales with area — see
    [How many pixels the theater panel gets](vr.md#how-many-pixels-the-theater-panel-gets). It is CPU
-   work, on both threads, and `WR_FRAMETIME=1` says which.
+   work, on both threads, and `GCN_FRAMETIME=1` says which.
 
    Done so far, profiled on a Mac with the scripted route in [diagnostics.md](diagnostics.md): the brief drop to
    single digits at a fixed spot was the render thread compiling a burst of new TEV shaders on

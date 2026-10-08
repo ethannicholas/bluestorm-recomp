@@ -1,7 +1,9 @@
 # addr  C statement replacing the original instruction at addr (one per line)
-# Heap tracing hooks (runtime/heap_trace.cpp): OSAllocFromHeap's entry and both returns,
-# OSFreeToHeap's entry. Each keeps the instruction it replaces.
-80108FEC heap_trace_alloc(c); c->r[0] = (uint32_t)((int32_t)c->r[3] * 12);
+# Heap tracing hooks (gcn-recomp/runtime/heap_trace.cpp): OSAllocFromHeap's entry and both
+# returns, OSFreeToHeap's entry. Each keeps the instruction it replaces. 0x80691E60 is the
+# SDK's HeapArray variable: r13 (0x80698640, set by __start) - 0x67E0, the small-data word
+# OSAllocFromHeap loads first.
+80108FEC heap_trace_alloc(c, 0x80691E60u); c->r[0] = (uint32_t)((int32_t)c->r[3] * 12);
 8010902C heap_trace_alloc_result(c, 0); RET();
 801090E4 heap_trace_alloc_result(c, 1); RET();
 801090E8 heap_trace_free(c); c->r[0] = c->lr;

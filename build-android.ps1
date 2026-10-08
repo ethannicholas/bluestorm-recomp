@@ -37,17 +37,22 @@ $toolchain = Join-Path $ndk.FullName 'build\cmake\android.toolchain.cmake'
 if (-not (Test-Path $toolchain)) { throw "NDK toolchain file not found: $toolchain" }
 Write-Host "using NDK $($ndk.Name)"
 
+if (-not (Test-Path gcn-recomp/CMakeLists.txt)) {
+    git submodule update --init
+    if ($LASTEXITCODE -ne 0) { throw "git submodule update failed" }
+}
+
 $buildDir = 'build-android'
 if (-not (Test-Path "$buildDir/build.ninja")) {
     # ANDROID_STL=c++_static keeps the binaries self-contained, so there is no
-    # libc++_shared.so to push alongside them. WR_BENCH_ONLY skips SDL2 and the desktop
+    # libc++_shared.so to push alongside them. GCN_BENCH_ONLY skips SDL2 and the desktop
     # renderer targets; waverace_egl is added separately and brings its own frontend.
     cmake -S . -B $buildDir -G Ninja `
         "-DCMAKE_TOOLCHAIN_FILE=$toolchain" `
         "-DANDROID_ABI=$Abi" `
         "-DANDROID_PLATFORM=android-$ApiLevel" `
         "-DANDROID_STL=c++_static" `
-        "-DWR_BENCH_ONLY=ON" `
+        "-DGCN_BENCH_ONLY=ON" `
         "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
     if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
 }
@@ -92,9 +97,9 @@ $exe = if ($Render) { 'waverace_egl' } else { 'waverace_bench' }
 if ($LASTEXITCODE -ne 0) { throw "adb push failed" }
 & $adb shell chmod 755 "$DeviceDir/$exe"
 
-# WR_INPUT drives the game without a controller: "frame:BUTTON:duration,..." against
+# GCN_INPUT drives the game without a controller: "frame:BUTTON:duration,..." against
 # the presented-frame count. Needed to reach anything past the title screen.
-$envPrefix = if ($InputScript) { "WR_INPUT='$InputScript' " } else { "" }
+$envPrefix = if ($InputScript) { "GCN_INPUT='$InputScript' " } else { "" }
 
 if ($Render) {
     & $adb shell "rm -rf $DeviceDir/frames; mkdir -p $DeviceDir/frames"

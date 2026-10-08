@@ -22,6 +22,12 @@ Need 'cmake' | Out-Null
 Need 'ninja' | Out-Null
 Need 'python' | Out-Null
 
+# The shared recompiler and runtime are a submodule.
+if (-not (Test-Path gcn-recomp/CMakeLists.txt)) {
+    git submodule update --init
+    if ($LASTEXITCODE -ne 0) { throw "git submodule update failed" }
+}
+
 if (-not (Test-Path build/build.ninja)) {
     cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo `
         "-DCMAKE_C_COMPILER=$cc" "-DCMAKE_CXX_COMPILER=$cxx" @args

@@ -3,7 +3,7 @@
 How the mix is structured, why AAudio rather than Oboe, and how to test the audio path on a
 headset without wearing it.
 
-The mix is portable and lives in `runtime/audio.cpp`: it resamples the AI DMA stream (32 kHz,
+The mix is portable and lives in `gcn-recomp/runtime/audio.cpp`: it resamples the AI DMA stream (32 kHz,
 from the AX HLE) up to 48 kHz, adds DVD-streamed DTK music decoded in place, and hands back one
 interleaved stereo buffer. The device that pulls on it is the only part that belongs to a
 platform, so that is all a backend is — `audio_sdl.cpp` opens an SDL device, `audio_aaudio.cpp`
@@ -31,12 +31,12 @@ like a broken mix and is not one. `adb shell am broadcast -a com.oculus.vrpowerm
 followed by `adb shell input keyevent KEYCODE_WAKEUP` wakes it for testing over adb, and
 `mWakefulness=Asleep` in `dumpsys power` is the tell.
 
-`WR_AUDIO=1` opens the device in `waverace_egl` too, which is the only way to exercise the audio
-path without the VR frontend. With `WR_WAV=<path>` it records exactly what the device was handed,
+`GCN_AUDIO=1` opens the device in `waverace_egl` too, which is the only way to exercise the audio
+path without the VR frontend. With `GCN_WAV=<path>` it records exactly what the device was handed,
 so the result is checkable afterwards rather than by listening: a 140-second run through boot, the
 menus and a race at Dolphin Park gave a steady ring level at the 60 ms cushion, a resampling trim
-under 0.06%, and one underrun — the initial fill. `WR_AUDIO_TEST=1` fills the buffer with a sine
+under 0.06%, and one underrun — the initial fill. `GCN_AUDIO_TEST=1` fills the buffer with a sine
 instead of the mix, which separates "the device is not pulling" from "the mix is not returning";
-`WR_AUDIO_PERF=none` and `WR_AUDIO_BURSTS=N` change the stream's performance mode and device
+`GCN_AUDIO_PERF=none` and `GCN_AUDIO_BURSTS=N` change the stream's performance mode and device
 buffer, since what a given device will actually start playing is not something the documentation
 settles.

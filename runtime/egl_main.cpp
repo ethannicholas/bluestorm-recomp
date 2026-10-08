@@ -13,6 +13,7 @@
 #include "platform.h"
 #include "gx/render.h"
 #include "gx/render_gl.h"
+#include "start_rig.h"
 #include "input_script.h"
 #include "gx/gl.h"
 #include "gx/gl_msrtt.h"
@@ -51,7 +52,7 @@ static int g_eye_w = 960, g_eye_h = 720;
 
 // --eyes=2 renders the second eye as well, as the headset does; --eye-size=WxH renders at
 // the headset's size rather than this harness's; --msaa=N multisamples the eye the way the
-// headset can. Together with WR_EYE_GPU=1, which times the eye passes on the GPU, they are
+// headset can. Together with GCN_EYE_GPU=1, which times the eye passes on the GPU, they are
 // what answers "what does a higher eye resolution or antialiasing cost" without a headset.
 static int g_eye_count = 1, g_eye_msaa = 0;
 
@@ -164,7 +165,7 @@ static void eye_dump(const char* dir, uint32_t n, const char* suffix = "") {
     dump_fbo(g_eye_fbo, g_eye_w, g_eye_h, path);
 }
 
-// WR_EYE_MORPH=0,0.5,1 renders every dumped frame once per value, as eye_NNNNN_mXXXX.png
+// GCN_EYE_MORPH=0,0.5,1 renders every dumped frame once per value, as eye_NNNNN_mXXXX.png
 // (thousandths),
 // with the stereo view folded that far back towards theater -- see render_set_vr_morph --
 // plus the flat frame as flat_NNNNN.png. The panel hangs where theater hangs it, at this
@@ -181,7 +182,7 @@ static void morph_panel(float* m) {
 }
 
 // ---------------------------------------------------------------------------
-// WR_EYE_GPU=1: how long the eye passes take on the GPU, from GL_EXT_disjoint_timer_query,
+// GCN_EYE_GPU=1: how long the eye passes take on the GPU, from GL_EXT_disjoint_timer_query,
 // and on the CPU to issue, averaged and printed every 2 s. The GPU figure covers both eyes
 // and the flat pass the first eye runs to produce the frame's copies. Queries are read a few
 // frames late from a ring, so measuring does not itself stall the pipeline.
@@ -194,11 +195,11 @@ static int g_gpu_n = 0, g_cpu_n = 0;
 static constexpr GLenum kTimeElapsed = 0x88BF;   // GL_TIME_ELAPSED_EXT
 
 static void gpu_timer_init() {
-    g_gpu_timing = getenv("WR_EYE_GPU") != nullptr;
+    g_gpu_timing = getenv("GCN_EYE_GPU") != nullptr;
     if (!g_gpu_timing) return;
     g_query_u64 = (void (*)(GLuint, GLenum, uint64_t*))gl_proc("glGetQueryObjectui64vEXT");
     if (!g_query_u64) {
-        fprintf(stderr, "WR_EYE_GPU: no GL_EXT_disjoint_timer_query; CPU times only\n");
+        fprintf(stderr, "GCN_EYE_GPU: no GL_EXT_disjoint_timer_query; CPU times only\n");
         return;
     }
     glGenQueries(8, g_queries);
@@ -314,14 +315,14 @@ static bool egl_init() {
     }
 
     const EGLint ctx_attr[] = {
-        EGL_CONTEXT_MAJOR_VERSION, WR_GL_MAJOR,
-        EGL_CONTEXT_MINOR_VERSION, WR_GL_MINOR,
+        EGL_CONTEXT_MAJOR_VERSION, GCN_GL_MAJOR,
+        EGL_CONTEXT_MINOR_VERSION, GCN_GL_MINOR,
         EGL_NONE,
     };
     EGLContext ctx = eglCreateContext(g_dpy, cfg, EGL_NO_CONTEXT, ctx_attr);
     if (ctx == EGL_NO_CONTEXT) {
         fprintf(stderr, "eglCreateContext for ES %d.%d failed (0x%X)\n",
-                WR_GL_MAJOR, WR_GL_MINOR, eglGetError());
+                GCN_GL_MAJOR, GCN_GL_MINOR, eglGetError());
         return false;
     }
 
@@ -340,7 +341,7 @@ static bool egl_init() {
 
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
-    std::string iso = WR_DEFAULT_ISO;
+    std::string iso = GCN_DEFAULT_ISO;
     int scale = 1, frames_wanted = 0, seconds = 120;
     for (int i = 1; i < argc; i++) {
         if (!strncmp(argv[i], "--scale=", 8)) scale = atoi(argv[i] + 8);
@@ -377,9 +378,9 @@ int main(int argc, char** argv) {
 
     if (!egl_init()) return 1;
     int glver = gl_load_with(gl_proc);
-    if (glver < WR_GL_VERSION_MIN) {
+    if (glver < GCN_GL_VERSION_MIN) {
         fatal("OpenGL ES %d.%d is too old (need %d.%d)", glver / 10, glver % 10,
-              WR_GL_MAJOR, WR_GL_MINOR);
+              GCN_GL_MAJOR, GCN_GL_MINOR);
     }
     printf("GL_VERSION  %s\nGL_RENDERER %s\nGL_VENDOR   %s\n",
            (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER),
@@ -392,7 +393,7 @@ int main(int argc, char** argv) {
         eye_init();
         gpu_timer_init();
         gx::render_set_world_pitch(kWorldPitch);
-        if (const char* s = getenv("WR_EYE_MORPH")) {
+        if (const char* s = getenv("GCN_EYE_MORPH")) {
             for (const char* q = s; *q;) {
                 g_morphs.push_back((float)atof(q));
                 q = strchr(q, ',');
@@ -408,15 +409,15 @@ int main(int argc, char** argv) {
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
         }
     }
-    // The flat frame WR_EYE_MORPH dumps is blitted at 640x480 whatever --scale says.
+    // The flat frame GCN_EYE_MORPH dumps is blitted at 640x480 whatever --scale says.
     gx::render_set_window_size(g_morphs.empty() ? 640 * scale : 640,
                                g_morphs.empty() ? 480 * scale : 480);
 
-    // WR_AUDIO=1 opens the device here too. Off by default because this harness exists
+    // GCN_AUDIO=1 opens the device here too. Off by default because this harness exists
     // to be run over adb on a device somebody may be wearing, but it is the only way to
-    // exercise the audio path without the VR frontend -- and with WR_WAV it records what
+    // exercise the audio path without the VR frontend -- and with GCN_WAV it records what
     // the device was handed, which is checkable afterwards rather than by listening.
-    if (getenv("WR_AUDIO") && !audio_open())
+    if (getenv("GCN_AUDIO") && !audio_open())
         fprintf(stderr, "audio unavailable; continuing without sound\n");
 
     uint32_t entry = boot_load(iso.c_str());
@@ -436,15 +437,15 @@ int main(int argc, char** argv) {
         input_script_apply(p);
         pad_set_state(0, p);
 
-        // WR_RAMSNAP=dir dumps guest RAM once a second. Diffing snapshots taken in known
+        // GCN_RAMSNAP=dir dumps guest RAM once a second. Diffing snapshots taken in known
         // game states is how a variable like "the race is running" gets found; the draw
         // count the stereo switch uses now is a guess that fires on the course overview.
-        static const char* ramsnap = getenv("WR_RAMSNAP");
-        static const uint32_t snap_every = getenv("WR_RAMSNAP_EVERY")
-                                               ? atoi(getenv("WR_RAMSNAP_EVERY")) : 150;
+        static const char* ramsnap = getenv("GCN_RAMSNAP");
+        static const uint32_t snap_every = getenv("GCN_RAMSNAP_EVERY")
+                                               ? atoi(getenv("GCN_RAMSNAP_EVERY")) : 150;
         // The low 8 MB: enough to hold the game's own state without writing 24 MB a shot.
         static const uint32_t snap_bytes = 8u << 20;
-        // WR_RAMSNAP_RANGE=a-b bounds it to a window of frames. A transition that takes a
+        // GCN_RAMSNAP_RANGE=a-b bounds it to a window of frames. A transition that takes a
         // second needs a snapshot every few frames to bracket, and a whole run at that
         // interval is gigabytes; the states either side of one boundary are all that a
         // diff for that boundary needs.
@@ -452,7 +453,7 @@ int main(int argc, char** argv) {
         static bool snap_range_parsed = false;
         if (!snap_range_parsed) {
             snap_range_parsed = true;
-            if (const char* r = getenv("WR_RAMSNAP_RANGE")) {
+            if (const char* r = getenv("GCN_RAMSNAP_RANGE")) {
                 snap_lo = atoi(r);
                 const char* dash = strchr(r, '-');
                 snap_hi = dash ? atoi(dash + 1) : snap_lo;
@@ -471,10 +472,10 @@ int main(int argc, char** argv) {
             }
         }
         if (auto b = gx::take_batch(4)) {
-            // WR_RIGLOG=1: per frame, the perspective draws placed in view space (the
+            // GCN_RIGLOG=1: per frame, the perspective draws placed in view space (the
             // countdown rig, per PixelState::view_space) -- how many, their vertices, and
             // where they sit -- whenever that changes, to find what marks the rig.
-            static const bool riglog = getenv("WR_RIGLOG") != nullptr;
+            static const bool riglog = getenv("GCN_RIGLOG") != nullptr;
             if (riglog) {
                 int n = 0;
                 uint32_t verts = 0;
@@ -548,16 +549,16 @@ int main(int argc, char** argv) {
                 // race frame, almost all of it waiting in glBufferData, against 6 ms with it.
                 glFlush();
                 presented++;
-                // WR_DUMP_COPIES=N dumps whenever a frame holds at least N EFB copies,
+                // GCN_DUMP_COPIES=N dumps whenever a frame holds at least N EFB copies,
                 // which is how a frame thick with spray is caught: the faults that only
                 // appear at speed are in exactly those frames, and a fixed interval
                 // almost never lands on one.
-                static const int want_copies = getenv("WR_DUMP_COPIES")
-                                                   ? atoi(getenv("WR_DUMP_COPIES")) : 0;
+                static const int want_copies = getenv("GCN_DUMP_COPIES")
+                                                   ? atoi(getenv("GCN_DUMP_COPIES")) : 0;
                 int ncopies = 0;
                 if (want_copies)
                     for (auto& c : b->cmds) ncopies += c.type == gx::CmdType::EfbCopy;
-                // WR_DUMP_RANGE=a-b narrows dumping to a window of frames, as it does in
+                // GCN_DUMP_RANGE=a-b narrows dumping to a window of frames, as it does in
                 // the flat path, so a short stretch can be caught every few frames
                 // without writing a gigabyte. Something that is only on screen for three
                 // seconds -- the countdown -- is otherwise missed by any interval coarse
@@ -566,7 +567,7 @@ int main(int argc, char** argv) {
                 static bool range_parsed = false;
                 if (!range_parsed) {
                     range_parsed = true;
-                    if (const char* r = getenv("WR_DUMP_RANGE")) {
+                    if (const char* r = getenv("GCN_DUMP_RANGE")) {
                         range_lo = atoi(r);
                         const char* dash = strchr(r, '-');
                         range_hi = dash ? atoi(dash + 1) : range_lo;

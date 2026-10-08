@@ -1,0 +1,47 @@
+// The starting-light rig, as the renderer sees it. Wave Race's own: every course has a rig
+// and nothing else is drawn the way they are, which is what the detector below relies on.
+#include "start_rig.h"
+#include <cmath>
+
+namespace gx {
+
+// Whether `b` draws the starting-light rig. See render_gl.h.
+//
+// Every course has a rig of its own -- vines on Lost Temple Lagoon, bamboo on Southern
+// Island, a wooden frame on Aspen Lake, a scoreboard on Ocean City Harbor -- so nothing
+// here may depend on the model. What they share is how the game draws them: in
+// perspective through an identity position matrix, hung in view space a fixed distance in
+// front of the camera (PixelState::view_space). That is not the only thing drawn that way
+// -- Championship's opening screen, the one that cycles views of the course until A is
+// pressed, and every course flyover draw the whole course through the identity too,
+// transformed on the CPU -- but nothing else so drawn stays near the camera. GCN_RIGLOG on
+// all five reachable courses:
+//
+//   the rigs                    10-33 draws, 1,686-2,898 vertices, no more than 100
+//                               units across or 210 from the camera
+//   opening screen, flyovers    150-600 draws, 29,000-85,000 vertices, 25,000 to 85,000
+//                               units across
+//
+// and in a race, the rider close-ups, the results and the menus nothing is drawn that
+// way at all. The thresholds sit far from both: within 2,000 units of the camera, ten
+// times the farthest rig and a tenth of the nearest course, and at least 100 vertices,
+// enough to ignore a stray quad and well under any rig.
+bool batch_shows_start_rig(const Batch& b) {
+    constexpr float kRigReach = 2000.0f;
+    constexpr uint32_t kRigMinVerts = 100;
+    uint32_t verts = 0;
+    for (const Cmd& c : b.cmds) {
+        if (c.type != CmdType::Draw) continue;
+        const PixelState& st = b.states[c.state];
+        if (!st.view_space || (int)st.proj[6] != 0) continue;
+        for (uint32_t v = 0; v < c.count; v++) {
+            const float* p = b.verts[b.indices[c.first + v]].pos;
+            if (fabsf(p[0]) > kRigReach || fabsf(p[1]) > kRigReach || fabsf(p[2]) > kRigReach)
+                return false;
+        }
+        verts += c.count;
+    }
+    return verts >= kRigMinVerts;
+}
+
+}  // namespace gx

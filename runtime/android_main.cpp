@@ -97,8 +97,8 @@ static bool egl_create(ANativeWindow* win) {
             LOGE("no ES3 window config"); return false;
         }
         const EGLint ctx_attr[] = {
-            EGL_CONTEXT_MAJOR_VERSION, WR_GL_MAJOR,
-            EGL_CONTEXT_MINOR_VERSION, WR_GL_MINOR,
+            EGL_CONTEXT_MAJOR_VERSION, GCN_GL_MAJOR,
+            EGL_CONTEXT_MINOR_VERSION, GCN_GL_MINOR,
             EGL_NONE,
         };
         g_ctx = eglCreateContext(g_dpy, g_cfg, EGL_NO_CONTEXT, ctx_attr);
@@ -196,10 +196,10 @@ static void on_cmd(android_app* app, int32_t cmd) {
     }
 }
 
-// Optional: a WR_INPUT-style script in the external files directory drives the game
+// Optional: a GCN_INPUT-style script in the external files directory drives the game
 // without a controller, which is how to see a race if no gamepad is paired.
 static std::string read_script(const std::string& dir) {
-    std::string path = dir + "/wr_input.txt";
+    std::string path = dir + "/gcn_input.txt";
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return {};
     char buf[1024];
@@ -245,7 +245,7 @@ void android_main(android_app* app) {
     }
 
     int glver = gl_load_with(gl_proc);
-    if (glver < WR_GL_VERSION_MIN) { LOGE("OpenGL ES %d.%d too old", glver / 10, glver % 10); return; }
+    if (glver < GCN_GL_VERSION_MIN) { LOGE("OpenGL ES %d.%d too old", glver / 10, glver % 10); return; }
     LOGI("GL %s / %s", (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
 
     mem_init();
