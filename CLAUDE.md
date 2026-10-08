@@ -7,7 +7,7 @@ code was first written for this game. Fix shared things there: commit in the sub
 commit the new pointer here (and in prime-recomp). Only what is specific to this game lives in
 this repository: `analysis/`, the `recomp/*.txt` tables, the headset frontends in `runtime/`
 (`openxr_main.cpp`, `egl_main.cpp`, `android_main.cpp`, `vr_config.*`, `audio_aaudio.cpp`,
-`start_rig.cpp`), the Android build scripts, and `docs/dev/`.
+`start_rig.cpp`, `first_person.cpp`), the Android build scripts, and `docs/dev/`.
 
 **The repository must contain no game code or data.** Never commit, quote at length, or paste
 disassembly of the game into tracked files; a function name and address is fine, its

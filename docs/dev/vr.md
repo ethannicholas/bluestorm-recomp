@@ -577,8 +577,10 @@ question only the headset can answer.
 In stereo, clicking the right thumbstick moves the eye from the game's chase camera to the rider's
 seat: a point on the ski (`fp_x`/`fp_y`/`fp_z` in `vr.txt`, game units in the ski's own frame,
 x right, y up, z forward), with the rider not drawn. The chase camera's pitch correction
-(`world_pitch_deg`) does not apply here. `render_set_first_person` turns it on,
-`first_person_prepare` and `first_person_eye` in `render_gl.cpp` do the work.
+(`world_pitch_deg`) does not apply here. `render_set_first_person` turns it on, and
+`eye_hook` and `first_person_eye` in this repository's `runtime/first_person.cpp` do the work,
+handed to the shared renderer through `render_set_eye_hook` (the renderer itself knows nothing
+about hulls: it asks the game, per frame, for a view transform and the draws to leave out).
 
 Two attempts bracket what the eye should do:
 
@@ -658,7 +660,7 @@ which the reflection pass never uses -- but each also wears one the rest of the 
 
 A frame with no racer -- the
 menus, the course flyover, or a course that does without the reflection -- falls back to the chase
-camera, and `GCN_FPLOG=1` says so.
+camera, and `WR_FPLOG=1` says so.
 
 Each of those conditions was added after the rule before it picked something else, so they are
 worth keeping even where they look redundant:

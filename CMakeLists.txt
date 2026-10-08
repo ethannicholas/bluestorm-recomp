@@ -16,7 +16,9 @@ gcn_add_game(
   DOL_SHA1 d500d8f5bab39ae5fed67d0a0864095a9ea190d9
   SYMBOLS ${CMAKE_SOURCE_DIR}/analysis/symbols.txt
   TABLES ${CMAKE_SOURCE_DIR}/recomp
-  FPS 30)
+  FPS 30
+  # The game's half of the renderer's eye hook: first person on the ski.
+  SOURCES ${CMAKE_SOURCE_DIR}/runtime/first_person.cpp)
 
 # ---- Android ----
 # Two targets, built from the pieces gcn_add_game() exports, with this game's own frontends
@@ -26,8 +28,9 @@ if(ANDROID AND GCN_HAVE_GAME_ISO)
   # only the device belongs to a platform.
   set(CORE_SOURCES_AUDIO ${GCN_CORE_SOURCES} ${GCN_AUDIO_SOURCES}
     ${CMAKE_SOURCE_DIR}/runtime/audio_aaudio.cpp)
-  # The starting-light rig detector, which the VR frontend keys stereo off.
-  set(GAME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/start_rig.cpp)
+  # The starting-light rig detector, which the VR frontend keys stereo off, and the
+  # first-person eye on the ski.
+  set(GAME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/start_rig.cpp ${CMAKE_SOURCE_DIR}/runtime/first_person.cpp)
 
   # Headless EGL frontend: the real renderer, offscreen, writing frames as PNGs. Deliberately
   # not an APK -- it validates the GL ES renderer on a device over adb before there is any VR

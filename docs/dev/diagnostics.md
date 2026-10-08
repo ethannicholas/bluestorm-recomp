@@ -128,11 +128,13 @@ adb shell "cd /data/local/tmp && GCN_INPUT='600:START:10,800:START:10,1000:START
 ```
 
 The desktop build has the same `--eye` and `--first-person` (shared notes); for this game the
-anchor defaults to the rider's seat, and `GCN_FPLOG=1` prints, per frame, where the hull was
+eye comes from `runtime/first_person.cpp`, this game's half of the renderer's eye hook: the
+anchor defaults to the rider's seat (`WR_FP_ANCHOR=x,y,z` moves it on a desktop, where no
+`vr.txt` is read), and `WR_FPLOG=1` prints, per frame, where the hull was
 found and how many of the rider's draws were left out -- or that no racer was found:
 
 ```sh
-GCN_FPLOG=1 GCN_INPUT='<the Ocean City Harbor route above>' \
+WR_FPLOG=1 GCN_INPUT='<the Ocean City Harbor route above>' \
   ./build/waverace --hidden --eye --first-person --dump-dir=/tmp/fp --dump-every=100
 ```
 

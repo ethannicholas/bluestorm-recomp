@@ -57,6 +57,7 @@ static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
 #include "gx/render.h"
 #include "gx/render_gl.h"
 #include "start_rig.h"
+#include "first_person.h"
 #include "gx/gl.h"
 #include "gx/gl_msrtt.h"
 #include "hw/pad.h"
@@ -208,8 +209,9 @@ static bool g_head_zeroed = false;
 // The first-person anchor, with vr.txt's metre nudges converted to game units.
 static void set_first_person(bool on) {
     const float u = g_vrcfg.units_per_metre;
-    gx::render_set_first_person(on, g_vrcfg.fp_x, g_vrcfg.fp_y + g_vrcfg.fp_up_m * u,
-                                g_vrcfg.fp_z + g_vrcfg.fp_forward_m * u);
+    const float anchor[3] = {g_vrcfg.fp_x, g_vrcfg.fp_y + g_vrcfg.fp_up_m * u, g_vrcfg.fp_z + g_vrcfg.fp_forward_m * u};
+    wr::first_person_configure(anchor, g_vrcfg.fp_height_s, g_vrcfg.fp_yaw_s, g_vrcfg.fp_tilt, g_vrcfg.fp_tilt_s);
+    gx::render_set_first_person(on);
 }
 
 // The viewer's choice of chase camera or first person, kept across sessions in
@@ -705,8 +707,6 @@ void android_main(android_app* app) {
     g_vrcfg = vr_config_load(dir);
     g_view_path = dir + "/view.txt";
     gx::render_set_world_pitch(g_vrcfg.world_pitch_deg * 3.14159265f / 180.0f);
-    gx::render_set_first_person_smoothing(g_vrcfg.fp_height_s, g_vrcfg.fp_yaw_s,
-                                         g_vrcfg.fp_tilt, g_vrcfg.fp_tilt_s);
     static std::string dump_dir;
     if (g_vrcfg.dump_every > 0) {
         dump_dir = dir + "/frames";
