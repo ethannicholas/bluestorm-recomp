@@ -43,11 +43,44 @@ The app presents the game two ways and switches between them automatically:
 - **Stereo** — the world rendered per eye as an `XrCompositionLayerProjection`, with the 2D
   elements painted on a frame standing in front of the game's camera.
 
-The switch is driven by the game's own state. No single variable spans a race at both ends, so
-three are read, one job each: `0x80602160` counts what the course loaded and is the only one that
-clears when a race is *quit*, so it gates the rest; `0x80625A54` is the start sequence's state and
-brings stereo up with the starting lights; `0x806193BC` is the course's wave height, which is what
-notices a race *finishing*. Stereo is `on_course > 0 && (wave_height || start_state == countdown)`.
+The switch is driven by the game's own state and by what it draws. `0x80602160` counts what the
+course loaded and is the only signal that clears when a race is *quit*, so it gates. Within it,
+stereo comes up when the **starting-light rig** is on screen (`gx::batch_shows_start_rig`), and
+`0x806193BC`, the course's wave height -- non-zero from the lights to the finish -- carries it
+through the race and is what notices a race *finishing*. Stereo is
+`on_course > 0 && (wave_height || rig on screen)`.
+
+Finding the rig. Every course has its own -- vines on Lost Temple Lagoon, bamboo on Southern
+Island, a wooden frame on Aspen Lake, a scoreboard on Ocean City Harbor, another on Dolphin Park --
+so the test must not depend on the model. What they share is how the game draws them: in
+perspective through an identity position matrix, hung in view space in front of the camera
+(`PixelState::view_space`). That is not the only thing drawn that way -- Championship's opening
+screen and every course flyover draw the whole course through the identity too, transformed on
+the CPU -- but nothing else so drawn stays near the camera. `WR_RIGLOG=1` in `waverace_egl` logs
+those draws per frame, and the detector's verdict when it changes; on all five reachable courses:
+
+| on screen | draws | vertices | extent |
+|---|---|---|---|
+| the rigs | 10-33 | 1,686-2,898 | no more than 100 units across or 210 from the camera |
+| opening screen, flyovers | 150-600 | 29,000-85,000 | 25,000-85,000 units |
+
+and in a race, the rider close-ups, the results and the menus there are none at all. So the rig
+is a frame whose identity-matrix perspective draws all lie within 2,000 units of the camera (ten
+times the farthest rig, a tenth of the nearest course) and add up to at least 100 vertices
+(enough to ignore a stray quad). On every course it fired only while the rig was up: on the same
+frame as the wave height in Time Attack, and 45 frames before it on Dolphin Park. Courses this
+save has not unlocked are untested.
+
+Two variables were tried for the start and failed:
+
+- `0x80625A54`, the start sequence's phase, reads 12 during the intro and 5 from the lights to
+  just after the start. But 5 is not only the countdown. Championship -> Exhibition -> Dolphin
+  Park opens on a screen that cycles views of the course until A is pressed, and five seconds in
+  the phase goes to 5 and stays there (traced with `WR_WATCH=0x80602160,0x80625A54,0x806193BC`,
+  no input after picking the course) -- the headset switched to stereo on it every time. In Time
+  Attack the phase never leaves 0.
+- The wave height alone starts stereo up to a second and a half into the countdown, with the
+  lights already lit.
 There is no manual override any more: the right thumbstick click used to pin the view, and now
 switches between the chase camera and [first person](#first-person) within stereo.
 
@@ -542,12 +575,37 @@ question only the headset can answer.
 ## First person
 
 In stereo, clicking the right thumbstick moves the eye from the game's chase camera to the rider's
-seat: a point fixed to the ski (`fp_x`/`fp_y`/`fp_z` in `vr.txt`, game units in the ski's own
-frame, x right, y up, z forward), turning and pitching with the hull, with the rider not drawn.
-Deliberately naive for now -- no smoothing, no levelling, the eye goes wherever the hull goes --
-to see what that is like before deciding what to damp. The chase camera's pitch correction
-(`world_pitch_deg`) does not apply here; the hull's own frame replaces it. `render_set_first_person`
-turns it on, `first_person_prepare` in `render_gl.cpp` does the work.
+seat: a point on the ski (`fp_x`/`fp_y`/`fp_z` in `vr.txt`, game units in the ski's own frame,
+x right, y up, z forward), with the rider not drawn. The chase camera's pitch correction
+(`world_pitch_deg`) does not apply here. `render_set_first_person` turns it on,
+`first_person_prepare` and `first_person_eye` in `render_gl.cpp` do the work.
+
+Two attempts bracket what the eye should do:
+
+- **Fixed rigidly to the hull** -- turning, pitching and rolling with it -- every slap of a wave
+  went straight into the viewer's head at 30 Hz. Rough even for strong VR legs.
+- **Levelled outright, height eased over 0.3 s** -- placed in the world, only the hull's heading
+  kept -- it was terrible the other way: "just flying a camera around the track, completely
+  disconnected from the water". The waves did nothing to the eye, and since the eased height
+  lagged the hull's, the ski rose through the viewer on every crest.
+
+What it does now: the eye's **position** is the rider's head on the hull exactly as it lies, with
+no lag -- the only thing that keeps the ski under the viewer, and the waves lift and drop the eye
+as they lift and drop him. Its **orientation** is eased, in the world (the hull's pose is taken out
+of the chase camera's frame, which moves every frame too, through the world matrix; the world's up
+is its Y): the heading follows the hull's over `fp_yaw_s` (0.1 s), and pitch and roll follow over
+`fp_tilt_s` (0.15 s), scaled by `fp_tilt` (0.7; 1 rides with the hull, 0 is the level horizon
+that did not work). `fp_height_s` can ease the height too, but defaults to 0 for the reason above.
+A jump of more than 300 units in a frame (a respawn) is followed at once.
+
+The HUD frame hangs in front of the eye, so once the eye pitched and rolled with the ski the HUD
+tipped against the horizon, which read as wrong even though it was steady in the room. It is now
+hung on the eye's *level* frame -- same position and heading, the world's up -- and turned back
+into the eye's own by the inverse of the eye's pitch and roll (`g_hud_xform`), so it stays
+upright to the world as the view tilts. Outside first person that transform is the identity.
+
+The head position the headset reports is re-zeroed each time first person is entered: see
+"Where the eye is" below.
 
 ### Finding the ski in a batch
 
@@ -562,10 +620,16 @@ textures beside the matrices, the structure of a frame is this:
   loaded at `GX_PNMTX0`. The course, the water, the spray, and the **other racers too**: the game
   transforms them into the world on the CPU, so there is nothing in the matrices to confuse with
   the player.
-- The 270 are the player's racer, through four matrices at `GX_PNMTX1..4`: 87 draws of the
-  rider's head, 18 of the arms, 55 of the torso, and 108 draws (677 vertices) of the hull. The hull
-  is unmistakable by size: its vertices span 81 units along the ski against 40 or so for any part
-  of the rider.
+- The 270 are pieces of the player's racer, through four rigid matrices at `GX_PNMTX1..4`: 87
+  draws of the rider's **head**, 18 of the **handlebar** (a bar 25 across and 4 deep), 55 of the
+  **steering pole** (42 long; it hinges, so it moves against the hull -- folded flat at the start
+  line, raised to the rider's chest once he stands), and 108 draws (677 vertices) of the **hull**.
+  The hull is unmistakable by size: its vertices span 81 units along the ski. This list first
+  read "head, arms, torso, hull", and the code hid all three that were not the hull, which took
+  the handlebars off the ski and left the body standing on it.
+- **The rider's body is not among them.** It is skinned by the game on the CPU and drawn through
+  the *world* matrix, like the course: some 220 draws, textures of its own, right beside the hull.
+  Nothing in its matrix says it is his.
 - The hull's model frame is **X to the ski's left, Y up, Z forward**: its matrix's columns come out
   as view-space -X, the same up the world matrix has, and the direction of travel. That is a proper
   rotation, not a mirror -- the world matrix negates X too.
@@ -578,8 +642,21 @@ the world's; every other rigid matrix within 600 units of the camera is a piece 
 provided its draws sample a texture the off-screen passes drew near the camera through a rigid
 non-world matrix (the reflection pass is the one place in the batch that says what the racer looks
 like) and it is under 300 units across; the hull is the longest piece that is at least twice as
-long, along its own forward axis, as it is wide; the pieces within 60 units of the hull's origin
-are the rider and are left out of every pass, the flat one included. A frame with no racer -- the
+long, along its own forward axis, as it is wide. Then the rider, who is left out of every pass,
+the flat one included, is two things:
+
+- the body: draws through the world matrix that sample a texture from that same set and whose
+  vertices centre within 90 units of the hull's origin. Spray and water are drawn through the
+  world too, but in textures the reflection pass never uses;
+- the head: a rigid piece within 90 units of the hull that shares a texture with the body (the
+  skin) and not with the hull. The handlebar and pole share textures only with the hull.
+
+The body test then grows: any nearby world draw sharing a texture with the body found so far
+joins it, until nothing more does. Without that, a few strips of the rider stayed in the air:
+about 15 of his draws are textured only with four shading maps the game loads after his model,
+which the reflection pass never uses -- but each also wears one the rest of the body does.
+
+A frame with no racer -- the
 menus, the course flyover, or a course that does without the reflection -- falls back to the chase
 camera, and `WR_FPLOG=1` says so.
 
@@ -604,9 +681,34 @@ shifts the whole image down by a quarter of its height -- so the chase camera's 
 ski and the frustum looks mostly above it. The eye paths use their own projections and never see
 that shift; it only matters when reading view-space numbers against a screenshot.
 
-The anchor's default, 42 up and 12 back, is read off the same dump: racing, crouched, the head is
-39 units above the hull's origin and 9 behind it, so idle and upright is a little more of each.
-50 units is a metre.
+### Where the eye is
+
+The anchor's default is 57.5 up and 46.5 back: 25 cm above and 75 cm behind the rider's eyes,
+set by eye in the headset with `fp_up_m`/`fp_forward_m` (offsets in metres from the anchor, for
+exactly that). His eyes themselves, 45 up and 9 back, felt too low and too far forward. They are
+his eyes in his idle pose: standing at rest
+after the start, his head's centre is 43.5 units above the hull's origin and 11 behind it, its
+face 7 behind (`WR_MTXLOG=200` with no throttle, 200 frames after the race flag). Racing,
+crouched, it is 40 up; kneeling at the start line, before he stands, 16. The grips are at 28 up,
+so his head is only some 15 units -- 30 cm at 50 units to the metre -- above his hands.
+
+That is what made the first version look wrong in the headset, with the eye "between his hands".
+The anchor (then 42 up and 12 back) was right. What was not was the headset's own position: the
+reference space is LOCAL, whose origin is wherever the head was at launch, so the viewer's posture
+since then is added to the eye, multiplied by `units_per_metre`. Behind the chase camera a 30 cm
+lean is lost in the distance; on a rider whose head is 15 units above his hands it is the whole
+gap. So the app takes the head position as zero at the moment first person is entered (and again
+whenever stereo begins with it on), and moves the eye only by how the head moves from there.
+Leaving first person puts the space's own origin back.
+
+### Hiding a draw keeps its textures
+
+GL textures are evicted after 240 frames unbound, and the guest-side cache, which is what would
+send a texture again, is kept alive by the game *referencing* it. Those two only disagree for a
+draw left out on purpose, and the first version left the rider out: after eight seconds in first
+person the head's textures were deleted on the GL side while the game, still referencing them,
+never sent them again, so leaving first person brought the rider back with flat, untextured hair.
+A hidden draw now marks its textures used (`touch_textures`).
 
 ### What is left alone
 
@@ -618,6 +720,14 @@ The anchor's default, 42 up and 12 back, is read off the same dump: racing, crou
   are the chase camera's. It lasts a second.
 - `offset_x/y/z` still apply, now relative to the anchor.
 - Switching is a cut, not a morph.
+- The choice is remembered across sessions, in `<files>/view.txt` (the app writes it; `vr.txt`'s
+  `first_person` is only the choice before one has been made), and is in effect only in stereo.
+  Leaving stereo drops to the chase camera *before* the morph to theater: the morph folds the
+  world onto the panel the game's camera drew, and starting it from the rider's seat swung the
+  scene across to that camera on the way.
+- `waverace_egl` takes `--first-person[=x,y,z]`, `--fp-window=a-b` (on only for those presented
+  frames, which is how switching in and back out is reproduced) and `--eye-pitch=deg` (look down,
+  which is the only way to see the handlebars from the rider's eyes).
 
 ### Levelling the sea
 

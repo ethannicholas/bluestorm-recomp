@@ -63,9 +63,19 @@ void render_set_world_pitch(float pitch_rad);
 // the chase camera.
 void render_set_first_person(bool on, float x, float y, float z);
 
+// How the first-person eye follows the ski: time constants, in seconds, for its height,
+// heading and pitch/roll (0 follows exactly), and how much of the hull's pitch and roll it
+// takes (1 all of it, 0 a level horizon).
+void render_set_first_person_smoothing(float height_s, float yaw_s, float tilt, float tilt_s);
+
 // Draw one eye's view of a batch into `fbo`. Both eyes share the vertex buffer, the
 // CPU-side transform and any render-to-texture results, so only uniforms and draw
 // calls are repeated. Pass do_copies for the first eye only.
+// Whether a frame draws the starting-light rig -- the gantry that descends in front of the
+// camera at the start line, whose lights count the race in. It is what starts stereo: the
+// one thing on screen that only a race's start shows.
+bool batch_shows_start_rig(const Batch& b);
+
 bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies);
 extern bool g_cull_swap;
 extern const char* g_dump_dir;

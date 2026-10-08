@@ -115,14 +115,32 @@ struct VrConfig {
 
     // First person: in stereo, the eye rides the ski instead of the chase camera, and the
     // rider is not drawn. Clicking the right thumbstick switches it during a race; this
-    // is where it starts. The anchor is where the eye sits relative to the hull's origin,
-    // in game units in the ski's own frame -- x to the right, y up, z forward -- and was
-    // read off the rider's head in the dump that found the hull: some 39 units up and 9
-    // back while racing, crouched, so a little higher and further back for the idle pose.
+    // is where it starts until the viewer has chosen; after that the app remembers the
+    // choice in <files>/view.txt. The anchor is where the eye sits relative to the hull's
+    // origin, in game units in the ski's own frame -- x to the right, y up, z forward. The
+    // rider's eyes, standing at rest, are at 45 up and 9 back (his head's centre 43.5 and
+    // 11); the default is 25 cm above and 75 cm behind that, which is where it was put by
+    // eye in the headset. His eyes put the viewer's too low and too far forward to ride.
     bool first_person = false;
     float fp_x = 0.0f;
-    float fp_y = 42.0f;
-    float fp_z = -12.0f;
+    float fp_y = 57.5f;
+    float fp_z = -46.5f;
+    // Nudges to that anchor, in metres, for finding by eye where it should be: up raises
+    // the eye, forward moves it towards the ski's nose. 0 is the anchor above.
+    float fp_up_m = 0.0f;
+    float fp_forward_m = 0.0f;
+
+    // How the first-person eye follows the ski. Its position is the rider's head, exactly;
+    // what is eased is how it turns. fp_yaw_s and fp_tilt_s are the time constants, in
+    // seconds, over which its heading and its pitch and roll follow the hull's, and
+    // fp_tilt is how much of that pitch and roll it takes: 1 rides with the hull, 0 keeps
+    // the horizon level, which felt like flying a camera rather than riding. fp_height_s
+    // eases the height too, but any lag lets the ski rise through the viewer on a crest,
+    // so it is 0.
+    float fp_height_s = 0.0f;
+    float fp_yaw_s = 0.1f;
+    float fp_tilt = 0.6f;
+    float fp_tilt_s = 0.15f;
 
     // Seconds the morph between theater and stereo takes -- the panel opening out into the
     // world, or the world folding back onto it. 0 snaps, as it used to.

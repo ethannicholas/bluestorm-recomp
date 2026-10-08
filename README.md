@@ -207,8 +207,14 @@ start_in_stereo 0        # start in stereo rather than theater
 transition_s 1           # seconds the morph between the two views takes; 0 snaps
 first_person 0           # start races in first person rather than behind the chase camera
 fp_x 0                   # where the first-person eye sits relative to the ski, in game units:
-fp_y 42                  #   x right, y up, z forward
-fp_z -12
+fp_y 57.5                #   x right, y up, z forward
+fp_z -46.5
+fp_up_m 0                # nudge the first-person eye up (metres; negative is down)
+fp_forward_m 0           #   and forward (negative is back)
+fp_tilt 0.6              # how much of the ski's pitch and roll the first-person eye takes
+fp_tilt_s 0.15           # seconds it takes to follow the ski's pitch and roll,
+fp_yaw_s 0.1             #   its heading,
+fp_height_s 0            #   and its height; 0 follows exactly
 ```
 
 ## Controls

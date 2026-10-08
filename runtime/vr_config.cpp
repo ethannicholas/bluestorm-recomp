@@ -42,6 +42,12 @@ VrConfig vr_config_load(const std::string& dir) {
         else if (!strcmp(key, "fp_x")) c.fp_x = (float)val;
         else if (!strcmp(key, "fp_y")) c.fp_y = (float)val;
         else if (!strcmp(key, "fp_z")) c.fp_z = (float)val;
+        else if (!strcmp(key, "fp_up_m")) c.fp_up_m = (float)val;
+        else if (!strcmp(key, "fp_forward_m")) c.fp_forward_m = (float)val;
+        else if (!strcmp(key, "fp_height_s")) c.fp_height_s = (float)val;
+        else if (!strcmp(key, "fp_yaw_s")) c.fp_yaw_s = (float)val;
+        else if (!strcmp(key, "fp_tilt")) c.fp_tilt = (float)val;
+        else if (!strcmp(key, "fp_tilt_s")) c.fp_tilt_s = (float)val;
         else if (!strcmp(key, "transition_s")) c.transition_s = (float)val;
         else __android_log_print(ANDROID_LOG_INFO, "waverace", "vr.txt: ignoring '%s'", key);
     }
@@ -50,10 +56,11 @@ VrConfig vr_config_load(const std::string& dir) {
                         "vr.txt: units_per_metre=%.1f offset=(%.1f,%.1f,%.1f) "
                         "hud=%.3f@%.1fm height=%.2fm pitch=%.1fdeg world_pitch=%.1fdeg "
                         "scale=%d/%d eyes=%.2fx msaa=%d stereo_at_start=%d transition=%.2fs "
-                        "first_person=%d at (%.1f,%.1f,%.1f)",
+                        "first_person=%d at (%.1f,%.1f,%.1f) +%.2fm up +%.2fm fwd eased %.2fs/%.2fs tilt %.2f over %.2fs",
                         c.units_per_metre, c.offset_x, c.offset_y, c.offset_z, c.hud_scale,
                         c.hud_distance_m, c.hud_height_m, c.hud_pitch_deg, c.world_pitch_deg,
                         c.theater_scale, c.stereo_scale, c.eye_scale, c.msaa, (int)c.start_in_stereo,
-                        c.transition_s, (int)c.first_person, c.fp_x, c.fp_y, c.fp_z);
+                        c.transition_s, (int)c.first_person, c.fp_x, c.fp_y, c.fp_z, c.fp_up_m, c.fp_forward_m,
+                        c.fp_height_s, c.fp_yaw_s, c.fp_tilt, c.fp_tilt_s);
     return c;
 }

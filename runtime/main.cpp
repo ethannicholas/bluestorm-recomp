@@ -180,7 +180,7 @@ int main(int argc, char** argv) {
     if (!plat_readable(iso_default.c_str())) iso_default = plat_find_file("rom", ".iso");
     const char* iso = iso_default.c_str();
     bool headless = false, hidden = false, first_person = false;
-    float fp[3] = {0.0f, 42.0f, -12.0f};
+    float fp[3] = {0.0f, 57.5f, -46.5f};
     int scale = 2;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--log-all")) for (auto& e : g_log_enabled) e = true;

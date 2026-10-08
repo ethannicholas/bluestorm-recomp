@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <algorithm>
 #include <vector>
 
 uint32_t boot_load(const char* iso_path);
@@ -44,6 +45,7 @@ static void* gl_proc(const char* name);
 // ---------------------------------------------------------------------------
 static bool g_eye_mode = false;
 static float g_eye_yaw = 0.0f;  // --eye-yaw: degrees of head turn, for spotting head-locked draws
+static float g_eye_pitch = 0.0f;  // --eye-pitch: degrees of looking down, for seeing the ski in first person
 static GLuint g_eye_fbo, g_eye_tex, g_eye_depth;
 static int g_eye_w = 960, g_eye_h = 720;
 
@@ -52,6 +54,13 @@ static int g_eye_w = 960, g_eye_h = 720;
 // headset can. Together with WR_EYE_GPU=1, which times the eye passes on the GPU, they are
 // what answers "what does a higher eye resolution or antialiasing cost" without a headset.
 static int g_eye_count = 1, g_eye_msaa = 0;
+
+// --first-person[=x,y,z] puts the eye on the ski, as the thumbstick click does in the
+// headset; --fp-window=a-b holds it on only for those presented frames, which is how a
+// switch in and back out again is reproduced.
+static bool g_fp = false;
+static float g_fp_anchor[3] = {0.0f, 57.5f, -46.5f};
+static int g_fp_lo = -1, g_fp_hi = -1;
 
 static void eye_init() {
     glGenTextures(1, &g_eye_tex);
@@ -111,10 +120,26 @@ static void eye_matrices(float* proj, float* view, float* hud) {
     // copy of the racer to the viewer's face got through this harness looking correct.
     // Dump the same frame at two yaws: whatever does not move with the world is locked.
     const float a = g_eye_yaw * 3.14159265f / 180.0f;
-    memset(view, 0, 16 * sizeof(float));
-    view[0] = cosf(a);  view[2] = -sinf(a);
-    view[8] = sinf(a);  view[10] = cosf(a);
-    view[5] = view[15] = 1.0f;
+    float Y[16];
+    memset(Y, 0, sizeof(Y));
+    Y[0] = cosf(a);  Y[2] = -sinf(a);
+    Y[8] = sinf(a);  Y[10] = cosf(a);
+    Y[5] = Y[15] = 1.0f;
+    // --eye-pitch tips it down, the way a rider looks at his own ski: the inverse of a
+    // rotation about X by -pitch is one by +pitch.
+    const float b = g_eye_pitch * 3.14159265f / 180.0f;
+    float X[16];
+    memset(X, 0, sizeof(X));
+    X[0] = X[15] = 1.0f;
+    X[5] = cosf(b);  X[6] = sinf(b);
+    X[9] = -sinf(b); X[10] = cosf(b);
+    // view = X * Y, column-major.
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++) {
+            float v = 0.0f;
+            for (int k = 0; k < 4; k++) v += X[k * 4 + r] * Y[c * 4 + k];
+            view[c * 4 + r] = v;
+        }
     // The HUD frame is anchored in front of the game's camera, not the head, so --eye-yaw
     // swings it out of view exactly as turning to look away does in the headset. A HUD
     // that sits still under a yaw is one that is still locked to the viewer's face.
@@ -323,9 +348,16 @@ int main(int argc, char** argv) {
         else if (!strncmp(argv[i], "--seconds=", 10)) seconds = atoi(argv[i] + 10);
         else if (!strcmp(argv[i], "--eye")) g_eye_mode = true;
         else if (!strncmp(argv[i], "--eye-yaw=", 10)) g_eye_yaw = (float)atof(argv[i] + 10);
+        else if (!strncmp(argv[i], "--eye-pitch=", 12)) g_eye_pitch = (float)atof(argv[i] + 12);
         else if (!strncmp(argv[i], "--eye-size=", 11)) sscanf(argv[i] + 11, "%dx%d", &g_eye_w, &g_eye_h);
         else if (!strncmp(argv[i], "--eyes=", 7)) g_eye_count = atoi(argv[i] + 7);
         else if (!strncmp(argv[i], "--msaa=", 7)) g_eye_msaa = atoi(argv[i] + 7);
+        else if (!strncmp(argv[i], "--first-person", 14)) {
+            g_fp = true;
+            if (argv[i][14] == '=')
+                sscanf(argv[i] + 15, "%f,%f,%f", &g_fp_anchor[0], &g_fp_anchor[1], &g_fp_anchor[2]);
+        }
+        else if (!strncmp(argv[i], "--fp-window=", 12)) sscanf(argv[i] + 12, "%d-%d", &g_fp_lo, &g_fp_hi);
         else if (!strncmp(argv[i], "--dump-dir=", 11)) gx::g_dump_dir = argv[i] + 11;
         else if (!strncmp(argv[i], "--dump-every=", 13)) gx::g_dump_every = atoi(argv[i] + 13);
         else if (argv[i][0] != '-') iso = argv[i];
@@ -439,10 +471,63 @@ int main(int argc, char** argv) {
             }
         }
         if (auto b = gx::take_batch(4)) {
+            // WR_RIGLOG=1: per frame, the perspective draws placed in view space (the
+            // countdown rig, per PixelState::view_space) -- how many, their vertices, and
+            // where they sit -- whenever that changes, to find what marks the rig.
+            static const bool riglog = getenv("WR_RIGLOG") != nullptr;
+            if (riglog) {
+                int n = 0;
+                uint32_t verts = 0;
+                float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+                std::vector<uint32_t> tex;
+                for (const auto& c : b->cmds) {
+                    if (c.type != gx::CmdType::Draw) continue;
+                    const gx::PixelState& st = b->states[c.state];
+                    if (!st.view_space || (int)st.proj[6] != 0) continue;
+                    n++;
+                    verts += c.count;
+                    for (uint32_t v = 0; v < c.count; v++) {
+                        const float* p = b->verts[b->indices[c.first + v]].pos;
+                        for (int a = 0; a < 3; a++) {
+                            if (p[a] < lo[a]) lo[a] = p[a];
+                            if (p[a] > hi[a]) hi[a] = p[a];
+                        }
+                    }
+                    for (int t = 0; t < 8; t++)
+                        if (st.tex_id[t] && std::find(tex.begin(), tex.end(), st.tex_id[t]) == tex.end())
+                            tex.push_back(st.tex_id[t]);
+                }
+                static int last_rig = -1;
+                const int rig = gx::batch_shows_start_rig(*b);
+                if (rig != last_rig) {
+                    last_rig = rig;
+                    fprintf(stderr, "[rig] frame %u: detector -> %d\n", presented, rig);
+                }
+                static int last_n = -1;
+                static uint32_t last_v = ~0u;
+                if (n != last_n || verts != last_v || presented % 30 == 0) {
+                    last_n = n;
+                    last_v = verts;
+                    fprintf(stderr, "[rig] frame %u: %d draws %u verts", presented, n, verts);
+                    if (n)
+                        fprintf(stderr, " x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f, %zu textures",
+                                lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], tex.size());
+                    fprintf(stderr, "\n");
+                }
+            }
             if (g_eye_mode) {
                 float P[16], V[16], H[16];
                 eye_matrices(P, V, H);
                 gx::render_set_vr_morph(1.0f, nullptr);
+                if (g_fp) {
+                    const bool on = g_fp_lo < 0 || ((int)presented >= g_fp_lo && (int)presented < g_fp_hi);
+                    static int was = -1;
+                    if ((int)on != was) {
+                        was = on;
+                        gx::render_set_first_person(on, g_fp_anchor[0], g_fp_anchor[1], g_fp_anchor[2]);
+                        fprintf(stderr, "[fp] frame %u: first person %s\n", presented, on ? "on" : "off");
+                    }
+                }
                 gpu_timer_begin();
                 const auto t_eyes = clock::now();
                 if (g_eye_count > 1) {

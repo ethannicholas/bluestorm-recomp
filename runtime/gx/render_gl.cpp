@@ -73,14 +73,28 @@ static float g_vr_proj[16], g_vr_view[16];
 static float g_vr_view_world[16];
 static float g_world_pitch = 0.0f;
 static float g_vr_hud[16];
+// What the HUD frame goes through before the eye's view: the identity, except in first
+// person, where the eye pitches and rolls with the ski and a HUD fixed to it tipped against
+// the horizon. There it turns the HUD back to the eye's level frame -- same heading, the
+// world's up -- so it stays upright to the world as the view tilts (first_person_eye).
+// g_vr_hud_eff is this times g_vr_hud, and is what the HUD is drawn with.
+static float g_hud_xform[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+static float g_vr_hud_eff[16];
 // What world geometry goes through before the eye's own view: the chase camera's pitch
 // taken back out (world_pitch_matrix), or in first person the move from the game's camera
 // to the rider's head (first_person_camera). g_vr_view_world is g_vr_view times this.
 static float g_world_xform[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 // First person: see render_set_first_person. The anchor is in the ski's own frame.
 static bool g_fp_on = false;
-static float g_fp_anchor[3] = {0.0f, 42.0f, -12.0f};
+static float g_fp_anchor[3] = {0.0f, 57.5f, -46.5f};
 static bool g_fp_found = false;
+// Where the eye was last frame, in the world's own frame (the one the world matrix maps
+// into view space): see first_person_eye. Invalid until a hull has been found since first
+// person was switched on, and after any frame without one, so the eye starts where the
+// rider is rather than easing in from wherever it was.
+struct FpEye { bool valid; float pos[3]; float yaw, pitch, roll; };
+static FpEye g_fp_eye;
+static float g_fp_height_s = 0.0f, g_fp_yaw_s = 0.1f, g_fp_tilt = 0.6f, g_fp_tilt_s = 0.15f;
 // Per command of the batch being drawn: 1 for the rider's draws, which first person
 // leaves out. Empty when nothing is hidden.
 static std::vector<uint8_t> g_hide;
@@ -909,7 +923,7 @@ static void apply_state(const PixelState& st, int prim) {
             // Every term is constant for the draw, so the whole chain folds into one matrix
             // here and the shader is left with a single multiply.
             float a[16], b[16], M[16];
-            mat4_mul(g_vr_hud, P, a);   // the game's 2D frame, placed in view space
+            mat4_mul(g_vr_hud_eff, P, a);   // the game's 2D frame, placed in view space
             mat4_mul(g_vr_view, a, b);  // that frame seen from this eye
             mat4_mul(g_vr_proj, b, M);
             glUniformMatrix4fv(pr.u_proj, 1, GL_FALSE, M);
@@ -1370,7 +1384,15 @@ static void world_pitch_matrix(float R[16]) {
     R[15] = 1.0f;
 }
 
-static void compose_world_view() { mat4_mul(g_vr_view, g_world_xform, g_vr_view_world); }
+static void compose_world_view() {
+    mat4_mul(g_vr_view, g_world_xform, g_vr_view_world);
+    mat4_mul(g_hud_xform, g_vr_hud, g_vr_hud_eff);
+}
+
+static void hud_upright() {
+    memset(g_hud_xform, 0, sizeof(g_hud_xform));
+    g_hud_xform[0] = g_hud_xform[5] = g_hud_xform[10] = g_hud_xform[15] = 1.0f;
+}
 
 void render_set_world_pitch(float pitch_rad) {
     g_world_pitch = pitch_rad;
@@ -1379,15 +1401,24 @@ void render_set_world_pitch(float pitch_rad) {
 }
 
 void render_set_first_person(bool on, float x, float y, float z) {
+    if (on && !g_fp_on) g_fp_eye.valid = false;
     g_fp_on = on;
     g_fp_anchor[0] = x;
     g_fp_anchor[1] = y;
     g_fp_anchor[2] = z;
     if (!on) {
         g_fp_found = false;
+        hud_upright();
         world_pitch_matrix(g_world_xform);
         compose_world_view();
     }
+}
+
+void render_set_first_person_smoothing(float height_s, float yaw_s, float tilt, float tilt_s) {
+    g_fp_height_s = height_s;
+    g_fp_yaw_s = yaw_s;
+    g_fp_tilt = tilt;
+    g_fp_tilt_s = tilt_s;
 }
 
 void render_set_vr_eye(const float proj[16], const float view[16], const float hud[16]) {
@@ -1434,33 +1465,133 @@ static bool mtx_is_rigid(const float* m) {
     return fabsf(xy) < 0.05f && fabsf(yz) < 0.05f;
 }
 
-// The view-to-camera transform for a head `anchor` (x right, y up, z forward, in the
-// ski's frame) on a hull placed by `m`, as a column-major 4x4.
-static void first_person_camera(const float* m, const float anchor[3], float C[16]) {
-    float fwd[3] = {m[2], m[6], m[10]};
-    float up[3] = {m[1], m[5], m[9]};
-    auto norm = [](float* v) {
-        const float l = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-        for (int i = 0; i < 3; i++) v[i] /= l;
+
+// Inverse of the 3x3 part of a GX row-major 3x4 matrix, as a row-major 3x3.
+static bool mtx3_inverse(const float* m, float r[9]) {
+    const float a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], k = m[10];
+    const float A = e * k - f * h, B = f * g - d * k, C = d * h - e * g;
+    const float det = a * A + b * B + c * C;
+    if (fabsf(det) < 1e-6f) return false;
+    const float s = 1.0f / det;
+    r[0] = A * s; r[1] = (c * h - b * k) * s; r[2] = (b * f - c * e) * s;
+    r[3] = B * s; r[4] = (a * k - c * g) * s; r[5] = (c * d - a * f) * s;
+    r[6] = C * s; r[7] = (b * g - a * h) * s; r[8] = (a * e - b * d) * s;
+    return true;
+}
+
+// Sets g_world_xform, the view-to-eye transform, for a rider standing on a hull placed by
+// `hm`, given the world matrix `wm`.
+//
+// Two attempts bracket what is wanted here. Fixed rigidly to the hull, every slap of a
+// wave went straight into the viewer's head, at the game's 30 Hz. Levelled outright, with
+// the height eased over 0.3 s, it was worse the other way: a camera flown along the
+// course, cut off from the water, the waves doing nothing to it -- and since the eased
+// height lagged the hull's, the ski rose through the viewer on every crest.
+//
+// So the eye's *position* is the rider's head on the hull exactly as it lies: no lag,
+// which is the only thing that keeps the ski under the viewer, and the waves lift and
+// drop it as they lift and drop him. What is eased is its *orientation*, in the world
+// (the hull's pose is taken out of the chase camera's frame, which moves every frame
+// too, through the world matrix; the world's up is its Y):
+//
+// - the heading follows the hull's over fp_yaw_s;
+// - pitch and roll follow the hull's over fp_tilt_s, scaled by fp_tilt -- 1 rides with
+//   the hull, 0 keeps the horizon level. Easing takes out the 30 Hz jolts while the
+//   swell itself still comes through.
+//
+// fp_height_s eases the height as well, for anyone who wants it; it is 0 by default,
+// for the reason above.
+static void first_person_eye(const float* wm, const float* hm, const float anchor[3]) {
+    float wi[9];
+    if (!mtx3_inverse(wm, wi)) return;
+    auto to_world_dir = [&](float x, float y, float z, float out[3]) {
+        for (int r = 0; r < 3; r++) out[r] = wi[r * 3] * x + wi[r * 3 + 1] * y + wi[r * 3 + 2] * z;
     };
-    norm(fwd);
-    const float d = up[0] * fwd[0] + up[1] * fwd[1] + up[2] * fwd[2];
-    for (int i = 0; i < 3; i++) up[i] -= d * fwd[i];
-    norm(up);
-    // The camera's own axes: x right, y up, z back. right = up x back.
-    const float back[3] = {-fwd[0], -fwd[1], -fwd[2]};
-    const float right[3] = {up[1] * back[2] - up[2] * back[1], up[2] * back[0] - up[0] * back[2],
-                            up[0] * back[1] - up[1] * back[0]};
-    float e[3];
+    // The hull in the world. Its model frame is X to the ski's left, Y up and Z forward.
+    float hp[3], hx[3], hy[3], hz[3];
+    to_world_dir(hm[3] - wm[3], hm[7] - wm[7], hm[11] - wm[11], hp);
+    to_world_dir(hm[0], hm[4], hm[8], hx);
+    to_world_dir(hm[1], hm[5], hm[9], hy);
+    to_world_dir(hm[2], hm[6], hm[10], hz);
+    // Where the head is: on the hull as it actually lies. Anchor x is to the right, the
+    // hull's -X.
+    float target[3];
     for (int i = 0; i < 3; i++)
-        e[i] = m[3 + 4 * i] + right[i] * anchor[0] + up[i] * anchor[1] + fwd[i] * anchor[2];
+        target[i] = hp[i] - hx[i] * anchor[0] + hy[i] * anchor[1] + hz[i] * anchor[2];
+    auto clamp1 = [](float v) { return v < -1.0f ? -1.0f : v > 1.0f ? 1.0f : v; };
+    const float target_yaw = atan2f(hz[0], hz[2]);
+    // Nose up is positive pitch; the right side rising is positive roll.
+    const float target_pitch = asinf(clamp1(hz[1]));
+    const float target_roll = asinf(clamp1(-hx[1]));
+
+    constexpr float kDt = 1.0f / 30.0f;  // once per game frame
+    auto rate = [](float tau) { return tau > 0.0f ? 1.0f - expf(-kDt / tau) : 1.0f; };
+    FpEye& e = g_fp_eye;
+    const float dx = target[0] - e.pos[0], dz = target[2] - e.pos[2];
+    // A respawn after a crash moves the ski a long way in one frame; follow it there.
+    if (!e.valid || dx * dx + dz * dz > 300.0f * 300.0f) {
+        e.valid = true;
+        memcpy(e.pos, target, sizeof(e.pos));
+        e.yaw = target_yaw;
+        e.pitch = target_pitch;
+        e.roll = target_roll;
+    } else {
+        e.pos[0] = target[0];
+        e.pos[2] = target[2];
+        e.pos[1] += (target[1] - e.pos[1]) * rate(g_fp_height_s);
+        float dyaw = target_yaw - e.yaw;
+        while (dyaw > 3.14159265f) dyaw -= 6.2831853f;
+        while (dyaw < -3.14159265f) dyaw += 6.2831853f;
+        e.yaw += dyaw * rate(g_fp_yaw_s);
+        e.pitch += (target_pitch - e.pitch) * rate(g_fp_tilt_s);
+        e.roll += (target_roll - e.roll) * rate(g_fp_tilt_s);
+    }
+    // The eye's axes in the world: heading, then the scaled pitch, then the scaled roll
+    // about the forward axis. Then into view space, where the vertices are.
+    const float sy = sinf(e.yaw), cy = cosf(e.yaw);
+    const float p = e.pitch * g_fp_tilt, r = e.roll * g_fp_tilt;
+    const float sp = sinf(p), cp = cosf(p), sr = sinf(r), cr = cosf(r);
+    const float fwd_w[3] = {sy * cp, sp, cy * cp};
+    // Level right, which is square to the pitched forward too; up = right x forward.
+    const float r0[3] = {-cy, 0.0f, sy};
+    const float u0[3] = {r0[1] * fwd_w[2] - r0[2] * fwd_w[1], r0[2] * fwd_w[0] - r0[0] * fwd_w[2],
+                         r0[0] * fwd_w[1] - r0[1] * fwd_w[0]};
+    float right_w[3], up_w[3];
+    for (int i = 0; i < 3; i++) {
+        right_w[i] = r0[i] * cr + u0[i] * sr;
+        up_w[i] = u0[i] * cr - r0[i] * sr;
+    }
+    auto to_view_dir = [&](const float v[3], float out[3]) {
+        for (int r = 0; r < 3; r++) out[r] = wm[r * 4] * v[0] + wm[r * 4 + 1] * v[1] + wm[r * 4 + 2] * v[2];
+    };
+    float right[3], up[3], fwd[3], eye[3];
+    to_view_dir(right_w, right);
+    to_view_dir(up_w, up);
+    to_view_dir(fwd_w, fwd);
+    to_view_dir(e.pos, eye);
+    eye[0] += wm[3]; eye[1] += wm[7]; eye[2] += wm[11];
+    const float back[3] = {-fwd[0], -fwd[1], -fwd[2]};
+    // The HUD's counter-tilt: the eye's level frame (same heading, the world's up) in the
+    // eye's own coordinates. Column j is level axis j -- right, up, back -- seen from the
+    // eye's right, up and back.
+    {
+        const float lvl[3][3] = {{-cy, 0.0f, sy}, {0.0f, 1.0f, 0.0f}, {-sy, 0.0f, -cy}};
+        const float back_w[3] = {-fwd_w[0], -fwd_w[1], -fwd_w[2]};
+        const float* eye_ax[3] = {right_w, up_w, back_w};
+        hud_upright();
+        for (int j = 0; j < 3; j++)
+            for (int i = 0; i < 3; i++)
+                g_hud_xform[j * 4 + i] = eye_ax[i][0] * lvl[j][0] + eye_ax[i][1] * lvl[j][1] +
+                                         eye_ax[i][2] * lvl[j][2];
+    }
+    float* C = g_world_xform;
     memset(C, 0, 16 * sizeof(float));
     C[0] = right[0]; C[4] = right[1]; C[8] = right[2];
     C[1] = up[0];    C[5] = up[1];    C[9] = up[2];
     C[2] = back[0];  C[6] = back[1];  C[10] = back[2];
-    C[12] = -(right[0] * e[0] + right[1] * e[1] + right[2] * e[2]);
-    C[13] = -(up[0] * e[0] + up[1] * e[1] + up[2] * e[2]);
-    C[14] = -(back[0] * e[0] + back[1] * e[1] + back[2] * e[2]);
+    C[12] = -(right[0] * eye[0] + right[1] * eye[1] + right[2] * eye[2]);
+    C[13] = -(up[0] * eye[0] + up[1] * eye[1] + up[2] * eye[2]);
+    C[14] = -(back[0] * eye[0] + back[1] * eye[1] + back[2] * eye[2]);
     C[15] = 1.0f;
 }
 
@@ -1469,6 +1600,7 @@ static void first_person_camera(const float* m, const float anchor[3], float C[1
 static void first_person_prepare(const Batch& b, const std::vector<uint8_t>& skip) {
     g_hide.clear();
     g_fp_found = false;
+    hud_upright();
     if (!g_fp_on) {
         world_pitch_matrix(g_world_xform);
         return;
@@ -1584,41 +1716,124 @@ static void first_person_prepare(const Batch& b, const std::vector<uint8_t>& ski
     if (hull == UINT32_MAX) {
         if (fplog) fprintf(stderr, "[fp] f%u no racer: %zu matrices, world has %u verts, %zu racer textures\n",
                            g_render_frame, groups.size(), groups[world].verts, racer_tex.size());
+        g_fp_eye.valid = false;
         world_pitch_matrix(g_world_xform);
         return;
     }
-    constexpr float kRiderReach = 60.0f;
+    // Which draws are the rider. Two kinds, and the first version only knew one:
+    //
+    // - His body is skinned by the game on the CPU and drawn through the *world* matrix,
+    //   like the course. Nothing about its matrix says it is his, so it is found by what
+    //   it is textured with -- what the reflection pass draws him in -- and by where it is.
+    // - His head is a rigid piece of its own, beside the ski's: the hull, the steering
+    //   pole and the handlebar each have a matrix too (the pole hinges, so it moves
+    //   against the hull). The head is the one that shares a texture with the body -- the
+    //   skin -- which none of the ski's pieces do.
+    //
+    // Hiding every rigid piece but the hull, which is what the first version did, took the
+    // handlebars off the ski and left the rider standing on it headless.
     const float* hm = groups[hull].m;
-    for (auto& g : groups) {
-        if (!g.racer) continue;
-        const float dx = g.m[3] - hm[3], dy = g.m[7] - hm[7], dz = g.m[11] - hm[11];
-        if (dx * dx + dy * dy + dz * dz > kRiderReach * kRiderReach) g.racer = false;
-    }
-    g_fp_found = true;
-    first_person_camera(hm, g_fp_anchor, g_world_xform);
+    constexpr float kRiderReach = 90.0f;   // from the hull's origin, in game units
+    auto near_hull = [&](const Cmd& c) {
+        float sum[3] = {0.0f, 0.0f, 0.0f};
+        for (uint32_t v = 0; v < c.count; v++) {
+            const float* p = b.verts[b.indices[c.first + v]].pos;
+            for (int a = 0; a < 3; a++) sum[a] += p[a];
+        }
+        const float n = c.count ? (float)c.count : 1.0f;
+        const float dx = sum[0] / n - hm[3], dy = sum[1] / n - hm[7], dz = sum[2] / n - hm[11];
+        return dx * dx + dy * dy + dz * dz < kRiderReach * kRiderReach;
+    };
+    auto in_set = [](const std::vector<uint32_t>& set, uint32_t id) {
+        for (uint32_t x : set) if (x == id) return true;
+        return false;
+    };
     g_hide.assign(b.cmds.size(), 0);
-    int hidden = 0;
+    // The body starts from the draws wearing something the reflection pass drew, and then
+    // takes in every nearby world draw that shares a texture with what it has so far,
+    // until nothing more joins. The second step is not optional: a few of the body's
+    // draws are textured only with the rider's shading maps (four of them, which the game
+    // loads after his model), and the reflection pass never uses those. Matching on the
+    // reflection's textures alone left those draws in -- strips of the rider hanging in
+    // the air where he had been. Each of them also wears a map the rest of the body does.
+    std::vector<uint32_t> body_tex;
+    int body_draws = 0;
+    std::vector<uint8_t> near(b.cmds.size(), 0);
+    for (size_t i = 0; i < b.cmds.size(); i++)
+        if (group_of[i] == world && near_hull(b.cmds[i])) near[i] = 1;
+    auto take = [&](size_t i) {
+        const PixelState& st = b.states[b.cmds[i].state];
+        g_hide[i] = 1;
+        body_draws++;
+        for (int t = 0; t < 8; t++)
+            if (st.tex_id[t] && !st.tex_is_efb[t] && !in_set(body_tex, st.tex_id[t])) body_tex.push_back(st.tex_id[t]);
+    };
+    for (size_t i = 0; i < b.cmds.size(); i++) {
+        if (!near[i]) continue;
+        const PixelState& st = b.states[b.cmds[i].state];
+        for (int t = 0; t < 8; t++)
+            if (st.tex_id[t] && !st.tex_is_efb[t] && in_set(racer_tex, st.tex_id[t])) { take(i); break; }
+    }
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (size_t i = 0; i < b.cmds.size(); i++) {
+            if (!near[i] || g_hide[i]) continue;
+            const PixelState& st = b.states[b.cmds[i].state];
+            for (int t = 0; t < 8; t++)
+                if (st.tex_id[t] && !st.tex_is_efb[t] && in_set(body_tex, st.tex_id[t])) {
+                    take(i);
+                    grew = true;
+                    break;
+                }
+        }
+    }
+    // The hull's own textures are the ski's, whatever else wears them.
+    std::vector<uint32_t> hull_tex;
+    for (size_t i = 0; i < b.cmds.size(); i++) {
+        if (group_of[i] != hull) continue;
+        const PixelState& st = b.states[b.cmds[i].state];
+        for (int t = 0; t < 8; t++) if (st.tex_id[t]) hull_tex.push_back(st.tex_id[t]);
+    }
+    std::vector<uint8_t> rider_piece(groups.size(), 0);
+    for (size_t k = 0; k < groups.size(); k++) {
+        const Group& g = groups[k];
+        if (!g.racer || k == hull) continue;
+        const float dx = g.m[3] - hm[3], dy = g.m[7] - hm[7], dz = g.m[11] - hm[11];
+        if (dx * dx + dy * dy + dz * dz > kRiderReach * kRiderReach) continue;
+        for (size_t i = 0; i < b.cmds.size() && !rider_piece[k]; i++) {
+            if (group_of[i] != k) continue;
+            const PixelState& st = b.states[b.cmds[i].state];
+            for (int t = 0; t < 8; t++)
+                if (st.tex_id[t] && in_set(body_tex, st.tex_id[t]) && !in_set(hull_tex, st.tex_id[t])) {
+                    rider_piece[k] = 1;
+                    break;
+                }
+        }
+    }
+    int hidden = body_draws;
     for (size_t i = 0; i < b.cmds.size(); i++) {
         const uint32_t k = group_of[i];
-        if (k != UINT32_MAX && k != hull && groups[k].racer) { g_hide[i] = 1; hidden++; }
+        if (k != UINT32_MAX && rider_piece[k]) { g_hide[i] = 1; hidden++; }
     }
+    g_fp_found = true;
+    first_person_eye(groups[world].m, hm, g_fp_anchor);
     if (fplog) {
         for (size_t k = 0; k < groups.size(); k++) {
             const Group& g = groups[k];
             if (!g.racer || k == hull) continue;
-            fprintf(stderr, "[fp]   rider piece at (%.1f, %.1f, %.1f) across/up/along %.0fx%.0fx%.0f, %u verts\n",
-                    g.m[3], g.m[7], g.m[11], g.hi[0] - g.lo[0], g.hi[1] - g.lo[1], g.hi[2] - g.lo[2], g.verts);
+            fprintf(stderr, "[fp]   %s piece at (%.1f, %.1f, %.1f) across/up/along %.0fx%.0fx%.0f, %u verts\n",
+                    rider_piece[k] ? "rider" : "ski", g.m[3], g.m[7], g.m[11],
+                    g.hi[0] - g.lo[0], g.hi[1] - g.lo[1], g.hi[2] - g.lo[2], g.verts);
         }
         const float* m = groups[hull].m;
         fprintf(stderr, "[fp] f%u hull at (%.1f, %.1f, %.1f) fwd=(%.2f, %.2f, %.2f) up=(%.2f, %.2f, %.2f)"
-                " across/up/along %.0fx%.0fx%.0f, %u verts; eye at (%.1f, %.1f, %.1f); %d rider draws hidden of %zu groups\n",
+                " across/up/along %.0fx%.0fx%.0f, %u verts; eye at world (%.1f, %.1f, %.1f) yaw %.1f;"
+                " %d body draws (%zu textures), %d hidden in all\n",
                 g_render_frame, m[3], m[7], m[11], m[2], m[6], m[10], m[1], m[5], m[9],
                 groups[hull].hi[0] - groups[hull].lo[0], groups[hull].hi[1] - groups[hull].lo[1],
                 groups[hull].hi[2] - groups[hull].lo[2], groups[hull].verts,
-                -(g_world_xform[0] * g_world_xform[12] + g_world_xform[1] * g_world_xform[13] + g_world_xform[2] * g_world_xform[14]),
-                -(g_world_xform[4] * g_world_xform[12] + g_world_xform[5] * g_world_xform[13] + g_world_xform[6] * g_world_xform[14]),
-                -(g_world_xform[8] * g_world_xform[12] + g_world_xform[9] * g_world_xform[13] + g_world_xform[10] * g_world_xform[14]),
-                hidden, groups.size());
+                g_fp_eye.pos[0], g_fp_eye.pos[1], g_fp_eye.pos[2], g_fp_eye.yaw * 57.2958f,
+                body_draws, body_tex.size(), hidden);
     }
 }
 
@@ -1676,7 +1891,7 @@ static void morph_chain(const float P[16], MorphKind kind, float chain[16], floa
         for (int i = 0; i < 16; i++) fog[i] = (1.0f - k) * fog[i] + k * g_vr_view[i];
         break;
     case MorphKind::Hud:
-        mat4_mul(g_vr_hud, P, S);
+        mat4_mul(g_vr_hud_eff, P, S);
         sigma = 1.0f;
         break;
     }
@@ -1866,6 +2081,45 @@ static bool samples_grab_copy(const PixelState& st) {
 // are all shared between the eyes -- only the uniforms and the draw calls are repeated,
 // which is what makes stereo affordable here. Pass do_copies for the first eye only;
 // the second reuses what it produced.
+// Whether `b` draws the starting-light rig. See render_gl.h.
+//
+// Every course has a rig of its own -- vines on Lost Temple Lagoon, bamboo on Southern
+// Island, a wooden frame on Aspen Lake, a scoreboard on Ocean City Harbor -- so nothing
+// here may depend on the model. What they share is how the game draws them: in
+// perspective through an identity position matrix, hung in view space a fixed distance in
+// front of the camera (PixelState::view_space). That is not the only thing drawn that way
+// -- Championship's opening screen, the one that cycles views of the course until A is
+// pressed, and every course flyover draw the whole course through the identity too,
+// transformed on the CPU -- but nothing else so drawn stays near the camera. WR_RIGLOG on
+// all five reachable courses:
+//
+//   the rigs                    10-33 draws, 1,686-2,898 vertices, no more than 100
+//                               units across or 210 from the camera
+//   opening screen, flyovers    150-600 draws, 29,000-85,000 vertices, 25,000 to 85,000
+//                               units across
+//
+// and in a race, the rider close-ups, the results and the menus nothing is drawn that
+// way at all. The thresholds sit far from both: within 2,000 units of the camera, ten
+// times the farthest rig and a tenth of the nearest course, and at least 100 vertices,
+// enough to ignore a stray quad and well under any rig.
+bool batch_shows_start_rig(const Batch& b) {
+    constexpr float kRigReach = 2000.0f;
+    constexpr uint32_t kRigMinVerts = 100;
+    uint32_t verts = 0;
+    for (const Cmd& c : b.cmds) {
+        if (c.type != CmdType::Draw) continue;
+        const PixelState& st = b.states[c.state];
+        if (!st.view_space || (int)st.proj[6] != 0) continue;
+        for (uint32_t v = 0; v < c.count; v++) {
+            const float* p = b.verts[b.indices[c.first + v]].pos;
+            if (fabsf(p[0]) > kRigReach || fabsf(p[1]) > kRigReach || fabsf(p[2]) > kRigReach)
+                return false;
+        }
+        verts += c.count;
+    }
+    return verts >= kRigMinVerts;
+}
+
 bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     // The scene samples textures the game produces by copying them back out of the EFB:
     // the water reflection, the sprite sheet the spray uses. An eye pass never draws into
@@ -2050,6 +2304,17 @@ bool render_execute_eye(Batch& b, unsigned fbo, int w, int h, bool do_copies) {
     return true;
 }
 
+// Marks a draw's textures as in use without drawing it. Eviction goes by what was bound,
+// and the guest-side cache, which is what would send a texture again, goes by what the
+// game referenced; a draw left out on purpose is the one case where those differ.
+static void touch_textures(const PixelState& st) {
+    for (int m = 0; m < 8; m++) {
+        if (!st.tex_id[m]) continue;
+        auto it = g_textures.find(st.tex_id[m]);
+        if (it != g_textures.end()) it->second.last_used = g_render_frame;
+    }
+}
+
 // Release GL textures the game has stopped using.
 //
 // EFB copies are included. A copy to an address it already holds reuses its texture, so
@@ -2120,7 +2385,13 @@ static bool execute_batch(Batch& b, bool do_present) {
         Cmd& c = b.cmds[ci];
         switch (c.type) {
         case CmdType::Draw: {
-            if (!g_hide.empty() && g_hide[ci]) break;
+            if (!g_hide.empty() && g_hide[ci]) {
+                // Not drawn, but still the game's: its textures must not age out. The game
+                // goes on referencing them, so it never sends them again, and the rider
+                // came back from first person with his hair untextured.
+                touch_textures(b.states[c.state]);
+                break;
+            }
             const bool comp = (no_comp || complog || only_comp) &&
                               samples_fullscreen_copy(b.states[c.state]);
             if (only_comp && !comp) break;

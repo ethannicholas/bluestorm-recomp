@@ -38,18 +38,20 @@
 // the flat view and says so once.
 static constexpr uint32_t kOnCourseAddr = 0x80602160;
 
-// The start sequence's phase: 0 until the course loads, 12 while the intro flies over, 5
-// from the starting lights coming into view until shortly after the start, 0 for the rest
-// of the race. It is what brings stereo up with the lights, before the race proper has
-// begun.
-static constexpr uint32_t kStartStateAddr = 0x80625A54;
-static constexpr uint32_t kStartCountdown = 5;
-
-// The course's wave height, non-zero from the countdown reaching the line until the race
-// ends. It cannot start stereo -- it comes up about a second after the lights -- and it
-// cannot end it either, because nothing resets it when a course is abandoned. What it does
-// know is when a race *finishes*: kOnCourseAddr stays up for another 170 frames past the
-// chequered flag, through the results, which is too long to sit in stereo.
+// The course's wave height: non-zero from the starting lights (up to 45 game frames after
+// the rig appears) until the race ends. It cannot end stereo on its own, because nothing
+// resets it when a course is abandoned, but it does know when a race *finishes*:
+// kOnCourseAddr stays up for another 170 frames past the chequered flag, through the
+// results, which is too long to sit in stereo.
+//
+// What starts stereo is the starting-light rig itself, found in the frame
+// (gx::batch_shows_start_rig). The start sequence's phase at 0x80625A54 used to, on the
+// belief that its 5 meant "countdown". It does not only mean that: Championship ->
+// Exhibition -> Dolphin Park opens on a screen that cycles views of the course until A is
+// pressed, and five seconds into it the phase goes to 5 and stays there -- so the headset
+// switched to stereo on a screen with no race on it, every time. In Time Attack the phase
+// never moves at all. No guest variable found so far means "the lights are up", so the
+// lights are looked for instead.
 static constexpr uint32_t kRaceActiveAddr = 0x806193BC;
 #include "gx/render.h"
 #include "gx/render_gl.h"
@@ -191,6 +193,44 @@ struct Xr {
 static Xr g_xr;
 static VrConfig g_vrcfg;
 
+// Where the head was when first person began, in metres in the reference space; the eye
+// is placed relative to that rather than to the space's own origin. The space is LOCAL,
+// whose origin is wherever the head was at launch, so without this the viewer's posture
+// since then lands in the view -- multiplied by units_per_metre. Behind the chase camera
+// a 30 cm lean is lost in the distance; on a rider whose head is 15 units above his hands
+// it put the eye between them. Re-zeroed every time first person is entered.
+static float g_head_zero[3];
+static bool g_head_zeroed = false;
+
+// The first-person anchor, with vr.txt's metre nudges converted to game units.
+static void set_first_person(bool on) {
+    const float u = g_vrcfg.units_per_metre;
+    gx::render_set_first_person(on, g_vrcfg.fp_x, g_vrcfg.fp_y + g_vrcfg.fp_up_m * u,
+                                g_vrcfg.fp_z + g_vrcfg.fp_forward_m * u);
+}
+
+// The viewer's choice of chase camera or first person, kept across sessions in
+// <files>/view.txt, which the app writes whenever the choice changes. It is a separate file
+// from vr.txt so that the app never rewrites what a person edits by hand; vr.txt's
+// first_person is only the choice before one has been made.
+static std::string g_view_path;
+
+static bool view_pref_load(bool fallback) {
+    FILE* f = fopen(g_view_path.c_str(), "r");
+    if (!f) return fallback;
+    int v = fallback ? 1 : 0;
+    if (fscanf(f, "first_person %d", &v) != 1) v = fallback ? 1 : 0;
+    fclose(f);
+    return v != 0;
+}
+
+static void view_pref_save(bool first_person) {
+    if (FILE* f = fopen(g_view_path.c_str(), "w")) {
+        fprintf(f, "first_person %d\n", first_person ? 1 : 0);
+        fclose(f);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Matrices, column-major for glUniformMatrix4fv with transpose = GL_FALSE.
 // ---------------------------------------------------------------------------
@@ -211,8 +251,9 @@ static void mat_proj(const XrFovf& fov, float nearZ, float farZ, float* m) {
 // World-to-eye for a view-space vertex. The game's camera is treated as the origin of
 // the reference space, so head rotation looks around from wherever the chase camera
 // is, and the eye offset gives the stereo separation. Positions are converted from
-// metres into game units on the way in.
-static void mat_view(const XrPosef& pose, const VrConfig& c, float* m) {
+// metres into game units on the way in, after taking off `zero`, a head position in
+// metres that counts as the origin instead -- see g_head_zero.
+static void mat_view(const XrPosef& pose, const VrConfig& c, const float zero[3], float* m) {
     const XrQuaternionf& q = pose.orientation;
     const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
     const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
@@ -224,9 +265,9 @@ static void mat_view(const XrPosef& pose, const VrConfig& c, float* m) {
         2 * (xz + wy),     2 * (yz - wx),     1 - 2 * (xx + yy),
     };
     const float t[3] = {
-        pose.position.x * c.units_per_metre + c.offset_x,
-        pose.position.y * c.units_per_metre + c.offset_y,
-        pose.position.z * c.units_per_metre + c.offset_z,
+        (pose.position.x - zero[0]) * c.units_per_metre + c.offset_x,
+        (pose.position.y - zero[1]) * c.units_per_metre + c.offset_y,
+        (pose.position.z - zero[2]) * c.units_per_metre + c.offset_z,
     };
     // m = transpose(R) * translate(-t), i.e. the inverse of the eye's pose.
     m[0] = r[0]; m[1] = r[3]; m[2] = r[6]; m[3] = 0;
@@ -638,8 +679,10 @@ void android_main(android_app* app) {
     const std::string dir = app->activity->externalDataPath ? app->activity->externalDataPath : "";
     const std::string iso = dir + "/game.iso";
     g_vrcfg = vr_config_load(dir);
+    g_view_path = dir + "/view.txt";
     gx::render_set_world_pitch(g_vrcfg.world_pitch_deg * 3.14159265f / 180.0f);
-    gx::render_set_first_person(g_vrcfg.first_person, g_vrcfg.fp_x, g_vrcfg.fp_y, g_vrcfg.fp_z);
+    gx::render_set_first_person_smoothing(g_vrcfg.fp_height_s, g_vrcfg.fp_yaw_s,
+                                         g_vrcfg.fp_tilt, g_vrcfg.fp_tilt_s);
     static std::string dump_dir;
     if (g_vrcfg.dump_every > 0) {
         dump_dir = dir + "/frames";
@@ -690,7 +733,18 @@ void android_main(android_app* app) {
     uint64_t disp_frames = 0;  // monotonic, unlike xr_frames which the stats line resets
     bool have_content = false;
     bool stereo = g_vrcfg.start_in_stereo, toggle_was_down = false;
-    bool first_person = g_vrcfg.first_person;
+    // `first_person` is the viewer's choice; it is *in effect* only in stereo. Leaving
+    // stereo drops back to the chase camera at once, before the morph to theater begins:
+    // the morph folds the world onto the panel the game's own camera drew, and starting it
+    // from the rider's seat swung the whole scene across to the chase camera's view on the
+    // way. Entering stereo picks the choice up again.
+    bool first_person = view_pref_load(g_vrcfg.first_person);
+    LOGI("view preference: %s", first_person ? "first person" : "chase camera");
+    auto apply_view = [&]() {
+        set_first_person(first_person && stereo);
+        g_head_zeroed = false;
+    };
+    apply_view();
     // Kept across frames: a display frame with no new game frame re-submits these
     // rather than re-rendering. They carry the pose each image was rendered for, so
     // the compositor reprojects them for the current head pose.
@@ -793,7 +847,8 @@ void android_main(android_app* app) {
         if (action_bool(g_xr.toggle)) {
             if (!toggle_was_down && stereo) {
                 first_person = !first_person;
-                gx::render_set_first_person(first_person, g_vrcfg.fp_x, g_vrcfg.fp_y, g_vrcfg.fp_z);
+                apply_view();
+                view_pref_save(first_person);
                 LOGI("view: %s", first_person ? "first person" : "chase camera");
             }
             toggle_was_down = true;
@@ -834,17 +889,14 @@ void android_main(android_app* app) {
                          kOnCourseAddr, on_course);
                 }
             }
-            // Three variables, one job each, because no one of them spans a race at
-            // both ends. kOnCourseAddr is the only one that clears when a race is
-            // quit, so it gates everything. Within that, the countdown phase brings
-            // stereo up with the starting lights, and the race flag carries it from
-            // there to the chequered flag -- it is what notices a race *finishing*,
-            // which kOnCourseAddr does not do until 170 frames later, well into the
-            // results.
-            const uint32_t start_state = mem_r32(kStartStateAddr);
+            // kOnCourseAddr is the only signal that clears when a race is quit, so it
+            // gates. Within it, the starting-light rig on screen brings stereo up with the
+            // lights, and the wave height carries it from there to the chequered flag --
+            // it is what notices a race *finishing*, which kOnCourseAddr does not do until
+            // 170 frames later, well into the results.
             const uint32_t racing = mem_r32(kRaceActiveAddr);
-            const bool want_stereo = on_course > 0 &&
-                                     (racing != 0 || start_state == kStartCountdown);
+            const bool rig = gx::batch_shows_start_rig(*batch);
+            const bool want_stereo = on_course > 0 && (racing != 0 || rig);
             // The flag is written by the guest thread and read here, so a sample can
             // land on a transient: tracing the old race flag from this side caught it
             // reading non-zero for a single frame on the results screen and twice
@@ -858,6 +910,7 @@ void android_main(android_app* app) {
                 if (agree >= 2) {
                     stereo = want_stereo;
                     agree = 0;
+                    apply_view();
                     LOGI("switching to %s", stereo ? "stereo" : "theater");
                 }
             } else {
@@ -930,6 +983,16 @@ void android_main(android_app* app) {
                 // Eased at both ends, so the world neither lurches out of the panel nor
                 // slams into place.
                 gx::render_set_vr_morph(morph * morph * (3.0f - 2.0f * morph), panel);
+                if (!g_head_zeroed) {
+                    g_head_zeroed = true;
+                    if (first_person && stereo) {
+                        g_head_zero[0] = 0.5f * (views[0].pose.position.x + views[1].pose.position.x);
+                        g_head_zero[1] = 0.5f * (views[0].pose.position.y + views[1].pose.position.y);
+                        g_head_zero[2] = 0.5f * (views[0].pose.position.z + views[1].pose.position.z);
+                    } else {
+                        g_head_zero[0] = g_head_zero[1] = g_head_zero[2] = 0.0f;
+                    }
+                }
                 for (int e = 0; e < 2; e++) {
                     auto& eye = g_xr.eyes[e];
                     uint32_t ei = 0;
@@ -945,7 +1008,7 @@ void android_main(android_app* app) {
                         const float n = g_vrcfg.near_m * g_vrcfg.units_per_metre;
                         const float f = g_vrcfg.far_m * g_vrcfg.units_per_metre;
                         mat_proj(views[e].fov, n, f, P);
-                        mat_view(views[e].pose, g_vrcfg, V);
+                        mat_view(views[e].pose, g_vrcfg, g_head_zero, V);
                         gx::render_set_vr_eye(P, V, H);
                         if (b) gx::render_execute_eye(*b, eye.fbos[ei], eye.w, eye.h, e == 0);
                         glFlush();
