@@ -13,8 +13,9 @@ not wall-clock, so a script reaches the same place whatever the frame rate; `WR_
 prints each one as it fires.
 
 Debugging environment variables used during development include `WR_INPUT` (scripted
-controller input), `WR_GXSTATS`, `WR_TRACE_FRAME`, `WR_WAV` (record audio output) and
-`WR_PEEK`. See the source for details.
+controller input), `WR_GXSTATS`, `WR_TRACE_FRAME`, `WR_WAV` (record audio output), `WR_PEEK`
+and `WR_HEAP` (guest heap tracing, see below). See the source for details. On a headset, put
+them in `wr_env.txt` beside `vr.txt`, one `KEY=VALUE` per line.
 
 `WR_FRAMETIME=1` prints a line per frame from each thread: the guest's interval between
 presents and how much of it the GX front end took (vertex decode, transform and lighting,
@@ -216,4 +217,49 @@ It lands in three places, because each loses in a different way. stderr, which o
 log ring the app can lap within a minute. `fatal()`'s crash record, which survives that but holds
 only the first line. And `<files>/panic.txt` (`saves/panic.txt` on desktop), which keeps the whole
 report including the backtrace until the next panic overwrites it — that is the one to read after
-the fact, and the one that does not need anyone to have been watching.
+the fact, and the one that does not need anyone to have been watching. On the headset `<files>` is
+the external one, `/sdcard/Android/data/com.example.waverace/files/`, next to `vr.txt`; the app's
+private files directory is empty.
+
+### When the heap runs out
+
+The panic above is the one the game actually raises. It is `OSAllocFromHeap` returning NULL for
+the course menu's 219,520-byte frame-buffer copy, and the game's own message is all the SDK has to
+say about it: OSAlloc keeps no record of who owns a cell. So the panic report now ends with the
+heaps, walked out of guest memory by `heap_report()` in `runtime/heap_trace.cpp` — each heap's
+size, free total, number of free blocks and largest free block, and the allocated total — which
+answers the first question, exhausted or fragmented, from a `panic.txt` alone. The game creates
+two: heap 0 of 16.4 MB, where the frame-buffer copy goes, and heap 1 of 512,000 bytes for the
+small allocations behind the `fn_80036AA0` wrapper, which runs at 97% full during a race.
+
+`WR_HEAP=1` answers the second question, who holds it. Four one-line patches in
+`recomp/patches.txt` splice hooks into `OSAllocFromHeap`'s entry and both of its returns and into
+`OSFreeToHeap`'s entry; the hooks keep a table of live cells keyed by the caller's return address
+and the one above it (the game reaches the allocator through thin wrappers, and the wrapper's
+caller is the one worth naming). Any failed allocation, and any panic, then prints the live cells
+grouped by caller; `WR_HEAP=<frames>` prints the same table every so many presented frames, which
+is how a trend is watched without waiting for the crash. The hooks cost a function call per
+allocation, which the game makes a few hundred times per screen, and nothing per frame.
+
+On a headset there is no environment to put `WR_HEAP` in, so `wr_env.txt` beside `vr.txt` stands
+in: one `KEY=VALUE` per line, applied before the runtime starts. It works for anything read
+lazily, which is most of the `WR_*` switches; a static initializer that read its variable at
+library load (`WR_FRAMETIME` is one) has already run.
+
+What the tracer found on the desktop, driving Time Attack with the scripted route and then
+cycling pause → Change Course → course select four times: no leak. Heap 0 holds 5.0 MB at the
+course menu, 12.5–13.6 MB during a race, and returns to exactly 5.8 MB after every Change Course,
+the extra 1.2 MB over the first visit being one cell from `fn_801044A4` that appears after the
+first race and stays constant from then on. The same with the headset's own memory card. A
+Championship race with the full field holds 12.5 MB with 3.9 MB free in one block, so the 219 KB
+copy fits comfortably in every state a script can reach.
+
+The crash that prompted this was in Championship, right after *finishing* a race, which a script
+cannot do: the rider holds the throttle into a wall, and the race does not end for a rider who
+does not finish — eight minutes beached on Dolphin Park with the whole field home, and it is still
+lap 1. So the finished-race path (results, standings, then the next course's menu) is the one
+state not yet measured, and the working hypothesis is that it keeps something a Change Course
+frees — 3.9 MB of headroom is one race's worth of leak, and a session of two or three races
+fits the seven minutes the process lived. The next data point is a `panic.txt` from a build with
+`WR_HEAP=1` in `wr_env.txt`, or a Championship race played to the finish on the desktop with
+`WR_HEAP=300` and the heap lines read off stderr.

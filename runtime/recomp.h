@@ -80,6 +80,12 @@ void debug_watch_check(CPU* c, uint32_t fn);
 #define EXIT() ((void)0)
 #endif
 
+/* Guest heap tracing (runtime/heap_trace.cpp), spliced into OSAllocFromHeap's entry and
+   both of its returns and into OSFreeToHeap's entry by recomp/patches.txt. */
+void heap_trace_alloc(CPU* c);
+void heap_trace_alloc_result(CPU* c, int ok);
+void heap_trace_free(CPU* c);
+
 /* How a recompiled function returns. */
 #define RET() do { EXIT(); return; } while (0)
 

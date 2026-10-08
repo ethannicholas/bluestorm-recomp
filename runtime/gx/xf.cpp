@@ -1034,6 +1034,7 @@ void renderer_efb_copy(uint32_t dest_addr, bool /*unused*/) {
         mtx_race_frames++;
         texture_evict();
         g_frames_submitted++;
+        heap_trace_frame(g_frames_submitted.load());
         g_have_last_state = false;
         flush_batch();
     }

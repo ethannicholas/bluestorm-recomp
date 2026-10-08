@@ -645,6 +645,27 @@ static std::string read_script(const std::string& dir) {
     return s;
 }
 
+// The runtime's WR_* diagnostics are environment variables, and an APK launched from the
+// headset's own launcher has no environment to speak of. `wr_env.txt` beside `vr.txt`, one
+// KEY=VALUE per line, stands in for it: each line is put into the environment before the
+// runtime starts, so WR_HEAP=1 there does what WR_HEAP=1 on a desktop shell does. Only
+// variables read lazily see it -- a static initializer that called getenv at library load
+// has already run -- which is most of them.
+static void apply_env_file(const std::string& dir) {
+    FILE* f = fopen((dir + "/wr_env.txt").c_str(), "rb");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l(line);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        size_t eq = l.find('=');
+        if (l.empty() || l[0] == '#' || eq == std::string::npos || eq == 0) continue;
+        setenv(l.substr(0, eq).c_str(), l.substr(eq + 1).c_str(), 1);
+        LOGI("env: %s", l.c_str());
+    }
+    fclose(f);
+}
+
 // A NativeActivity can be destroyed and re-created inside one process, and that calls
 // android_main a second time. Nothing here survives it: the EGL context, the OpenXR
 // instance and session, the recompiled game and the threads it booted are all global and
@@ -707,6 +728,7 @@ void android_main(android_app* app) {
         app_exit("no game image");
     }
 
+    apply_env_file(dir);
     mem_init();
     timing_init();
     input_script_init(read_script(dir).c_str());
