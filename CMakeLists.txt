@@ -16,9 +16,15 @@ gcn_add_game(
   DOL_SHA1 d500d8f5bab39ae5fed67d0a0864095a9ea190d9
   SYMBOLS ${CMAKE_SOURCE_DIR}/analysis/symbols.txt
   TABLES ${CMAKE_SOURCE_DIR}/recomp
-  FPS 30
-  # The game's half of the renderer's eye hook: first person on the ski.
-  SOURCES ${CMAKE_SOURCE_DIR}/runtime/first_person.cpp)
+  FPS 30)
+
+# The game's half of the renderer's eye hook: first person on the ski. Not in SOURCES,
+# which gcn_add_game compiles into the benchmark too, where there is no renderer for the
+# hook's static installer to call; the desktop executable takes it directly, and the
+# Android targets below list it themselves.
+if(NOT ANDROID AND TARGET waverace)
+  target_sources(waverace PRIVATE ${CMAKE_SOURCE_DIR}/runtime/first_person.cpp)
+endif()
 
 # ---- Android ----
 # Two targets, built from the pieces gcn_add_game() exports, with this game's own frontends
