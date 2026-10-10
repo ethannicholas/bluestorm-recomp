@@ -163,9 +163,12 @@ survive reinstalling the app.
 
 The app appears on the headset under **Library → Unknown Sources → Wave Race**.
 
-Outside of races, your view will be a 2D screen in front of you. It will transition to stereoscopic
-3D at the beginning of the race. During a race, clicking the right thumbstick switches between the
-game's chase camera and a first-person view from the rider's seat.
+Outside of races, your view will be a screen in front of you, shown as a stereo pair so that the
+menus and course views have depth, like a 3D film. It will transition to stereoscopic 3D around
+you at the beginning of the race. During a race, clicking the right thumbstick switches between
+the game's chase camera and a first-person view from the rider's seat. Clicking the left
+thumbstick forces the other presentation (the screen during a race, or 3D outside one) until the
+game next changes its mind.
 
 Like the desktop build, the first run through a course hitches briefly while shaders are
 compiled; later runs will take advantage of cached copies.
@@ -179,10 +182,12 @@ compiled; later runs will take advantage of cached copies.
 | Z | Right grip |
 | L / R | Left / right trigger |
 | Start | Menu (left) |
+| D-pad | Left thumbstick while holding the left grip |
 | *(first person on/off)* | Right thumbstick click |
+| *(screen or 3D, by hand)* | Left thumbstick click |
 
 If something goes wrong, `adb logcat -s waverace` shows the app's log, including compositor and
-game frame counts every five seconds.
+game frame counts every second.
 
 ### Tuning the VR view
 
@@ -209,6 +214,11 @@ eye_scale 1.4            # eye render size, as a multiple of what the runtime re
 msaa 4                   # samples per eye pixel; 0 for none
 start_in_stereo 0        # start in stereo rather than theater
 transition_s 1           # seconds the morph between the two views takes; 0 snaps
+transition_out_s -1      # seconds for the morph back to theater; negative uses transition_s
+theater_stereo 1         # show the theater screen as a stereo pair rather than one image
+theater_depth 1          # how much of your eye separation the pair is drawn with; less is flatter
+panel_band 0             # depth-buffer band of draws pinned to the screen itself; 0 pins none
+perf_boost 1             # ask the headset for its highest CPU and GPU clocks
 first_person 0           # start races in first person rather than behind the chase camera
 fp_x 0                   # where the first-person eye sits relative to the ski, in game units:
 fp_y 57.5                #   x right, y up, z forward
@@ -285,7 +295,8 @@ The recompiler, the GameCube runtime, the renderer and the desktop frontend are
 [gcn-recomp](https://github.com/ethannicholas/gcn-recomp), a git submodule shared with
 [prime-recomp](https://github.com/ethannicholas/prime-recomp); they were first written here.
 This repository holds what is specific to Wave Race: the function layout (`analysis/`), the
-recompiler's steering tables (`recomp/*.txt`) and the headset frontends (`runtime/`).
+recompiler's steering tables (`recomp/*.txt`) and the game's own answers to the headset
+frontend's questions (`runtime/`).
 
 ```
 rom/game.iso ──extract_dol.py──> build/main.dol ──recomp.py──> build/gen/*.c ──┐
@@ -311,8 +322,10 @@ rom/game.iso ──extract_dol.py──> build/main.dol ──recomp.py──> b
   compiled into GLSL shaders. Draw batches are handed to an OpenGL renderer on the main thread.
 - **Audio** (`gcn-recomp/runtime/audio.cpp`): the AX mix and the DVD-streamed music are resampled into one
   stereo stream, played through SDL on the desktop and AAudio on Android.
-- **VR** (`runtime/openxr_main.cpp`): an OpenXR frontend that shows the flat frame on a quad
-  layer, or re-projects the game's draws per eye for stereo, switching on the game's own state.
+- **VR** (`gcn-recomp/android/openxr_main.cpp`): an OpenXR frontend that shows the flat frame on
+  a quad layer, or re-projects the game's draws per eye for stereo. When to do which, and where
+  the first-person eye sits on the ski, are this game's answers in `runtime/vr_waverace.cpp`,
+  `runtime/start_rig.cpp` and `runtime/first_person.cpp`.
 
 Design notes, measurements and the record of how the harder problems were solved are in
 [`docs/dev/`](docs/dev/).

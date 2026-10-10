@@ -4,7 +4,13 @@ Everything learned building the headset frontend: how the app is put together, h
 switches between the flat theater panel and per-eye stereo, how the game's frame is split for the
 eyes, where the HUD goes, and the investigations behind each of those answers, including the ones
 that were wrong first. Read the relevant section before changing anything in
-`runtime/openxr_main.cpp`, `runtime/egl_main.cpp` or the eye paths in `gcn-recomp/runtime/gx/render_gl.cpp`.
+`runtime/vr_waverace.cpp`, `gcn-recomp/android/openxr_main.cpp`, `gcn-recomp/android/egl_main.cpp`
+or the eye paths in `gcn-recomp/runtime/gx/render_gl.cpp`.
+
+Since 2026-10-10 the frontends are the shared ones in `gcn-recomp/android/` (see
+[Moving onto the shared frontends](#moving-onto-the-shared-frontends)); what is this game's is
+said through `vr::GameHooks` in `runtime/vr_waverace.cpp`. Where a section below names a file
+that no longer exists here, the mechanism it describes is in the shared copy.
 
 The user-facing instructions (building, installing, controls, `vr.txt`) are in the top-level
 README. The headless harness used throughout (`waverace_egl --eye`) is described in
@@ -32,8 +38,41 @@ game from ~187 to ~219 frames per five seconds with the compositor still at a fu
 The OpenXR loader comes from Khronos' official Android AAR on Maven Central, fetched at configure
 time, so no binary is committed. Because there is no Gradle and so no manifest merger, the
 loader's own manifest requirements (two permissions and a `<queries>` block for the runtime
-broker) are written out by hand in `android/AndroidManifest.xml`; without them the loader cannot
-see the runtime on Android 11+ and `xrCreateInstance` fails.
+broker) are written out by hand in `gcn-recomp/android/AndroidManifest.xml.in`, which CMake fills
+in with the package and title; without them the loader cannot see the runtime on Android 11+ and
+`xrCreateInstance` fails.
+
+## Moving onto the shared frontends
+
+On 2026-10-08 the headset frontends were copied into gcn-recomp (`android/openxr_main.cpp`,
+`android/egl_main.cpp`, `android/audio_aaudio.cpp`, `runtime/vr_config.*`) for Prime, with every
+game decision behind `vr::GameHooks` (`gcn-recomp/runtime/vr_game.h`), and this repository kept
+building its own copies. On 2026-10-10 those copies went, and the game's side of each decision
+became a hook in `runtime/vr_waverace.cpp`:
+
+| what the frontend used to know | now |
+|---|---|
+| `units_per_metre 50`, `world_pitch_deg 23.2`, `hud_height_m -0.36` as defaults | `config_defaults` |
+| stereo = `on_course > 0 && (wave_height || rig)`, held two frames | `wants_stereo` answers the raw condition; the frontend does the holding |
+| `fp_*` fields of `VrConfig`, and `set_first_person` building the anchor | `VrConfig::extra` keys, read by the `set_first_person` hook |
+| `GCN_RIGLOG` in the harness | `gx::rig_log` in `start_rig.cpp`, called from the hook |
+| `--first-person=x,y,z` in the harness | `--first-person` with `fp_x`/`fp_y`/`fp_z` in a `vr.txt` beside the binary, or `WR_FP_ANCHOR` |
+
+Two things had to change in the shared layer for it to work. The benchmark compiles a game's
+`SOURCES` too (a patch may call into them), and `first_person.cpp` installs the renderer's eye
+hook from a static initializer, so `waverace_bench` would not link: `gcn-recomp/runtime/gx/render_stub.cpp`
+now answers the hook installers with nothing there. And the shared manifest template carries
+version code 1 where the old manifest had reached 2, so `tools/package-apk.ps1` installs with
+`adb install -d`, which lets a debuggable package go backwards.
+
+What came with the move, and had not been here before: the left thumbstick click overrides the
+game's choice of view; holding the left grip turns the left thumbstick into a D-pad (Championship
+-> NORMAL needs DOWN, which the Touch controllers could not press); `perf_boost`; the shader
+cache built in slices with a progress bar; `GCN_REPLAY`/`GCN_INPUT_LOG` in the harness; and the
+theater panel as a stereo pair, which `config_defaults` turns on (see
+[The theater panel as a stereo pair](#the-theater-panel-as-a-stereo-pair)). Nothing in
+`gcn-recomp` names this game: `gcn-recomp/tools/check_generic.py` passes, and runs as a hook
+after every edit here too (`.claude/settings.json`).
 
 ## Theater and stereo
 

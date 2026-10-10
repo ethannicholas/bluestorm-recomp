@@ -1,7 +1,10 @@
 // The starting-light rig, as the renderer sees it. Wave Race's own: every course has a rig
 // and nothing else is drawn the way they are, which is what the detector below relies on.
 #include "start_rig.h"
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <vector>
 
 namespace gx {
 
@@ -42,6 +45,48 @@ bool batch_shows_start_rig(const Batch& b) {
         verts += c.count;
     }
     return verts >= kRigMinVerts;
+}
+
+void rig_log(const Batch& b, bool rig) {
+    static uint32_t frame = 0;
+    frame++;
+    int n = 0;
+    uint32_t verts = 0;
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    std::vector<uint32_t> tex;
+    for (const Cmd& c : b.cmds) {
+        if (c.type != CmdType::Draw) continue;
+        const PixelState& st = b.states[c.state];
+        if (!st.view_space || (int)st.proj[6] != 0) continue;
+        n++;
+        verts += c.count;
+        for (uint32_t v = 0; v < c.count; v++) {
+            const float* p = b.verts[b.indices[c.first + v]].pos;
+            for (int a = 0; a < 3; a++) {
+                if (p[a] < lo[a]) lo[a] = p[a];
+                if (p[a] > hi[a]) hi[a] = p[a];
+            }
+        }
+        for (int t = 0; t < 8; t++)
+            if (st.tex_id[t] && std::find(tex.begin(), tex.end(), st.tex_id[t]) == tex.end())
+                tex.push_back(st.tex_id[t]);
+    }
+    static int last_rig = -1;
+    if ((int)rig != last_rig) {
+        last_rig = rig;
+        fprintf(stderr, "[rig] frame %u: detector -> %d\n", frame, (int)rig);
+    }
+    static int last_n = -1;
+    static uint32_t last_v = ~0u;
+    if (n != last_n || verts != last_v || frame % 30 == 0) {
+        last_n = n;
+        last_v = verts;
+        fprintf(stderr, "[rig] frame %u: %d draws %u verts", frame, n, verts);
+        if (n)
+            fprintf(stderr, " x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f, %zu textures", lo[0], hi[0], lo[1], hi[1], lo[2],
+                    hi[2], tex.size());
+        fprintf(stderr, "\n");
+    }
 }
 
 }  // namespace gx

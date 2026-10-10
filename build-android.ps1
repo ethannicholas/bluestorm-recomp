@@ -1,15 +1,15 @@
 # Cross-compile for an Android/arm64 device (a Quest headset, say) and optionally run
 # on it over adb.
 #
-# Two targets, neither of which is an APK:
-#
 #   waverace_bench  no renderer, no SDL -- measures whether the device's CPU can
 #                   sustain the game's 30 fps.   .\build-android.ps1 -Run
 #   waverace_egl    the real renderer on a headless EGL pbuffer, writing frames as
-#                   PNGs -- validates the GL ES back end on the device before there is
-#                   any VR frontend.             .\build-android.ps1 -Render
+#                   PNGs -- validates the GL ES back end on the device without anyone
+#                   wearing the headset.         .\build-android.ps1 -Render
+#   libwaverace.so  the headset app, which package-apk.ps1 turns into an APK.
 #
-# See docs/dev/diagnostics.md for both; the README covers the installable app.
+# All three are gcn-recomp's (gcn_add_game with ANDROID_PACKAGE); see docs/dev/diagnostics.md
+# for the first two and the README for the app.
 param(
     [switch]$Run,
     [switch]$Render,
@@ -51,7 +51,7 @@ if (-not (Test-Path "$buildDir/build.ninja") -or
     -not (Select-String -Path $cache -Pattern '^GCN_BENCH_ONLY:BOOL=ON$' -Quiet -ErrorAction SilentlyContinue)) {
     # ANDROID_STL=c++_static keeps the binaries self-contained, so there is no
     # libc++_shared.so to push alongside them. GCN_BENCH_ONLY skips SDL2 and the desktop
-    # renderer targets; waverace_egl is added separately and brings its own frontend.
+    # renderer targets; the headset targets bring their own frontends.
     cmake -S . -B $buildDir -G Ninja `
         "-DCMAKE_TOOLCHAIN_FILE=$toolchain" `
         "-DANDROID_ABI=$Abi" `
@@ -63,7 +63,7 @@ if (-not (Test-Path "$buildDir/build.ninja") -or
 }
 ninja -C $buildDir
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
-foreach ($t in 'waverace_bench', 'waverace_egl') {
+foreach ($t in 'waverace_bench', 'waverace_egl', 'libwaverace.so') {
     $p = "$buildDir/$t"
     if (Test-Path $p) { Write-Host "built $p ($([math]::Round((Get-Item $p).Length/1MB,1)) MB)" }
 }
