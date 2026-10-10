@@ -110,6 +110,9 @@ int g_keep = 0;
 // scripted route can run its menus at 30 (where the script's frame counts hold) and only
 // the race at 60; a 60 fps run that goes wrong is bisected many times faster that way.
 uint32_t g_fps_at = 0;
+// A switch asked for from another thread (the headset's left thumbstick click), applied at
+// the next frame step so that the rate only ever changes between frames, on the guest thread.
+std::atomic<int> g_fps_request{0};
 
 const bool installed = [] {
     if (const char* e = getenv("WR_PACE_KEEP")) g_keep = atoi(e);
@@ -128,6 +131,8 @@ void set_fps(int fps) {
     fprintf(stderr, "[pace] %d frames per second\n", fps);
 }
 int fps() { return g_fps; }
+void request_fps(int fps) { g_fps_request.store(fps, std::memory_order_relaxed); }
+void toggle_fps() { request_fps(g_fps == 60 ? 30 : 60); }
 float frame_dt() { return 1.0f / (float)g_fps; }
 }  // namespace wr
 
@@ -143,6 +148,7 @@ extern "C" uint32_t wr_frame_count_step(uint32_t frame) {
         g_fps_at = 0;
         wr::set_fps(60);
     }
+    if (int r = g_fps_request.exchange(0, std::memory_order_relaxed)) wr::set_fps(r);
     step_frame();
     return g_fps == 60 && !(g_keep & 1) ? gcn_step_int(0x80006F14u, 1.0) : 1u;
 }

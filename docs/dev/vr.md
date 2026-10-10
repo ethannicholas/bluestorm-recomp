@@ -74,8 +74,12 @@ looked right in the harness -- the HUD on the panel, the rider in front of it, t
 behind -- but in the headset the water's reflections did not survive it: the game samples its
 reflection copy by screen position, and the pair's second pass draws from a camera the copy was
 not made from. And the left thumbstick click that overrode the game's choice of theater or stereo
-was only ever clicked by accident, so `stereo_toggle` is a setting now and this game's defaults
-turn it off. Nothing in `gcn-recomp` names this game: `gcn-recomp/tools/check_generic.py`
+was only ever clicked by accident, so it became a `stereo_toggle` setting, off for this game; later
+the same day it was removed from the shared frontend altogether, since a switch that is off by
+default and only ever pressed by accident is not worth a setting. The left click is now the game's
+(`vr::GameHooks::left_click`), and here it toggles 30 and 60 fps: `wr::toggle_fps` in
+`runtime/pace.cpp` queues the change for the guest thread, which applies it at the next frame
+step, the way `WR_FPS_AT` does. A game with no `wants_stereo` hook now has only `start_in_stereo`. Nothing in `gcn-recomp` names this game: `gcn-recomp/tools/check_generic.py`
 passes, and runs as a hook after every edit here too (`.claude/settings.json`).
 
 ## Theater and stereo

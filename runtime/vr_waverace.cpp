@@ -98,9 +98,6 @@ void config_defaults(VrConfig& c) {
     // the pair's second pass is drawn from a camera the copy was not made from. See
     // docs/dev/vr.md.
     c.theater_stereo = false;
-    // The game's own answer to theater or stereo is the right one, and the left thumbstick
-    // click that overrode it was only ever pressed by accident.
-    c.stereo_toggle = false;
     // The first-person eye's keys, so vr.txt can be read over them (see set_first_person).
     c.extra["fp_x"] = 0.0f;
     c.extra["fp_y"] = 57.5f;
@@ -120,6 +117,8 @@ const bool installed = [] {
     h.config_loaded = config_loaded;
     h.wants_stereo = wants_stereo;
     h.set_first_person = set_first_person;
+    // Left thumbstick click: 30 or 60 frames a second, for comparing the two in the headset.
+    h.left_click = wr::toggle_fps;
     vr::set_game_hooks(h);
     return true;
 }();

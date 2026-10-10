@@ -181,6 +181,7 @@ compiled; later runs will take advantage of cached copies.
 | Start | Menu (left) |
 | D-pad | Left thumbstick while holding the left grip |
 | *(first person on/off)* | Right thumbstick click |
+| *(30 or 60 fps)* | Left thumbstick click |
 
 If something goes wrong, `adb logcat -s waverace` shows the app's log, including compositor and
 game frame counts every second.
@@ -214,7 +215,6 @@ transition_out_s -1      # seconds for the morph back to theater; negative uses 
 theater_stereo 0         # show the theater screen as a stereo pair (the water's reflections suffer)
 theater_depth 1          # how much of your eye separation the pair is drawn with; less is flatter
 panel_band 0             # depth-buffer band of draws pinned to the screen itself; 0 pins none
-stereo_toggle 0          # let the left thumbstick click switch between the screen and 3D by hand
 perf_boost 1             # ask the headset for its highest CPU and GPU clocks
 first_person 0           # start races in first person rather than behind the chase camera
 fp_x 0                   # where the first-person eye sits relative to the ski, in game units:
