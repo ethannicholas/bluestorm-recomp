@@ -288,7 +288,23 @@ AI record (`0x803DFF6C` for rider 0) stepped by 1.0 a frame at `0x8002C8A8` and
 `0x8002B368`; at 60 it ended before the counter reached 135, and the phase never left 0.
 Both steppers are `lfsx`/`stfsx`, the indexed forms, which `rate_sites.py` did not pair as
 a load and a store of the same address: it now keys an indexed access by both registers,
-which found five more sites besides these two.
+which found five more sites besides these two. With them the Championship starts at 60
+(the race state reaches 3 at 7.0 s against 7.6 s at 30: the countdown's phase 1 comes at
+frame 135 in both, phase 2 some 17 frames sooner at 60, not read further), and its AI
+riders run at the right speed: rider 1 by real time is 5% quicker at 60 and launches 0.6 s
+earlier, and stays 700-1000 units ahead of its 30 fps self over thirty seconds of the
+course, where the unscaled AI would have been a lap ahead.
+
+**What is still open in the Championship, 2026-10-10.** The scripted rider is beached, so
+the race's end is not the field finishing: at 30 the mode goes 5 to 6 (`0x800FA118`, the
+results) at 42.4 s on the race timer; at 60 the release build resets the race scene at
+30.9 s with the timer frozen and the mode still 5, and the watch build at 60 does neither
+by 41 s. The two release runs agree with each other frame for frame, so the difference
+between the builds is a real-time one (the course music streams from the disc in real
+time, and `[DVD] stream cancel` comes just before the results at 30), not a fault in the
+tables. What ends a beached Championship race, and whether it ends at the same time at 60,
+wants a played or recorded race rather than the scripted one; the other courses and the
+headset are untried at 60 since the rider's half-step.
 
 **Driving the race at 60 without driving the menus at 60.** `WR_FPS_AT=<presented frame>`
 switches to 60 mid-run, so the scripted route's frame counts hold through the menus and only
