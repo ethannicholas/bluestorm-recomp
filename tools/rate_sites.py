@@ -482,6 +482,7 @@ class Walker:
 def load_hist(path):
     """The [sthist] counts and the [stwr] writers of a GCN_STORE_HIST run."""
     hist, writers, frames = {}, {}, None
+    streaks = {}
     for line in open(path, errors='replace'):
         if line.startswith('[sthist] '):
             parts = line.split()
@@ -490,6 +491,8 @@ def load_hist(path):
                 frames = int(b) - int(a)
             elif parts[1] != 'end':
                 hist[int(parts[1], 16)] = int(parts[2])
+                if len(parts) > 3:
+                    streaks[int(parts[1], 16)] = int(parts[3])
         elif line.startswith('[stwr] '):
             parts = line.split()
             addr = int(parts[1], 16)
@@ -499,7 +502,7 @@ def load_hist(path):
                 if k != 'more':
                     ws[int(k, 16)] = int(n)
             writers[addr] = ws
-    return hist, writers, frames
+    return hist, writers, frames, streaks
 
 
 def classify_state(site_pcs, writers, frames):
@@ -570,9 +573,14 @@ def emit_steps(args, sites, hist, frames, classes):
         if frames and c / frames < args.min_rate:
             # A step that runs on an event rather than every frame (a lap counted, a
             # state advanced, a decay applied on a hit) is the event's size, not a rate,
-            # and halving it loses the event: at 60 the countdown never finished.
-            skipped['event'] += 1
-            continue
+            # and halving it loses the event. A step that is active for part of the window
+            # only (the start countdown, 110 frames of 1269) still ran on consecutive
+            # frames, which the histogram's streak tells: keep those.
+            frames_ran = min(c, frames)
+            streak = getattr(args, 'streaks', {}).get(s['pc'], 0)
+            if not (frames_ran >= 8 and streak >= 0.8 * frames_ran):
+                skipped['event'] += 1
+                continue
         if s['width'] == 'int' and not (s['rate'][0] == 'imm' and abs(s['rate'][1]) == 1):
             # A counter steps by one. A word stepped by four, or by another word, is a
             # cursor or a sum: scaled, the first faulted the GX flush and the second
@@ -648,8 +656,9 @@ def main():
     hist = writers = frames = None
     classes = {}
     if args.hist:
-        hist, writers, hf = load_hist(args.hist)
+        hist, writers, hf, streaks = load_hist(args.hist)
         frames = args.frames or hf
+        args.streaks = streaks
         classes = classify_state({s['pc'] for s in sites}, writers, frames)
     kinds = set(args.kind.split(',')) if args.kind else None
     if args.emit_steps:

@@ -157,12 +157,13 @@ applied on a hit, forty-two of them in the race window at rates from once in the
 menus have their own sites, which a Championship window (the route without its `DOWN`) and
 a longer one will add.
 
-**Where it stands (2026-10-10, end of the second pass).** 109 sites are scaled
+**Where it stands (2026-10-10, end of the second pass).** 131 sites are scaled
 (`recomp/steps.txt`). At 60, switched on at the race, the game clock (`0x806919F0`) and the
 race timer (`0x806199F0`, stepped by 1/30 at `0x80083FD4`) both advance one second per real
 second, where before the pass they ran double. The race state (`0x806916F8`, 1 to 3 at the
-start) is reached at 60 too. Two things are still at double speed, and both are outside what
-the mechanism can reach:
+start) is reached at 60 too, and the countdown ends on time. One thing is still at double
+speed, and it is outside what the mechanism can reach; the second item below was the same
+symptom with a different cause:
 
 - **The rider's physics is a particle system, not a rate.** `fn_80093858` integrates sixteen
   particles (52 bytes each: position, then an accumulator that is zeroed after use) with the
@@ -178,11 +179,14 @@ the mechanism can reach:
   the game's units wherever it feeds the thrust and drag curves and the HUD -- and that is a
   reading of the rider's functions rather than a filter, the one piece of the first pass's
   "rewrite" that stands.
-- **The countdown still runs at 60.** The start comes at 1.5 s instead of 3.3 s. The counter
-  at `0x806912AC` (100, decremented twice, zeroed) is not it, and nothing in the scaled set
-  is; it is one of the sites the filters leave out (an event-rate site, a temporary, or one
-  of the 79 unclassified), or a read of the retrace count. `GCN_STORE_HIST` over the ten
-  frames around the start, intersected with the candidate list, is the next step.
+- **The countdown ran at 60 until the event filter learned about streaks.** The start came
+  at 1.5 s instead of 3.3 s. The counter is `0x806919E4`, found by taking `WR_SNAP`
+  snapshots during the countdown and listing the words that step by exactly one per frame
+  between them: it is loaded with 30 per stage (`0x800C30F4`, an event) and decremented at
+  `0x800CBB04`, which ran 110 times in the 1,269-frame window and so fell under the 0.9 a
+  frame rule. The histogram's streak column (how many of a site's frames followed another
+  it ran in: 109 of 110 here) now keeps a step that runs every frame while it is active;
+  with it the start comes at 3.1 s at both rates, and the table has 131 sites.
 
 The things the first pass thought were the obstacle -- the hundred reads of the frame counter
 and forty of the clock -- were not: the counter steps every other frame like any other
