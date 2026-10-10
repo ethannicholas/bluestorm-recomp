@@ -313,6 +313,19 @@ scene, and a 60 fps run then needs a third of the frames. `compare_runs.py --res
 the two runs up on the race scene (the fourth restart of the frame counter) rather than on
 boot.
 
+**The headset's toggle, and the freeze it found (2026-10-10).** Clicking the left thumbstick
+switches between 30 and 60 in play (`vr::GameHooks::left_click`, `wr::toggle_fps`; the
+change is applied on the guest thread at the next frame step, like `WR_FPS_AT`). The first
+build of it froze the game for tens of seconds at every click: the log showed one game frame
+every 1.67 s for over a minute after a click to 60. `WR_FPS_AT` had switched mid-run without
+trouble, so switching was believed safe; it was only safe unpaced. The shared virtual clock
+was the count of back-edges times the ticks per edge, and the switch changes the ticks per
+edge, so it rescaled every virtual second since boot: to 60 halved the clock and put every
+pending timer minutes into the future, to 30 doubled it and left the guest minutes ahead of
+the host, which the pacer sleeps off at 50 ms a poll. In the unpaced harness the idle jumps
+cross such a gap for free. The clock now rebases at a scale change
+(`gcn-recomp/docs/diagnostics.md`, `GCN_CPU_SCALE`).
+
 **A recording with clock jumps is useless for this.** The first recording was made paced, on
 the Quest's harness, and carried 4,931 catch-up jumps (`jump` lines in `inputs.txt`): the eye
 path and the one-frame batch queue hold the guest up a few milliseconds a frame, each of which
