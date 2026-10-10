@@ -611,6 +611,51 @@ game's layout faithfully, sits where the geometry says it should, and is anchore
 rather than to the head. Whether four metres is a comfortable place to read it from is still a
 question only the headset can answer.
 
+## Culling to the eyes: what the game does and does not cull (2026-10-10)
+
+Prime culls its world to its camera's frustum and had to be taught the eyes' (prime-recomp's
+`docs/dev/vr.md`, "Culling to the eyes"). The question here was whether the popping seen at the
+edges of the view in the headset is the same thing. So far the answer is that the course is
+not frustum-culled at all, and what pops is still to be named:
+
+- **A race frame's draws against the game's own frustum.** `GCN_DRAWLOG` (whose lines now
+  carry each draw's projection) on frame 2600 of the scripted race, on the Quest: 1,211 draws,
+  1,166 perspective, 991 of them with a view-space box *wholly outside* the frustum they were
+  drawn with (`1.446/1.927/+0.578`: 69 degrees across, 12 up and 39 down, the chase camera's
+  off-axis frustum), some by 80 degrees. The game submits the whole course and lets the GPU
+  clip it. The water, the islands and the gate are all there whichever way the eye looks.
+- **The eye turned 40 degrees** either way (`waverace_egl --eye --eye-yaw=40`, replaying the
+  recorded race) shows a complete scene to the edge of the eye: the start gate, the beach, the
+  palms and the sea. Nothing of the course is missing at the sides.
+- **So the popping is something else**, and the candidates are what this frame does not have:
+  the other racers and their spray, the buoys, particles, or the renderer's own doing (the eye's
+  trimmed flat pass, the foreground band, the scissor; `GCN_EYE_SCISSORLOG`). The next step is
+  to catch it: note what vanishes and where (a racer, spray, a buoy, the water's far edge), then
+  dump that moment with `--eye-yaw` and `GCN_DRAW_SKIP` to attribute it.
+
+What was learned on the way, for when the culprit is found:
+
+- **The camera.** The race camera is an entry of a 340-byte array at `0x80619358`, indexed by
+  the signed 16-bit word at `0x80690FA6`; the current projection is loaded from entry+196
+  (`fn_80036350` at 0x80036A88, through `GXSetProjection` = `fn_80128310`). Layout, from a
+  race frame: +0 position, +32 target, +80 eye, +92 the vertical field of view in degrees
+  (54.85, which rises with speed), +104 near (10), +108 far (16138), +148 the 3x4 view matrix,
+  +196 the 4x4 projection (the y offset at +220 is what tilts the frustum down). The 2D
+  passes and the menus build their own with `fn_8011021C` (C_MTXFrustum-like) from constants
+  and `fn_8011014C` (C_MTXPerspective-like).
+- **Who reads it.** The functions addressing the array (grep the generated C for `-27816`,
+  the array's offset from 0x80620000): `fn_800FB580` is a level-of-detail selector by distance
+  from the camera (called twice from the race's draw code), `fn_80106214` works a grid around
+  the camera through its view matrix in the race's update (`fn_800BBB20`), `fn_800DF85C` and
+  `fn_800E1270` read the field of view and the clip planes for 2D placement. None is a frustum
+  test of the course; the course draw functions (`fn_800C5344` dispatches per course to
+  `fn_800C64B8`, `fn_800C6BA8`, `fn_800C7184`, `fn_800C3E6C`) draw through `fn_800F1414`
+  with a distance gate at most.
+- **The stack-trace tools.** `GCN_POSMTX_STACK` catches a matrix at the FIFO's drain, where
+  the guest is always in `fn_80007A48`'s flush; the game's matrices are loaded indexed and its
+  draws are display lists, so `GCN_GP_STACK` on a float never fires either. `--sample` on the
+  desktop names the race's frame functions (`fn_800BBB20` update, `fn_800BBDDC` draw).
+
 ## First person
 
 In stereo, clicking the right thumbstick moves the eye from the game's chase camera to the rider's
