@@ -5,6 +5,7 @@
 // It is installed from a static initializer, so linking this file is what turns the
 // renderer's first person on for this game.
 #include "first_person.h"
+#include "pace.h"
 #include "gx/render_gl.h"
 #include <cmath>
 #include <cstdio>
@@ -131,8 +132,8 @@ static void first_person_eye(const float* wm, const float* hm, const float ancho
     const float target_pitch = asinf(clamp1(hz[1]));
     const float target_roll = asinf(clamp1(-hx[1]));
 
-    constexpr float kDt = 1.0f / 30.0f;  // once per game frame
-    auto rate = [](float tau) { return tau > 0.0f ? 1.0f - expf(-kDt / tau) : 1.0f; };
+    const float dt = wr::frame_dt();  // once per game frame
+    auto rate = [dt](float tau) { return tau > 0.0f ? 1.0f - expf(-dt / tau) : 1.0f; };
     FpEye& e = g_fp_eye;
     const float dx = target[0] - e.pos[0], dz = target[2] - e.pos[2];
     // A respawn after a crash moves the ski a long way in one frame; follow it there.

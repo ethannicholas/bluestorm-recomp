@@ -7,3 +7,12 @@
 8010902C heap_trace_alloc_result(c, 0); RET();
 801090E4 heap_trace_alloc_result(c, 1); RET();
 801090E8 heap_trace_free(c); c->r[0] = c->lr;
+# The frame rate (runtime/pace.cpp): fn_80007A94 ends a frame by spinning until N retraces
+# have passed since its mark (N = 1 in play, 2 in mode 0) and then waiting for one more;
+# at 60 frames a second N is 0. The mode runner fn_80006D20 then advances the game's clock
+# (0x806919F0) by the 1/30 at 0x80692400 and its frame counter (0x80690FF8) by one; at 60
+# the clock advances by half and the counter every other frame.
+80007B3C { uint32_t wr_fields_per_frame(uint32_t); c->r[31] = wr_fields_per_frame(1u); }
+80007B44 { uint32_t wr_fields_per_frame(uint32_t); c->r[31] = wr_fields_per_frame(2u); }
+80006F28 { double wr_frame_dt(double); double v = (double)(float)(c->f[0].d + wr_frame_dt(c->f[31].d)); c->f[0].d = v; c->ps1[0] = v; }
+80006F14 { uint32_t wr_frame_count_step(void); c->r[0] = c->r[3] + wr_frame_count_step(); }
