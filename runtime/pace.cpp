@@ -136,7 +136,7 @@ extern "C" double wr_frame_dt(double game) { return g_fps == 60 && !(g_keep & 2)
 // Called once a game frame, from the mode runner's advance of the frame counter, with the
 // counter's value before the advance. This is where the step scale learns that a frame has
 // passed, and the counter itself steps like any other integer: every other frame at 60.
-extern "C" uint32_t gcn_step_int(uint32_t pc);
+extern "C" uint32_t gcn_step_int(uint32_t pc, double p);
 extern "C" uint32_t wr_frame_count_step(uint32_t frame) {
     watch_print(frame);
     if (g_fps_at && gx::g_frames_submitted.load(std::memory_order_relaxed) >= g_fps_at) {
@@ -144,5 +144,5 @@ extern "C" uint32_t wr_frame_count_step(uint32_t frame) {
         wr::set_fps(60);
     }
     step_frame();
-    return g_fps == 60 && !(g_keep & 1) ? gcn_step_int(0x80006F14u) : 1u;
+    return g_fps == 60 && !(g_keep & 1) ? gcn_step_int(0x80006F14u, 1.0) : 1u;
 }

@@ -157,13 +157,13 @@ applied on a hit, forty-two of them in the race window at rates from once in the
 menus have their own sites, which a Championship window (the route without its `DOWN`) and
 a longer one will add.
 
-**Where it stands (2026-10-10, end of the second pass).** 131 sites are scaled
+**Where it stood at the end of the second pass (2026-10-10).** 131 sites were scaled
 (`recomp/steps.txt`). At 60, switched on at the race, the game clock (`0x806919F0`) and the
 race timer (`0x806199F0`, stepped by 1/30 at `0x80083FD4`) both advance one second per real
 second, where before the pass they ran double. The race state (`0x806916F8`, 1 to 3 at the
-start) is reached at 60 too, and the countdown ends on time. One thing is still at double
-speed, and it is outside what the mechanism can reach; the second item below was the same
-symptom with a different cause:
+start) is reached at 60 too, and the countdown ends on time. One thing was still at double
+speed, and it was outside what the histogram can reach (the third pass below is its
+reading); the second item was the same symptom with a different cause:
 
 - **The rider's physics is a particle system, not a rate.** `fn_80093858` integrates sixteen
   particles (52 bytes each: position, then an accumulator that is zeroed after use) with the
@@ -177,8 +177,7 @@ symptom with a different cause:
   Verlet one -- momentum carried whole, forces scaled by the square of the step, the derived
   speed (position minus the previous position, the array at `0x80620298`) converted back to
   the game's units wherever it feeds the thrust and drag curves and the HUD -- and that is a
-  reading of the rider's functions rather than a filter, the one piece of the first pass's
-  "rewrite" that stands.
+  reading of the rider's functions rather than a filter: the third pass.
 - **The countdown ran at 60 until the event filter learned about streaks.** The start came
   at 1.5 s instead of 3.3 s. The counter is `0x806919E4`, found by taking `WR_SNAP`
   snapshots during the countdown and listing the words that step by exactly one per frame
@@ -191,6 +190,71 @@ symptom with a different cause:
 The things the first pass thought were the obstacle -- the hundred reads of the frame counter
 and forty of the clock -- were not: the counter steps every other frame like any other
 integer and nothing minds, and the clock was one site.
+
+### The rider's half-step (2026-10-10, third pass)
+
+The rider is a Verlet particle system, and the reading of it is in `recomp/steps_manual.txt`
+(a table the emitter copies into `steps.txt`; the mechanism's additions -- a power column,
+the `R` and `P` letters, `GCN_READERS` -- are in `gcn-recomp/docs/diagnostics.md`). The
+rider's record is 4508 bytes at `0x80620328 + 4508 * i` (`fn_80091F5C` takes the index);
+its sixteen particles are inline at +144, 52 bytes each: position, then the accumulator at
++12, a lateral damping `k` (0.57) at +24 and flags at +28. The frame, in order:
+
+- `fn_80091F5C`, the rider update, adds the thrust (+3344 is the engine's power, chosen by
+  a curve read against the speed at `0x80091FD0`), the steering torque, gravity (the record's
+  first float, applied to eight particles, twelve in state 31) and the pitch and roll
+  torques to the accumulators -- 136 add sites, which the histogram cannot see because the
+  accumulators are zeroed every frame, listed by a script that pairs each add with the
+  load and store of the same particle field -- then a lateral drag in a loop over the
+  particles when the rider is neither turning nor airborne (`0x800933FC`).
+- `fn_800BE4E0` samples the water under each particle through the function pointer at
+  `r13-30172` and adds buoyancy, the wave slope's push and a lift that grows with the
+  speed; it also runs the wake emitter, whose counter at `0x80632BF0 + 4 * i` accumulates
+  the speed (`0x800BE5FC`). Then `fn_800BDFC0` damps the accumulators: the vertical
+  component by +16 (0.835), the lateral one by +20 (0.898, as `k*a + (1-k)(a.d)d` on the
+  heading `d`), once a frame for the AI and four times for a rider whose +4238 is set.
+- The collisions (`fn_80088E14` the course walls, `fn_8008978C` and `fn_8008908C` the
+  colliders, `fn_80089C74` and `fn_8008AB68` the other riders) cancel the normal part of
+  the accumulator and push every particle out by the penetration depth. Both are derived
+  from the state, not rates: the impulse from the accumulator, the push-out from the
+  positions. When the scripted rider sits against a wall the push-out runs every frame and
+  the emitter took it for a rate (`0x80089034`), which is why those sites are in
+  `recomp/steps_skip.txt`.
+- `fn_80093858` integrates: it saves the positions to `0x80620298`, steps each by
+  `0.992 * acc` (the 0.992 at +12 is a damping, not a time step) and zeroes the
+  accumulator, relaxes the distance constraints eleven times, applies the corrections,
+  then stores the next frame's momentum into the accumulator: the displacement since the
+  save with its component across the direction of travel scaled by the particle's `k`. It
+  also derives the speed: the centroid's displacement at +80..88, its magnitude at +104
+  and its direction at +92..100.
+
+The half-step follows from that. The momentum is carried whole and the forces take the
+square of the step (power 2), since Verlet adds a displacement and a force to the same
+position. Every per-frame damping -- the 0.992, the particle's `k` and its `1 - k`, the
+two in `fn_800BDFC0` -- takes the root (power 1, as `k^s` and `1 - k^s`). The speed, which
+the game measures over one step and compares against thresholds, feeds the thrust curve,
+the lift and the HUD (`0x8000A538`), is converted back to the game's units where it is
+stored (`R -1` on `0x80093B90` and the two after it); the only reader that integrates it
+rather than comparing it, the wake counter, is then a rate and is scaled. The position
+step and the collisions are left alone. Finding the readers of the speed is what
+`GCN_READERS` was written for: 76 sites in the game load a float at offset 104 of something, and
+nine sites read the rider's.
+
+The result, on the route above with `WR_FPS_AT=3035` and `compare_runs.py --reset=4`: the
+rider accelerates on the same curve at both rates (196 against 233 units/s one second after
+the start, 672 against 713, 998 against 1007, 1109 against 1119) and tops out at the same
+speed (1138 against 1144), where unscaled he reached 2227; at 30 the build is still bit for
+bit the old one. What remains different is after the wall at ten seconds: at 30 the rider
+stops against it (under 10 units/s), at 60 he slides along it at 30-70 for ten seconds, and
+his heading drifts a degree or so the other way over the run-up. The wall contact is a
+position correction applied per step with an impulse derived from the accumulator, and
+neither is obviously wrong at a half step; it has not been read further.
+
+What was wrong before: the +12 field of the rider's record was taken for a time step. It
+is 0.992, a drag applied to the whole accumulator, and the thing the first bisection
+halved was that product, which is why the rider stopped. And the first histogram run was
+killed by a fifteen-minute alarm before its window closed: the watch build takes twenty
+minutes to reach presented frame 4300 on a loaded Mac, and the table is printed only then.
 
 **Driving the race at 60 without driving the menus at 60.** `WR_FPS_AT=<presented frame>`
 switches to 60 mid-run, so the scripted route's frame counts hold through the menus and only

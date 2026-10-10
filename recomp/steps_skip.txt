@@ -1,8 +1,83 @@
 # Candidate steps that tools/rate_sites.py --emit-steps leaves out of steps.txt, with why.
 # Hex addresses, one per line; see docs/dev/performance.md, "60 frames per second".
+#
 # The rider's particle integrator (fn_80093858): positions stepped by an accumulator that
-# carries the momentum as well as the forces, so halving the step halves the speed every
-# frame and the rider never moves. Unscaled, he moves at about 1.5x; see the notes.
+# carries the momentum as well as the forces (Verlet), so the position step is not a rate.
+# The forces are scaled instead, by the square of the step: recomp/steps_manual.txt.
 8009389C
 800938B4
 800938D0
+# The rider's collisions push every particle out of the wall, the collider or the other
+# rider by the penetration depth: a position correction, not a rate, and when the rider
+# sits against a wall it runs every frame and looks like one.
+80089034  # fn_80088E14
+80089040  # fn_80088E14
+80089AF4  # fn_8008978C
+80089B00  # fn_8008978C
+80089B0C  # fn_8008978C
+80089B18  # fn_8008978C
+80089B24  # fn_8008978C
+80089B30  # fn_8008978C
+80089B3C  # fn_8008978C
+80089B48  # fn_8008978C
+80089B54  # fn_8008978C
+80089B60  # fn_8008978C
+80089B6C  # fn_8008978C
+80089B78  # fn_8008978C
+80089B84  # fn_8008978C
+80089B90  # fn_8008978C
+80089B9C  # fn_8008978C
+80089BA8  # fn_8008978C
+80089BB4  # fn_8008978C
+80089BC0  # fn_8008978C
+80089BCC  # fn_8008978C
+80089BD8  # fn_8008978C
+80089BE4  # fn_8008978C
+80089BF0  # fn_8008978C
+80089BFC  # fn_8008978C
+80089C08  # fn_8008978C
+80089C28  # fn_8008978C
+80089C34  # fn_8008978C
+80089C40  # fn_8008978C
+80089430  # fn_8008908C
+8008943C  # fn_8008908C
+80089448  # fn_8008908C
+800894AC  # fn_8008908C
+800894B8  # fn_8008908C
+800894C4  # fn_8008908C
+800894E8  # fn_8008908C
+800894F4  # fn_8008908C
+80089500  # fn_8008908C
+80089510  # fn_8008908C
+8008951C  # fn_8008908C
+80089528  # fn_8008908C
+80089FDC  # fn_80089C74
+80089FE8  # fn_80089C74
+80089FF4  # fn_80089C74
+8008A000  # fn_80089C74
+8008A00C  # fn_80089C74
+8008A018  # fn_80089C74
+8008A024  # fn_80089C74
+8008A030  # fn_80089C74
+8008A03C  # fn_80089C74
+8008A048  # fn_80089C74
+8008A054  # fn_80089C74
+8008A060  # fn_80089C74
+8008A06C  # fn_80089C74
+8008A078  # fn_80089C74
+8008A084  # fn_80089C74
+8008A090  # fn_80089C74
+8008A09C  # fn_80089C74
+8008A0A8  # fn_80089C74
+8008A0B4  # fn_80089C74
+8008A0C0  # fn_80089C74
+8008A0CC  # fn_80089C74
+8008A0D8  # fn_80089C74
+8008A0E4  # fn_80089C74
+8008A0F0  # fn_80089C74
+8008A110  # fn_80089C74
+8008A11C  # fn_80089C74
+8008A128  # fn_80089C74
+8008AD80  # fn_8008AB68
+8008AD8C  # fn_8008AB68
+8008AD98  # fn_8008AB68

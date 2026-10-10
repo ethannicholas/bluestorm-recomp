@@ -596,15 +596,27 @@ def emit_steps(args, sites, hist, frames, classes):
             skipped['conflict'] += 1
             continue
         chosen[s['op_pc']] = s['xpos']
+    manual = []
+    if os.path.exists(args.manual):
+        for line in open(args.manual):
+            body = line.split('#', 1)[0].strip()
+            if body:
+                pc = int(body.split()[0], 16)
+                chosen.pop(pc, None)
+                manual.append(line.rstrip('\n'))
     with open(args.emit_steps, 'w') as out:
-        out.write('# Per-frame steps and the operand that carries the state (A, B or C): the\n'
-                  '# recompiler scales each by the runtime step scale. Written by\n'
-                  '# tools/rate_sites.py --emit-steps from a GCN_STORE_HIST run; see\n'
-                  '# docs/dev/performance.md, "60 frames per second".\n')
+        out.write('# Per-frame steps and the operand that carries the state (A, B or C), with the\n'
+                  '# power of the step scale where it is not 1: the recompiler scales each by the\n'
+                  '# runtime step scale. Written by tools/rate_sites.py --emit-steps from a\n'
+                  '# GCN_STORE_HIST run; see docs/dev/performance.md, "60 frames per second".\n')
         for pc in sorted(chosen):
             if chosen[pc]:
                 out.write('%08X %s\n' % (pc, chosen[pc]))
-    print('steps: %d written; skipped %s' % (sum(1 for v in chosen.values() if v), skipped), file=sys.stderr)
+        if manual:
+            out.write('# Sites read out of the code by hand (recomp/steps_manual.txt):\n')
+            for line in manual:
+                out.write(line + '\n')
+    print('steps: %d written, %d by hand; skipped %s' % (sum(1 for v in chosen.values() if v), len(manual), skipped), file=sys.stderr)
 
 
 def collect(gen, dol):
@@ -645,6 +657,7 @@ def main():
     ap.add_argument('--min-rate', type=float, default=0.9, help='fewest runs/frame for a step to emit (below is an event)')
     ap.add_argument('--patches', default='recomp/patches.txt', help='hand patches, whose addresses are left alone')
     ap.add_argument('--skip', default='recomp/steps_skip.txt', help='addresses never to emit (one per line, # comments)')
+    ap.add_argument('--manual', default='recomp/steps_manual.txt', help='sites added by hand (pc operand power), copied into the output')
     args = ap.parse_args()
 
     sites = collect(args.gen, Dol(args.dol))
