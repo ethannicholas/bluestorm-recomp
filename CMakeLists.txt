@@ -24,4 +24,4 @@ gcn_add_game(
           ${CMAKE_SOURCE_DIR}/runtime/first_person.cpp ${CMAKE_SOURCE_DIR}/runtime/pace.cpp
   # The headset app and its harness, on an Android build: see build-android.ps1 and
   # package-apk.ps1.
-  ANDROID_PACKAGE com.example.waverace)
+  ANDROID_PACKAGE com.ethannicholas.waverace)

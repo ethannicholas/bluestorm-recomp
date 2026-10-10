@@ -9,7 +9,7 @@ repeat it.
 ## Environment variables on the headset
 
 An APK launched from the headset's own launcher has no environment, so `gcn_env.txt` beside
-`vr.txt` (`/sdcard/Android/data/com.example.waverace/files/`) stands in for it: one
+`vr.txt` (`/sdcard/Android/data/com.ethannicholas.waverace/files/`) stands in for it: one
 `KEY=VALUE` per line, applied before the runtime starts. It works for anything read lazily,
 which is most of the `GCN_*` switches; a static initializer that read its variable at library
 load (`GCN_FRAMETIME` is one) has already run. `gcn_input.txt` in the same place is the
@@ -23,7 +23,7 @@ snapshot of the memory card beside it. That is how a crash that only happens on 
 gets a route a desktop can follow:
 
 ```sh
-adb pull /sdcard/Android/data/com.example.waverace/files/inputs/20261007-225215 /tmp/run
+adb pull /sdcard/Android/data/com.ethannicholas.waverace/files/inputs/20261007-225215 /tmp/run
 ./build/waverace --replay=/tmp/run
 ```
 
@@ -152,7 +152,7 @@ vprintf -- not `OSReport`, the only printing path the runtime listens to -- and 
 deadlocking, and on a headset it cost a session of profiling to tell the two apart. So it is
 HLE'd (`recomp/names.txt` names it, `recomp/hle.txt` lists it), and the report lands in
 stderr, the crash record and `panic.txt` -- on the headset in the external files directory,
-`/sdcard/Android/data/com.example.waverace/files/`, next to `vr.txt`; the app's private files
+`/sdcard/Android/data/com.ethannicholas.waverace/files/`, next to `vr.txt`; the app's private files
 directory is empty.
 
 ### When the heap runs out

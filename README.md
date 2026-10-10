@@ -155,7 +155,7 @@ With your disc image in `rom/` as described above:
 ```
 
 The disc image is not part of the APK. It is copied to the app's data directory on the headset,
-`/sdcard/Android/data/com.example.waverace/files/game.iso`, which takes a few minutes the first
+`/sdcard/Android/data/com.ethannicholas.waverace/files/game.iso`, which takes a few minutes the first
 time. Your save file (the emulated memory card) and the shader cache live in the same directory, and
 survive reinstalling the app.
 
@@ -188,7 +188,7 @@ game frame counts every second.
 ### Tuning the VR view
 
 Scale, comfort and quality settings are read at startup from
-`/sdcard/Android/data/com.example.waverace/files/vr.txt`, so they can be changed with
+`/sdcard/Android/data/com.ethannicholas.waverace/files/vr.txt`, so they can be changed with
 `adb push` between runs without rebuilding. The file is optional; every key has a default. One
 `key value` per line, `#` starts a comment:
 
@@ -283,7 +283,7 @@ Android. It uses nothing newer than GL 3.3 / ES 3.0, so compatibility layers tha
 | `saves/panic.txt` | Written if the game stops with its own `guest panic:` assertion. |
 | `saves/inputs/` | One directory per run: the controller input it read, with a copy of the memory card as it was. Safe to delete. |
 
-On the Quest all of these are in `/sdcard/Android/data/com.example.waverace/files/`, beside the
+On the Quest all of these are in `/sdcard/Android/data/com.ethannicholas.waverace/files/`, beside the
 disc image.
 
 ## How it works

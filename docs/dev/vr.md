@@ -938,8 +938,8 @@ launch failure: **the signature is in `/proc`**. The app is `android:debuggable`
 read what the shell cannot:
 
 ```sh
-PID=$(adb shell pidof com.example.waverace)
-adb shell "run-as com.example.waverace sh -c 'for t in /proc/$PID/task/*; do cat \$t/syscall; done'"
+PID=$(adb shell pidof com.ethannicholas.waverace)
+adb shell "run-as com.ethannicholas.waverace sh -c 'for t in /proc/$PID/task/*; do cat \$t/syscall; done'"
 ```
 
 Two threads parked in syscall 63 with a count of `0x1ff` are two copies of `log_pump` blocked in
