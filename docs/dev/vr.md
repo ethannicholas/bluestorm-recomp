@@ -65,14 +65,18 @@ now answers the hook installers with nothing there. And the shared manifest temp
 version code 1 where the old manifest had reached 2, so `tools/package-apk.ps1` installs with
 `adb install -d`, which lets a debuggable package go backwards.
 
-What came with the move, and had not been here before: the left thumbstick click overrides the
-game's choice of view; holding the left grip turns the left thumbstick into a D-pad (Championship
--> NORMAL needs DOWN, which the Touch controllers could not press); `perf_boost`; the shader
-cache built in slices with a progress bar; `GCN_REPLAY`/`GCN_INPUT_LOG` in the harness; and the
-theater panel as a stereo pair, which `config_defaults` turns on (see
-[The theater panel as a stereo pair](#the-theater-panel-as-a-stereo-pair)). Nothing in
-`gcn-recomp` names this game: `gcn-recomp/tools/check_generic.py` passes, and runs as a hook
-after every edit here too (`.claude/settings.json`).
+What came with the move, and had not been here before: holding the left grip turns the left
+thumbstick into a D-pad (Championship -> NORMAL needs DOWN, which the Touch controllers could
+not press); `perf_boost`; the shader cache built in slices with a progress bar;
+`GCN_REPLAY`/`GCN_INPUT_LOG` in the harness; and two things tried and turned back off the same
+day. The theater panel as a stereo pair (`theater_stereo`, `gcn-recomp/docs/graphics.md`)
+looked right in the harness -- the HUD on the panel, the rider in front of it, the start gate
+behind -- but in the headset the water's reflections did not survive it: the game samples its
+reflection copy by screen position, and the pair's second pass draws from a camera the copy was
+not made from. And the left thumbstick click that overrode the game's choice of theater or stereo
+was only ever clicked by accident, so `stereo_toggle` is a setting now and this game's defaults
+turn it off. Nothing in `gcn-recomp` names this game: `gcn-recomp/tools/check_generic.py`
+passes, and runs as a hook after every edit here too (`.claude/settings.json`).
 
 ## Theater and stereo
 

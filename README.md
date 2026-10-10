@@ -163,12 +163,9 @@ survive reinstalling the app.
 
 The app appears on the headset under **Library → Unknown Sources → Wave Race**.
 
-Outside of races, your view will be a screen in front of you, shown as a stereo pair so that the
-menus and course views have depth, like a 3D film. It will transition to stereoscopic 3D around
-you at the beginning of the race. During a race, clicking the right thumbstick switches between
-the game's chase camera and a first-person view from the rider's seat. Clicking the left
-thumbstick forces the other presentation (the screen during a race, or 3D outside one) until the
-game next changes its mind.
+Outside of races, your view will be a 2D screen in front of you. It will transition to stereoscopic
+3D at the beginning of the race. During a race, clicking the right thumbstick switches between the
+game's chase camera and a first-person view from the rider's seat.
 
 Like the desktop build, the first run through a course hitches briefly while shaders are
 compiled; later runs will take advantage of cached copies.
@@ -184,7 +181,6 @@ compiled; later runs will take advantage of cached copies.
 | Start | Menu (left) |
 | D-pad | Left thumbstick while holding the left grip |
 | *(first person on/off)* | Right thumbstick click |
-| *(screen or 3D, by hand)* | Left thumbstick click |
 
 If something goes wrong, `adb logcat -s waverace` shows the app's log, including compositor and
 game frame counts every second.
@@ -215,9 +211,10 @@ msaa 4                   # samples per eye pixel; 0 for none
 start_in_stereo 0        # start in stereo rather than theater
 transition_s 1           # seconds the morph between the two views takes; 0 snaps
 transition_out_s -1      # seconds for the morph back to theater; negative uses transition_s
-theater_stereo 1         # show the theater screen as a stereo pair rather than one image
+theater_stereo 0         # show the theater screen as a stereo pair (the water's reflections suffer)
 theater_depth 1          # how much of your eye separation the pair is drawn with; less is flatter
 panel_band 0             # depth-buffer band of draws pinned to the screen itself; 0 pins none
+stereo_toggle 0          # let the left thumbstick click switch between the screen and 3D by hand
 perf_boost 1             # ask the headset for its highest CPU and GPU clocks
 first_person 0           # start races in first person rather than behind the chase camera
 fp_x 0                   # where the first-person eye sits relative to the ski, in game units:

@@ -93,9 +93,14 @@ void config_defaults(VrConfig& c) {
     // Levelling off (world_pitch_deg 0) wants hud_pitch_deg -23.2 and hud_height_m 1.3.
     c.world_pitch_deg = 23.2f;
     c.hud_height_m = -0.36f;
-    // The menus, the course views and the results are drawn by the game as 3D scenes, so
-    // the panel shows them as a stereo pair: a window onto them rather than a picture.
-    c.theater_stereo = true;
+    // The theater panel stays one image. As a stereo pair (theater_stereo) the water's
+    // reflections went wrong: the game samples its reflection copy by screen position, and
+    // the pair's second pass is drawn from a camera the copy was not made from. See
+    // docs/dev/vr.md.
+    c.theater_stereo = false;
+    // The game's own answer to theater or stereo is the right one, and the left thumbstick
+    // click that overrode it was only ever pressed by accident.
+    c.stereo_toggle = false;
     // The first-person eye's keys, so vr.txt can be read over them (see set_first_person).
     c.extra["fp_x"] = 0.0f;
     c.extra["fp_y"] = 57.5f;
