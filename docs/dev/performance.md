@@ -332,3 +332,72 @@ path and the one-frame batch queue hold the guest up a few milliseconds a frame,
 the clock caught up. A replay makes exactly those jumps at exactly those back-edge counts,
 which at the other frame rate are different instants, and the 60 fps replay's inputs landed
 nowhere near the race. Record unpaced.
+
+### The headset's first look (2026-10-10, fourth pass)
+
+The user drove the toggle in the headset and listed what 60 looked like: the rider and the
+ski drawn out of shape, the steering column huge, the water and the course's wildlife at
+double speed, the wake streaked out ahead. The Quest harness reproduces the first two in a
+frame dump at the countdown (`--eye --dump-every`, `GCN_DUMP_RANGE`), so they could be hunted
+without wearing anything. Two more things it showed on the HUD: the race time ran double
+while the race timer word (`0x806199F0`) stepped by 1/60 a frame exactly as it should
+(`WR_WATCH`), and the speed read about half.
+
+**The shape was the normalizations.** The hull's twelve particles sit in the same 3-by-4
+layout at 60 as at 30 (`WR_WATCH` on all of them, compared about their centroid), so the
+physics was not it. Bisecting the table with `GCN_STEP_SKIP` by address range, one dump per
+range, took three rounds to six sites: `fn_80049F70` and `fn_8004C27C` multiply a bone axis
+(three words at +12) by the reciprocal of its own length, 29 and 20 bones a frame. The emitter
+read `x *= 1/sqrt(x*x + ...)` as a damping and raised the factor to the half power, which
+left every axis at the square root of its length, and the ski and rider, skinned to those
+bones, drew scaled. `tools/rate_sites.py` now refuses a `*=` whose factor is the reciprocal of
+something computed from memory words (`is_normalization`), and the six are in
+`recomp/steps_skip.txt` with the reason. Skipping either function's three alone restores the
+whole picture.
+
+**Three steps outside the emitter's window.** The histogram over the Time Attack window,
+rated over the whole DOL rather than `0x80020000-0x80100000`, and the candidates watched at
+both rates, gave three per-frame steps the window had excluded, now in
+`recomp/steps_manual.txt`: the keyframe animation player at `fn_8000CCF0` (an object's time
+at +56 stepped by (1/30)/its duration, nine objects in the race scene: the course's animated
+things at double speed), a phase in small data (`0x80691DD0`, stepped by 0.005 a frame at
+`fn_80103C08`, read once a frame by one low-range function) and the replay recorder's frame
+count at `fn_80106100` (`0x80691E04`, one a frame in a race, which samples the rider's position
+every eighth frame up to 7200). The HUD's race time is that count less the count at the green
+light, over 30, which is why it ran double while the timer word was right. The window's
+bounds were a guess about where the game's code ends, and both ends were wrong by a little;
+the SDK's own counters (the retrace count at `0x80114E50`, two a frame) are the reason not to
+simply widen it.
+
+**The HUD's speed is a second speed word, still half.** The rider's own speed at +104 is
+converted back to the game's units (the third pass), and the physics agree at both rates:
+lined up on the race start, the 60 fps rider is at 619 units/s against 608 one second in,
+1117 against 1105 at three, 1137 against 1114 at five, and within 75 units of the other's
+position until the wall at ten seconds. But the HUD read 49 km/h against 90. The word it
+shows is in small data at `0x806913C8`: world units a frame (36 at 30, 17 at 60 while +104
+read the same at both, `WR_WATCH`), written once a frame at `0x8005420C` in the race helper
+`fn_800540A4` (`GCN_WATCH_ADDR`) as a difference against the rider's field at +3432, after
+the helper has copied the centroid (+68..76) into small data and taken a Newton square root
+of something. Converting the root's last multiply with `R -1` changed nothing, so the root is
+not on the path to this word; the entry was taken out again. What +3432 is, and where the 36
+comes from, is the next thing to read. The sound engine's frame count (`fn_80008FC4`,
+`0x80691084`), the one per-frame integer a snapshot diff of the guest's data still found
+unhalved at 60, is halved; the animation player reads it.
+
+**The HUD's race time is still double, and is not a stored number.** With every per-frame
+integer and float accumulator in the guest's writable data halved at 60 (snapshot diffs at
+both rates, as words, halfwords and doubles: the only words advancing per frame at the 30 fps
+rate were the two retrace counts), the HUD still showed 11.3 s where the timer word read
+8.75 since the scene start and the countdown took 3.1, i.e. twice the seconds since the green
+light. The timer word's only reader in the race is its own stepper, and the clock's only
+other reader converts it to a frame count. So the display is computed at draw time from
+something not yet identified; the race logic's own time is right. Left for the next pass.
+
+**Also recorded.** The integrator's last loop (`0x80093A90`-`0x80093AB0`) adds each
+particle's accumulator to its position once more after the relaxation; it was in the table
+and is now in the skip list on principle, but the accumulator is zero there: a 60 fps run
+with those scaled and one without were identical frame for frame. The readers of the race
+timer word are only its own stepper, which is how the HUD's time was known to come from
+somewhere else. `GCN_STORE_HIST` output on the device can have the harness's progress line
+interleaved into a writers' line by the other thread; the parser skips such tokens now.
+

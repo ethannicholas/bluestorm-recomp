@@ -243,3 +243,20 @@
 80093534 A 2
 80093540 A 2
 8009354C A 2
+# Outside the emitter's address window (0x80020000-0x80100000), found by hand from the
+# Time Attack histogram listed over the whole DOL (2026-10-10):
+# fn_8000CCF0, the keyframe animation player below the window: an object's time at +56
+# steps by (1/30)/its duration at +44 once a frame per object (nine in the race scene). It
+# ran at its 30 fps rate per frame at 60: the course's animated objects at double speed.
+8000D324 A 1
+# fn_80103C08, above the window: a phase in small data (0x80691DD0) stepped by 0.005 a
+# frame, read by one function in the low range; at 60 it ran double.
+80104380 A 1
+# fn_80106100, above the window: the replay recorder's frame count (0x80691E04), one a
+# frame in a race, which samples the rider's position every eighth frame.
+80106140 A 1
+# fn_80008FC4, below the window: the sound engine's frame count (0x80691084), one a frame,
+# read by the mixer and by the animation player (fn_8000CCF0). The only per-frame integer
+# left unhalved at 60 in a snapshot diff of the guest's data; the HUD's race time, which
+# ran double while the timer word was right, is the suspect reader.
+800097B4 A 1

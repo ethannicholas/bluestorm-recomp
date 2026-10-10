@@ -138,6 +138,20 @@ def desc(v, depth=0):
     return 'unk'
 
 
+def is_normalization(v):
+    """A `*=` whose factor is the reciprocal of something computed from memory words --
+    `x *= 1/sqrt(x*x + y*y + z*z)` -- is a normalization of a vector, not a damping: a bone
+    axis renormalized every frame. Raised to a power it leaves the axis at a root of its
+    length, and everything skinned to it draws scaled."""
+    if v[0] != 'op' or v[1] != 'div' or len(v[2]) != 2:
+        return False
+    num, den = v[2]
+    if not (num[0] == 'lit' and num[2] == 1):
+        return False
+    d = desc(den)
+    return 'mul(' in d and 'mem' in d
+
+
 def lits_in(v, acc=None):
     if acc is None:
         acc = []
@@ -530,6 +544,8 @@ def load_hist(path):
             addr = int(parts[1], 16)
             ws = {}
             for p in parts[2:]:
+                if ':' not in p:
+                    continue  # another thread's progress line, interleaved on stderr
                 k, n = p.split(':')
                 if k != 'more':
                     ws[int(k, 16)] = int(n)
@@ -587,10 +603,13 @@ def emit_steps(args, sites, windows):
                 if line:
                     patched.add(int(line.split()[0], 16))
     chosen = {}
-    skipped = {'kind': 0, 'range': 0, 'notrun': 0, 'temp': 0, 'unclassified': 0, 'intrate': 0, 'intstep': 0, 'event': 0, 'patched': 0, 'conflict': 0}
+    skipped = {'kind': 0, 'range': 0, 'notrun': 0, 'temp': 0, 'unclassified': 0, 'intrate': 0, 'intstep': 0, 'event': 0, 'patched': 0, 'conflict': 0, 'norm': 0}
     for s in sites:
         if s['kind'] not in STEP_KINDS:
             skipped['kind'] += 1
+            continue
+        if s['kind'] == '*=' and is_normalization(s['rate']):
+            skipped['norm'] += 1
             continue
         if not (args.lo <= s['op_pc'] < args.hi):
             skipped['range'] += 1

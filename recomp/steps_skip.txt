@@ -7,6 +7,25 @@
 8009389C
 800938B4
 800938D0
+# The same integrator's last loop adds each particle's accumulator to its position once
+# more after the relaxation. A position step, not a rate, so it stays unscaled on
+# principle; in practice the accumulator is zero there (a 60 fps run with these scaled and
+# one without were identical frame for frame), so it changes nothing either way.
+80093A90
+80093AA0
+80093AB0
+# Vector normalizations, taken for dampings: fn_80049F70 and fn_8004C27C multiply a bone
+# axis (the three words at +12) by the reciprocal of its own length, 29 and 20 bones a
+# frame. Raised to the half power that left every axis at the square root of its length,
+# and the ski and rider, skinned to those bones, drew stretched and scaled from the
+# countdown on (the headset, 2026-10-10). Found by bisecting the table with GCN_STEP_SKIP;
+# the emitter refuses the shape now (rate_sites.py, is_normalization).
+8004A014
+8004A020
+8004A02C
+8004C344
+8004C354
+8004C364
 # The rider's collisions push every particle out of the wall, the collider or the other
 # rider by the penetration depth: a position correction, not a rate, and when the rider
 # sits against a wall it runs every frame and looks like one.

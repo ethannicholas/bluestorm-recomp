@@ -147,6 +147,20 @@ run, which is the quickest way to watch a value through a race: the camera's tar
 these lines beside the eye hook's `[fp]` ones, with the frame counter first and a position
 next, and `--reset N` lines two runs up on the N-th scene the counter restarts in.
 
+A watch build for the Quest is configured by hand into its own directory, with the same
+flags `build-android.ps1` uses plus the watch macro, and only the harness built:
+`cmake -S . -B build-android-watch -G Ninja -DCMAKE_TOOLCHAIN_FILE=<ndk>/build/cmake/android.toolchain.cmake
+-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_static -DGCN_BENCH_ONLY=ON
+-DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-DGCN_WATCH -DCMAKE_CXX_FLAGS=-DGCN_WATCH` then
+`ninja -C build-android-watch waverace_egl`. Pushed under another name it runs a
+`GCN_STORE_HIST` window to presented frame 4300 in about four minutes, where the Mac took
+twenty (2026-10-10). A table change that shows in a picture is bisected without a watch build
+at all: `GCN_STEP_SKIP=<file>` with one address range per run and `--eye --dump-every 5
+GCN_DUMP_RANGE=3148-3152` gives one countdown frame per range in under a minute each, and
+three rounds of four took the stretched ski down to six sites (`performance.md`, fourth pass).
+Push the harness under a new name while another copy is running, and `chmod +x` after a push:
+a pushed file comes back without its executable bit.
+
 Two more switches in `pace.cpp` serve the 60 fps work (`performance.md`): `WR_FPS_AT=<presented
 frame>` switches to 60 at that frame instead of at boot, so the route above runs its menus
 at 30 and only the race at 60 (`WR_FPS_AT=3035` lands four frames into the race scene);
