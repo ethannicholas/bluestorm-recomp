@@ -73,8 +73,10 @@
 800BF2B8 A 2
 800BF2C4 A 2
 800BF2D0 A 2
-# fn_800BE4E0: the wake emitter's counter accumulates the speed, now in the game's units.
+# fn_800BE4E0: the wake emitter's counter accumulates the speed, now in the game's units,
+# and its cooldown counts down (classed a temporary where the wake fires every other frame).
 800BE5FC A 1
+800BE728 A 1
 # fn_80091F5C, the rider update: thrust, steering, gravity, the torques (tools/rate_sites.py
 # does not see these, since the accumulators are zeroed each frame), and the lateral drag
 # applied to every particle in a loop.

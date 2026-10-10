@@ -250,11 +250,45 @@ his heading drifts a degree or so the other way over the run-up. The wall contac
 position correction applied per step with an impulse derived from the accumulator, and
 neither is obviously wrong at a half step; it has not been read further.
 
+The table was checked against the writers' histogram with the writers' cap removed: over
+the Time Attack window every store to rider 0's accumulators is the integrator's own, the
+wall impulse or a site in the table.
+
 What was wrong before: the +12 field of the rider's record was taken for a time step. It
 is 0.992, a drag applied to the whole accumulator, and the thing the first bisection
 halved was that product, which is why the rider stopped. And the first histogram run was
 killed by a fifteen-minute alarm before its window closed: the watch build takes twenty
 minutes to reach presented frame 4300 on a loaded Mac, and the table is printed only then.
+
+### Wider windows (2026-10-10)
+
+The Championship (the route without its `DOWN`) reaches its race scene at the same presented
+frame, 3031, so the same window serves; at 30 the scene ends at 4307 with the race timer at
+42.4 s (the field is home and the scripted rider is beached). Its histogram adds the eight
+riders' steps, and the emitter now takes one `--hist` per window and judges each window on
+its own: a step is kept if some window keeps it, since a rate active in one scene and not
+another (an AI rider's) or for a stretch of one (a countdown) would fall under the rate
+rule of the windows summed. The temporary test works the same way, for a reason found the
+hard way: eighteen steps in `fn_80032FDC`, positions of pooled spray particles, are state
+in Time Attack, where the beached rider spawns none, and a "temporary" in the Championship,
+where the spawner assigns the field often enough to look like a per-frame reset. A real
+temporary (the accumulators) is one in every scene. And the limit on an integer step's
+rate rose from four to sixteen a frame, because a per-rider counter runs once per rider.
+Both windows together: 227 sites from the histograms and 225 by hand.
+
+**The Championship would not start at 60.** The race state (`0x806916F8`) stayed at 1
+with every table site skipped by halves, which pointed away from the table; what the halves
+could not say was that `GCN_STEP_ONLY` leaves the frame counter's own patched site
+(`0x80006F14`) unscaled, and every "only" subset started the race. So the start depended on
+the frame counter's halving, through `fn_80025EB8`: before the countdown, the AI drives the
+riders to the grid along waypoints, and the start phase (`0x80691870`, a halfword) goes to
+1 when the drive is still on (the byte at `0x8069118A`) and the frame counter has reached
+135. The drive ends when the last waypoint's time is up, a per-rider counter at +7436 of the
+AI record (`0x803DFF6C` for rider 0) stepped by 1.0 a frame at `0x8002C8A8` and
+`0x8002B368`; at 60 it ended before the counter reached 135, and the phase never left 0.
+Both steppers are `lfsx`/`stfsx`, the indexed forms, which `rate_sites.py` did not pair as
+a load and a store of the same address: it now keys an indexed access by both registers,
+which found five more sites besides these two.
 
 **Driving the race at 60 without driving the menus at 60.** `WR_FPS_AT=<presented frame>`
 switches to 60 mid-run, so the scripted route's frame counts hold through the menus and only

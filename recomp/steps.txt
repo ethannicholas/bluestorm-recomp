@@ -1,7 +1,7 @@
-# Per-frame steps and the operand that carries the state (A, B or C): the
-# recompiler scales each by the runtime step scale. Written by
-# tools/rate_sites.py --emit-steps from a GCN_STORE_HIST run; see
-# docs/dev/performance.md, "60 frames per second".
+# Per-frame steps and the operand that carries the state (A, B or C), with the
+# power of the step scale where it is not 1: the recompiler scales each by the
+# runtime step scale. Written by tools/rate_sites.py --emit-steps from a
+# GCN_STORE_HIST run; see docs/dev/performance.md, "60 frames per second".
 80020030 A
 80020044 A
 80020058 A
@@ -10,9 +10,21 @@
 800200C0 A
 800201F4 A
 80020210 A
+8002022C A
 80020248 A
 80020F34 A
 800247BC A
+8002B23C A
+8002B2A0 A
+8002B2BC A
+8002B2CC A
+8002B2DC A
+8002B368 A
+8002C8A8 A
+8002D03C A
+8002D050 A
+8002D1D8 A
+8002E718 A
 800300D4 A
 800300E0 A
 800300EC A
@@ -21,9 +33,40 @@
 8003136C A
 8003137C A
 8003138C A
+800313C4 A
+800313D8 A
 80031404 A
 80031414 A
 80031430 A
+8003143C A
+80031D10 A
+80031D28 A
+80031D44 A
+80031D50 A
+80031D6C A
+80031D94 A
+80031DA8 A
+80031DD8 A
+80031DF0 A
+80031E38 A
+80031E4C A
+80031E84 A
+80031E9C A
+80031ED0 A
+80031F00 A
+80031F3C A
+80031F50 A
+80031F84 A
+80031F98 A
+80031FB4 A
+80032068 A
+80032074 A
+800320A4 A
+80032100 A
+8003210C A
+8003213C A
+8003218C A
+80033240 A
 80033288 A
 80033298 A
 800332A8 A
@@ -45,14 +88,36 @@
 80033608 A
 80033638 A
 80033664 A
+8003426C A
+8003427C A
+8003428C A
+800342A0 A
+800342B4 A
+800342C0 A
+800342D0 A
+800342EC A
+800342F8 A
+80036084 A
+80036164 A
+8003617C A
+80036194 A
+800361C4 A
+800361DC A
+800361F4 A
 80039BE4 A
 80039BF4 A
 80039DDC A
 80039E84 A
 80039EF8 A
 80039F10 A
+8003AE28 A
+8003B420 A
+8003B424 A
+8003B450 A
+8003B47C A
 8003B88C A
 8003C24C A
+8003C444 A
 8003DE74 A
 8003ECC0 A
 8004A014 A
@@ -63,6 +128,10 @@
 8004C364 A
 8004D1F8 A
 800540E4 A
+80057288 A
+800572A4 A
+800575E0 A
+800575FC A
 800591D4 A
 80059270 A
 80059754 A
@@ -70,6 +139,18 @@
 8005A7B0 A
 8005A98C A
 8005A99C A
+8005AB44 B
+8005C35C A
+8005C378 B
+8005C394 A
+8005C3B0 A
+8005C504 A
+8005C514 A
+8005C5C8 A
+8005C718 A
+8005C728 A
+8005C848 A
+8005C854 A
 8005D7CC A
 8005E1C8 A
 8005E1D4 A
@@ -81,6 +162,7 @@
 8006D448 A
 80071A04 A
 80071B08 A
+8007329C A
 8007454C A
 800750FC A
 8007C1E0 A
@@ -98,6 +180,7 @@
 8007CBA8 A
 8007CBB8 A
 8007CBC8 A
+8007FF14 A
 80080630 A
 80080CE8 A
 80080D10 A
@@ -119,11 +202,26 @@
 80093AA0 A
 80093AB0 A
 80094F2C A
+8009581C A
+80095828 A
+80095834 A
 80095B30 A
+800967E4 A
+800BAAD8 A
+800BAB14 A
+800BAB20 A
 800BBBA0 A
-800BE728 A
+800C4480 A
+800C44AC A
+800C4660 A
+800C46C8 A
+800C46F4 A
+800C68C0 A
 800C6EA0 A
+800C96B4 A
+800C9710 A
 800CBB04 A
+800CC10C A
 800CCF30 A
 800DEB44 A
 800DF464 A
@@ -132,18 +230,6 @@
 800DF7E4 A
 800E7A5C A
 # Sites read out of the code by hand (recomp/steps_manual.txt):
-# Steps read out of the rider's code by hand, copied into steps.txt by
-# tools/rate_sites.py --emit-steps. Columns: pc, operand letter, power of the step
-# scale (gcn-recomp/docs/diagnostics.md, "Finding a game's per-frame steps"). The
-# rider is a Verlet particle system (fn_80093858; docs/dev/performance.md): the
-# forces added to a particle's accumulator take the square of the step, the
-# per-frame dampings its root, and the speed the game derives from the positions
-# is converted back to its units where it is stored.
-#
-# fn_80093858, the integrator: pos += 0.992^s * acc (the 0.992 at rider+12 is a
-# damping, not a time step), the per-particle lateral damping k at particle+24 as
-# k^s and 1 - k^s, and the centroid's displacement over the step back to a per-frame
-# speed (rider+80..88, its magnitude at +104 and its direction).
 80093898 C 1
 800938B0 C 1
 800938CC C 1
@@ -154,8 +240,6 @@
 80093B90 R -1
 80093BA4 R -1
 80093BB8 R -1
-# fn_800BDFC0, the per-frame damping of the accumulators: the vertical factor at
-# rider+16 and the lateral one at rider+20 (1 - k with the P letter) as their s-th powers.
 800BDFE4 P 1
 800BE0A4 C 1
 800BE0CC A 1
@@ -189,7 +273,6 @@
 800BE490 C 1
 800BE4C0 A 1
 800BE4D0 A 1
-# fn_800BE4E0, the water: buoyancy, the wave slope and the lift, forces on the accumulators.
 800BEB08 A 2
 800BEB14 A 2
 800BEB20 A 2
@@ -207,11 +290,8 @@
 800BF2B8 A 2
 800BF2C4 A 2
 800BF2D0 A 2
-# fn_800BE4E0: the wake emitter's counter accumulates the speed, now in the game's units.
 800BE5FC A 1
-# fn_80091F5C, the rider update: thrust, steering, gravity, the torques (tools/rate_sites.py
-# does not see these, since the accumulators are zeroed each frame), and the lateral drag
-# applied to every particle in a loop.
+800BE728 A 1
 8009249C A 2  # particle 2 acc.x
 800924A8 A 2  # particle 2 acc.y
 800924B4 A 2  # particle 2 acc.z

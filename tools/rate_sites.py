@@ -272,6 +272,18 @@ class Walker:
             def base(r):
                 return self.base_of(g[r]) if r else ('base', 'abs', 0)
 
+            def base_x():
+                """The base of an indexed form, rA + rB: one of them is usually a known
+                base and the other an index computed in the function (a rider number
+                times a record size), and the pair names the address well enough to
+                match the load against the store that follows it."""
+                a, b = base(ra), base(rb)
+                if b[1] == 'abs':
+                    return (a[0], a[1], a[2] + b[2])
+                if a[1] == 'abs':
+                    return (b[0], b[1], b[2] + a[2])
+                return ('base', a[1] + '+' + b[1], a[2] + b[2])
+
             def call():
                 for r in VOLATILE_GPR:
                     g[r] = unk(r)
@@ -354,10 +366,30 @@ class Walker:
                     g[rd] = unk(rd)
                 elif xo10 in (444, 28, 60, 124, 284, 316, 412, 476, 536, 792, 824, 922, 954, 26, 24, 27, 568, 537):
                     g[ra] = unk(ra)  # the logical and shift forms write rA
-                elif xo10 in (151, 215, 407, 663, 695, 727, 759, 983, 183, 247, 439):
-                    pass  # indexed stores
+                elif xo10 in (151, 183, 215, 247, 407, 439):  # stwx stwux stbx stbux sthx sthux
+                    ea = ea_of(base_x(), 0)
+                    self.int_store(fname, pc, ea, g[rd])
+                    if xo10 in (183, 247, 439):
+                        g[ra] = base_x()
+                elif xo10 in (663, 695, 727, 759):  # stfsx stfsux stfdx stfdux
+                    ea = ea_of(base_x(), 0)
+                    self.classify(fname, pc, ea, f[rd], 'f64' if xo10 >= 727 else 'f32')
+                    if xo10 in (695, 759):
+                        g[ra] = base_x()
+                elif xo10 in (983,):
+                    pass  # stfiwx
+                elif xo10 in (23, 55, 87, 119, 279, 311, 343, 375):  # lwzx lwzux lbzx lbzux lhzx lhzux lhax lhaux
+                    ea = ea_of(base_x(), 0)
+                    width = {23: 4, 55: 4, 87: 1, 119: 1, 279: 2, 311: 2, 343: 2, 375: 2}[xo10]
+                    g[rd] = ('memv', ea, 4) if xo10 in (23, 55) else self.load_value(ea, width, 'int')
+                    if xo10 in (55, 119, 311, 375):
+                        g[ra] = base_x()
                 elif xo10 in (535, 567, 599, 631):  # lfsx lfsux lfdx lfdux
-                    f[rd] = ('unk', pc)
+                    dbl = xo10 >= 599
+                    ea = ea_of(base_x(), 0)
+                    f[rd] = self.load_value(ea, 8 if dbl else 4, 'f64' if dbl else 'f32')
+                    if xo10 in (567, 631):
+                        g[ra] = base_x()
                 else:
                     g[rd] = unk(rd)
 
@@ -535,12 +567,18 @@ def classify_state(site_pcs, writers, frames):
 STEP_KINDS = ('+=', '-=', '*=', '/=', '*=k+')
 
 
-def emit_steps(args, sites, hist, frames, classes):
-    """Write a steps.txt: the op of every site that ran in the window, is classed state,
-    lies in the game's code, runs at least --min-rate times a frame (a rarer one is an
-    event, not a rate) and, for an integer step, counts by one and runs at most --int-max
-    times a frame. The hand patches' addresses are skipped, and an op that two
-    sites disagree on is left out."""
+def emit_steps(args, sites, windows):
+    """Write a steps.txt: the op of every site that ran in a window, is classed state in
+    some window it ran in, lies in the game's code, runs at least --min-rate times a
+    frame in some window (a rarer one is an event, not a rate) and, for an integer step,
+    counts by one and runs at most --int-max times a frame there. Each window (a
+    GCN_STORE_HIST run: its counts, length, streaks and classes) is judged on its own, so
+    that a step active in one scene and not another, or active for a stretch of one, is
+    kept. A step on a pooled object (a spray particle's position) looks like a temporary
+    in a scene where the pool turns over fast, since the spawner assigns the field, and
+    like state in a scene where it does not; a real temporary is one in every scene. The
+    hand patches' addresses are skipped, and an op that two sites disagree on is left
+    out."""
     patched = set()
     for path in (args.patches, args.skip):
         if os.path.exists(path):
@@ -557,30 +595,35 @@ def emit_steps(args, sites, hist, frames, classes):
         if not (args.lo <= s['op_pc'] < args.hi):
             skipped['range'] += 1
             continue
-        c = (hist or {}).get(s['pc'], 0)
-        if c == 0:
-            skipped['notrun'] += 1
-            continue
-        if s['pc'] not in classes:
-            skipped['unclassified'] += 1
-            continue
-        if classes[s['pc']][0] != 'state':
-            skipped['temp'] += 1
-            continue
-        if s['width'] == 'int' and frames and c / frames > args.int_max:
-            skipped['intrate'] += 1
-            continue
-        if frames and c / frames < args.min_rate:
-            # A step that runs on an event rather than every frame (a lap counted, a
-            # state advanced, a decay applied on a hit) is the event's size, not a rate,
-            # and halving it loses the event. A step that is active for part of the window
-            # only (the start countdown, 110 frames of 1269) still ran on consecutive
-            # frames, which the histogram's streak tells: keep those.
-            frames_ran = min(c, frames)
-            streak = getattr(args, 'streaks', {}).get(s['pc'], 0)
-            if not (frames_ran >= 8 and streak >= 0.8 * frames_ran):
-                skipped['event'] += 1
+        verdict = None  # the first reason a window gives against it, or 'keep'
+        kept = False
+        for hist, frames, classes, streaks in windows:
+            c = hist.get(s['pc'], 0)
+            if c == 0:
                 continue
+            if s['pc'] not in classes:
+                verdict = verdict or 'unclassified'
+                continue
+            if classes[s['pc']][0] != 'state':
+                verdict = verdict or 'temp'
+                continue
+            if s['width'] == 'int' and frames and c / frames > args.int_max:
+                verdict = verdict or 'intrate'
+                continue
+            if frames and c / frames < args.min_rate:
+                # A step that runs on an event rather than every frame (a lap counted, a
+                # state advanced, a decay applied on a hit) is the event's size, not a
+                # rate, and halving it loses the event. A step that is active for part of
+                # the window only (the start countdown, 110 frames of 1269) still ran on
+                # consecutive frames, which the histogram's streak tells: keep those.
+                frames_ran = min(c, frames)
+                if not (frames_ran >= 8 and streaks.get(s['pc'], 0) >= 0.8 * frames_ran):
+                    verdict = verdict or 'event'
+                    continue
+            kept = True
+        if not kept:
+            skipped[verdict or 'notrun'] += 1
+            continue
         if s['width'] == 'int' and not (s['rate'][0] == 'imm' and abs(s['rate'][1]) == 1):
             # A counter steps by one. A word stepped by four, or by another word, is a
             # cursor or a sum: scaled, the first faulted the GX flush and the second
@@ -643,7 +686,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--gen', default='build/gen')
     ap.add_argument('--dol', default='build/main.dol')
-    ap.add_argument('--hist', help='stderr of a GCN_STORE_HIST run')
+    ap.add_argument('--hist', action='append', help='stderr of a GCN_STORE_HIST run; may be given more than once, one per window, and a step kept by any window is emitted')
     ap.add_argument('--frames', type=float, help="the histogram window's length in frames")
     ap.add_argument('--min', type=float, default=0.0, help='least runs per frame to list (with --hist)')
     ap.add_argument('--kind', help='only these kinds, comma separated (+=,-=,*=,*=k+,/=)')
@@ -653,7 +696,7 @@ def main():
     ap.add_argument('--emit-steps', help='write the selected sites as a steps.txt (needs --hist)')
     ap.add_argument('--lo', type=lambda v: int(v, 16), default=0x80020000, help='lowest pc to emit (hex)')
     ap.add_argument('--hi', type=lambda v: int(v, 16), default=0x80100000, help='pc bound to emit (hex)')
-    ap.add_argument('--int-max', type=float, default=4.0, help='most runs/frame for an integer step to emit')
+    ap.add_argument('--int-max', type=float, default=16.0, help='most runs/frame for an integer step to emit (a per-rider counter runs once per rider, eight in a Championship; a loop index hundreds of times)')
     ap.add_argument('--min-rate', type=float, default=0.9, help='fewest runs/frame for a step to emit (below is an event)')
     ap.add_argument('--patches', default='recomp/patches.txt', help='hand patches, whose addresses are left alone')
     ap.add_argument('--skip', default='recomp/steps_skip.txt', help='addresses never to emit (one per line, # comments)')
@@ -668,14 +711,25 @@ def main():
 
     hist = writers = frames = None
     classes = {}
+    windows = []
     if args.hist:
-        hist, writers, hf, streaks = load_hist(args.hist)
-        frames = args.frames or hf
-        args.streaks = streaks
+        hist, writers, hf = {}, {}, 0
+        for path in args.hist:
+            h, w, f, st = load_hist(path)
+            f = args.frames or f
+            windows.append((h, f, classify_state({s['pc'] for s in sites}, w, f), st))
+            for pc, n in h.items():
+                hist[pc] = hist.get(pc, 0) + n
+            for addr, ws in w.items():
+                d = writers.setdefault(addr, {})
+                for pc, n in ws.items():
+                    d[pc] = d.get(pc, 0) + n
+            hf += f or 0
+        frames = hf  # the listing below rates a site over all the windows together
         classes = classify_state({s['pc'] for s in sites}, writers, frames)
     kinds = set(args.kind.split(',')) if args.kind else None
     if args.emit_steps:
-        emit_steps(args, sites, hist, frames, classes)
+        emit_steps(args, sites, windows)
     n = 0
     for s in sites:
         if kinds and s['kind'] not in kinds:
