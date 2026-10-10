@@ -138,6 +138,24 @@ WR_FPLOG=1 GCN_INPUT='<the Ocean City Harbor route above>' \
   ./build/waverace --hidden --eye --first-person --dump-dir=/tmp/fp --dump-every=100
 ```
 
+`WR_WATCH=<hex>,<hex>,...` (`runtime/pace.cpp`) prints the listed guest words once a game
+frame, as hex and as a float, keyed by the game's frame counter and the presented frame:
+`[ww] f<frame> p<presented> <addr>=<hex>/<float> ...`. It hangs off the mode runner's
+advance of the frame counter, so it needs no renderer and works in a `--headless --fast`
+run, which is the quickest way to watch a value through a race: the camera's target at
+`0x80619378` (three floats, see `vr.md`) tracks the rider. `tools/compare_runs.py` reads
+these lines beside the eye hook's `[fp]` ones, with the frame counter first and a position
+next, and `--reset N` lines two runs up on the N-th scene the counter restarts in.
+
+Two more switches in `pace.cpp` serve the 60 fps work (`performance.md`): `WR_FPS_AT=<presented
+frame>` switches to 60 at that frame instead of at boot, so the route above runs its menus
+at 30 and only the race at 60 (`WR_FPS_AT=3035` lands four frames into the race scene);
+and `WR_SNAP=<dir>:<p>,<p>,...` writes the guest's writable data (`0x80340000-0x80692400`)
+to `<dir>/snap_<p>.bin` at those presented frames. Diffing snapshots from before and after
+an event finds the word that marks it: the race state at `0x806916F8` goes from 1 to 3 at
+the start (written at `0x800CB6D8`), and the start counter at `0x806912AC` counts 100 down
+and is zeroed.
+
 `GCN_GP_STACK=<hex word>` prints the guest call stack the first few times that word is pushed
 into the write-gather pipe, which is how the countdown rig's placement was traced to
 `fn_800D4260`; `GCN_POSMTX_STACK=<z>` does the same for a position matrix load. Ask at the

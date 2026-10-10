@@ -112,10 +112,88 @@ a frame-aligned comparison drifts after the first throttle press.
 **What it would take.** Not a couple of constants: top speed, acceleration, the waves, the AI,
 every timer and the countdown are stepped per frame with constants of their own, scattered
 through the game's logic (`0x8009D000-0x800B6000` in `recomp_005.c` alone reads the clock in
-forty places and the counter in a hundred). A real 60 would be a conversion of the simulation
-to a time step, which is a rewrite of the game's physics rather than a patch. What stays from
-the attempt is the tooling: the pacing switch, the CPU scale, the clock watch and the run
-comparison, which make any such change measurable.
+forty places and the counter in a hundred). The first conclusion was that a real 60 would be a
+conversion of the simulation to a time step, a rewrite of the physics rather than a patch.
+The second pass below found the steps instead.
+
+### Finding the steps (2026-10-10, second pass)
+
+The constants cannot be patched one by one, but the *steps* can be found mechanically: a step
+is a store of a value computed from the old value at the same address (`x += t`, `x *= k`,
+`x = x*k + b`, an integer `x += 1`), which is a shape the recompiled C exposes. The
+pipeline, all of it under `tools/` and `gcn-recomp/docs/diagnostics.md` ("Finding a game's
+per-frame steps"):
+
+1. `tools/rate_sites.py` walks the generated C, decoding each instruction from the encoding
+   in its comment, and follows where every register's value came from within a function. It
+   lists every store of that shape with its rate or factor, literals read out of the DOL so a
+   1/30 or a 0.98 shows as such: 3,062 candidates in the whole game.
+2. A `-DGCN_WATCH` build (the build has to be configured with `-DCMAKE_C_FLAGS=-DGCN_WATCH
+   -DCMAKE_CXX_FLAGS=-DGCN_WATCH`) run with `GCN_STORE_HIST=3031-4300` over the Time Attack
+   race scene of the Ocean City Harbor route (`diagnostics.md`), headless and `--fast`, counts
+   how often each store ran: 748 candidates run in a race. `GCN_STORE_HIST_PCS` with the
+   candidate list adds every writer of every address they wrote, which tells state carried
+   across frames (its only writers are steps) from a temporary assigned afresh each frame:
+   352 state, 304 temporary, 89 unclassified (addresses with more writers than the table
+   keeps, stack temporaries mostly).
+3. `--emit-steps` writes `recomp/steps.txt`: the state sites in the game's own code
+   (`0x80020000-0x80100000`; below is audio and data decoding, above the SDK), running at
+   least 0.9 times a frame, and for an integer step counting by one. The recompiler emits
+   each through the shared runtime's step scale, so the table holds addresses and an operand
+   letter and no game code. `WR_PACE_KEEP=8` leaves them unscaled, and `GCN_STEP_SKIP` /
+   `GCN_STEP_ONLY` take a list of addresses for bisecting.
+
+At 30 the scaled build is bit for bit the unscaled one through a race (the `[ww]` watch of
+the frame counter and the camera target, `WR_WATCH`, agrees line for line), which is the
+regression check for the whole mechanism.
+
+**What the filters are for, each learned from a broken run.** An integer stepped by four
+(`0x80023078`, a cursor in a 128-entry ring) faulted the GX flush when halved; one stepped by
+another word (`0x800F9364`, a sum) stalled the mode runner: hence "counts by one". A site
+that runs on an event rather than every frame -- a lap counted, a state advanced, a decay
+applied on a hit, forty-two of them in the race window at rates from once in the window to
+0.8 a frame -- is the event's size, not a rate, and halving it loses the event: hence the
+0.9. The windows so far cover Time Attack with one rider; the AI, the other courses and the
+menus have their own sites, which a Championship window (the route without its `DOWN`) and
+a longer one will add.
+
+**Where it stands (2026-10-10, end of the second pass).** 109 sites are scaled
+(`recomp/steps.txt`). At 60, switched on at the race, the game clock (`0x806919F0`) and the
+race timer (`0x806199F0`, stepped by 1/30 at `0x80083FD4`) both advance one second per real
+second, where before the pass they ran double. The race state (`0x806916F8`, 1 to 3 at the
+start) is reached at 60 too. Two things are still at double speed, and both are outside what
+the mechanism can reach:
+
+- **The rider's physics is a particle system, not a rate.** `fn_80093858` integrates sixteen
+  particles (52 bytes each: position, then an accumulator that is zeroed after use) with the
+  constraint pass at `0x8009394C-0x80093A50` and the forces added in `fn_800BDFC0` and
+  after. With its position steps halved the rider never moves off the line: the accumulator
+  carries the momentum as well as the forces, so halving the step halves the speed every
+  frame. Found by bisecting the 157 sites of the first list with `GCN_STEP_SKIP`: every group
+  stalled except the one holding those three, and the z step alone (`0x800938D0`) decided it.
+  Unscaled (`recomp/steps_skip.txt`), the rider accelerates to about 2,200 units/s against
+  1,100 at 30: the per-frame physics at twice the frames. The right treatment is the
+  Verlet one -- momentum carried whole, forces scaled by the square of the step, the derived
+  speed (position minus the previous position, the array at `0x80620298`) converted back to
+  the game's units wherever it feeds the thrust and drag curves and the HUD -- and that is a
+  reading of the rider's functions rather than a filter, the one piece of the first pass's
+  "rewrite" that stands.
+- **The countdown still runs at 60.** The start comes at 1.5 s instead of 3.3 s. The counter
+  at `0x806912AC` (100, decremented twice, zeroed) is not it, and nothing in the scaled set
+  is; it is one of the sites the filters leave out (an event-rate site, a temporary, or one
+  of the 79 unclassified), or a read of the retrace count. `GCN_STORE_HIST` over the ten
+  frames around the start, intersected with the candidate list, is the next step.
+
+The things the first pass thought were the obstacle -- the hundred reads of the frame counter
+and forty of the clock -- were not: the counter steps every other frame like any other
+integer and nothing minds, and the clock was one site.
+
+**Driving the race at 60 without driving the menus at 60.** `WR_FPS_AT=<presented frame>`
+switches to 60 mid-run, so the scripted route's frame counts hold through the menus and only
+the race runs at 60; `WR_FPS_AT=3035` on the route above lands four frames into the race
+scene, and a 60 fps run then needs a third of the frames. `compare_runs.py --reset 4` lines
+the two runs up on the race scene (the fourth restart of the frame counter) rather than on
+boot.
 
 **A recording with clock jumps is useless for this.** The first recording was made paced, on
 the Quest's harness, and carried 4,931 catch-up jumps (`jump` lines in `inputs.txt`): the eye

@@ -15,4 +15,4 @@
 80007B3C { uint32_t wr_fields_per_frame(uint32_t); c->r[31] = wr_fields_per_frame(1u); }
 80007B44 { uint32_t wr_fields_per_frame(uint32_t); c->r[31] = wr_fields_per_frame(2u); }
 80006F28 { double wr_frame_dt(double); double v = (double)(float)(c->f[0].d + wr_frame_dt(c->f[31].d)); c->f[0].d = v; c->ps1[0] = v; }
-80006F14 { uint32_t wr_frame_count_step(void); c->r[0] = c->r[3] + wr_frame_count_step(); }
+80006F14 { uint32_t wr_frame_count_step(uint32_t); c->r[0] = c->r[3] + wr_frame_count_step(c->r[3]); }

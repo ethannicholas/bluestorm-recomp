@@ -1,0 +1,8 @@
+# Candidate steps that tools/rate_sites.py --emit-steps leaves out of steps.txt, with why.
+# Hex addresses, one per line; see docs/dev/performance.md, "60 frames per second".
+# The rider's particle integrator (fn_80093858): positions stepped by an accumulator that
+# carries the momentum as well as the forces, so halving the step halves the speed every
+# frame and the rider never moves. Unscaled, he moves at about 1.5x; see the notes.
+8009389C
+800938B4
+800938D0
