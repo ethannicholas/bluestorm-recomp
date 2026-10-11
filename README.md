@@ -117,6 +117,63 @@ current directory.
 There may be some shader compilation stutters during your first playthrough, but the shaders cache
 should take care of this on subsequent runs.
 
+## Playing in VR on a PC
+
+On Windows, `--vr` plays the game on a PC VR headset through OpenXR, using whichever runtime you
+have set as active: SteamVR, Virtual Desktop, Meta Quest Link, or any other that supports OpenGL.
+
+```powershell
+.\build\waverace.exe --vr
+```
+
+Connect the headset and start its PC software first. The game behaves as it does
+[on the Quest](#playing): a flat screen in the menus, stereo 3D during races, and first person on
+the right thumbstick click. The window on the desktop mirrors what the headset shows. The Touch,
+Index and Windows Mixed Reality controllers are all mapped; on Index, Start is a firm press on the
+left trackpad. A gamepad and the keyboard work at the same time as the headset's controllers.
+
+The same [`vr.txt`](#tuning-the-vr-view) settings apply, read from a `vr.txt` in the directory you
+run the game from. To use a runtime other than the active one, point `XR_RUNTIME_JSON` at its
+manifest, for example:
+
+```powershell
+$env:XR_RUNTIME_JSON = 'C:\Program Files (x86)\Steam\steamapps\common\SteamVR\steamxr_win64.json'
+```
+
+## Motion platforms
+
+`--telemetry` sends the jet ski's motion to a motion simulator, in the format of
+[SimRacingStudio](https://www.simracingstudio.com/)'s custom game API: UDP packets to
+`127.0.0.1:33001`, which is where SimRacingStudio listens by default. `--telemetry=host:port` sends
+them somewhere else. SimRacingStudio shows the game as *Wave Race: Blue Storm*.
+
+The motion follows the first-person view from the rider's seat, whichever view you are actually
+playing in, so the platform pitches and rolls with the swell the way that view does.
+
+Nothing the game does should jerk you: the platform eases to rest in the menus and when you
+pause, eases back in when a race starts or you resume, fades across a respawn rather than
+jumping, and every channel is limited in both how far and how fast it can move, a crash
+included. Every channel can be scaled, inverted or limited with a `telemetry.txt` in the
+directory you run the game from (all optional):
+
+```
+pitch_gain 1        # multiply each channel; a negative value inverts it
+roll_gain 1
+yaw_gain 1
+surge_gain 1        # forward acceleration
+sway_gain 1         # sideways acceleration
+heave_gain 1        # vertical acceleration
+fade_s 1            # seconds to ease in and out of rest, and to fade across a respawn
+max_angle 25        # the most pitch, roll or yaw sent, in degrees
+angle_rate 60       #   and how fast they may change, in degrees a second
+max_accel 15        # the most acceleration sent, in m/s^2 (about 1.5 g)
+accel_rate 60       #   and how fast it may change, in m/s^2 a second
+yaw_washout_s 1.5   # yaw is sent as the turn in progress, returning to centre over this
+ski_accel_s 0.15    # seconds over which accelerations are smoothed; higher is gentler
+ski_velocity_s 0.05 # the same for the velocity they are taken from
+log 0               # 1 prints what is sent, twice a second
+```
+
 ## Running on a Quest 3
 
 The Android build and packaging scripts are PowerShell, so these steps are written for a Windows PC;
@@ -258,6 +315,8 @@ Escape quits. Touch controller bindings for the Quest are listed
 | `--dump-dir=DIR --dump-every=N` | Save every Nth frame as a PNG |
 | `--eye` | Show the VR eye view instead of the flat frame (testing) |
 | `--first-person[=x,y,z]` | With `--eye`, view from the rider's seat, optionally at that offset from the ski |
+| `--vr` | Play on a PC VR headset (Windows; see [Playing in VR on a PC](#playing-in-vr-on-a-pc)) |
+| `--telemetry[=host:port]` | Send motion to a motion platform (see [Motion platforms](#motion-platforms)) |
 | `--sample` | Print periodic profiling samples of what the game code is doing |
 | `--log-all` | Verbose hardware logging |
 
@@ -282,6 +341,7 @@ Android. It uses nothing newer than GL 3.3 / ES 3.0, so compatibility layers tha
 | `saves/shaders.bin` | The shader cache. Safe to delete; the next run rebuilds it. |
 | `saves/panic.txt` | Written if the game stops with its own `guest panic:` assertion. |
 | `saves/inputs/` | One directory per run: the controller input it read, with a copy of the memory card as it was. Safe to delete. |
+| `saves/view.txt` | With `--vr`, whether you last chose first person or the chase camera. |
 
 On the Quest all of these are in `/sdcard/Android/data/com.ethannicholas.waverace/files/`, beside the
 disc image.

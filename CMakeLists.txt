@@ -19,9 +19,11 @@ gcn_add_game(
   TABLES ${CMAKE_SOURCE_DIR}/recomp
   FPS 30
   # The game's half of the headset: its hooks (runtime/vr_waverace.cpp), the starting-light
-  # rig detector that starts stereo, and the renderer's eye hook for first person on the ski.
+  # rig detector that starts stereo, the renderer's eye hook for first person on the ski, and
+  # the motion telemetry that follows that eye.
   SOURCES ${CMAKE_SOURCE_DIR}/runtime/vr_waverace.cpp ${CMAKE_SOURCE_DIR}/runtime/start_rig.cpp
           ${CMAKE_SOURCE_DIR}/runtime/first_person.cpp ${CMAKE_SOURCE_DIR}/runtime/pace.cpp
+          ${CMAKE_SOURCE_DIR}/runtime/motion.cpp
   # The headset app and its harness, on an Android build: see build-android.ps1 and
   # package-apk.ps1.
   ANDROID_PACKAGE com.ethannicholas.waverace)

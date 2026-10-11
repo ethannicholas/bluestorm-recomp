@@ -28,6 +28,7 @@
 #include "runtime.h"
 #include "vr_game.h"
 #include "first_person.h"
+#include "motion.h"
 #include "pace.h"
 #include "start_rig.h"
 #include "gx/render_gl.h"
@@ -84,7 +85,7 @@ void config_defaults(VrConfig& c) {
     // Game units to the metre. 100 was a guess and left the racers looking about half the
     // size they should; 50 is where it was judged from inside the headset, which is the
     // only place the question can be answered.
-    c.units_per_metre = 50.0f;
+    c.units_per_metre = wr::kUnitsPerMetre;
     // The chase camera looks down at the ski at this angle; taking it back out of the
     // world in stereo puts the sea level with the room and leaves the viewer's own neck to
     // supply the downward look. With the world level the game's vertical is the room's, so

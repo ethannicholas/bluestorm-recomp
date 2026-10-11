@@ -82,6 +82,82 @@ default and only ever pressed by accident is not worth a setting. The left click
 step, the way `WR_FPS_AT` does. A game with no `wants_stereo` hook now has only `start_in_stereo`. Nothing in `gcn-recomp` names this game: `gcn-recomp/tools/check_generic.py`
 passes, and runs as a hook after every edit here too (`.claude/settings.json`).
 
+## PC VR (2026-10-11)
+
+`waverace.exe --vr` on Windows runs the same frontend on a PC headset through any OpenXR
+runtime that offers OpenGL. The headset frontend was split for it: the core is
+`gcn-recomp/openxr/xr_frontend.cpp`, `gcn-recomp/android/openxr_main.cpp` is now only the
+Android shell (EGL, the glue, logcat, boot order), and `gcn-recomp/openxr/xr_desktop.cpp` is
+the Windows one, on the SDL window's WGL context with the window as a mirror. What had to differ
+for desktop GL (an sRGB swapchain, an eye target of its own, a resolving grab) is in
+`gcn-recomp/docs/graphics.md`, "PC VR". Other changes in the split: the Index, WMR and
+`khr/simple_controller` profiles were added beside Touch, a gamepad and the keyboard merge with
+the controllers, and the session's EXITING and LOSS_PENDING now end the app (on the Quest the
+activity is destroyed then anyway).
+
+**Status: runs on a Quest 3 over Meta Quest Link** (runtime "Oculus 1.208.0", picked for the
+one launch with `XR_RUNTIME_JSON` pointing at `oculus_openxr_64.json`). On the first Windows
+machine the active runtime was NVIDIA CloudXR (KRVR, for a Vision Pro), whose service was not
+running, so `--vr` stopped at `xrCreateInstance` with -51. Virtual Desktop and SteamVR were
+installed and answered with no headset connected (`xrGetSystem` -35).
+
+The first run on Link stopped before the session: **Meta's runtime asks for OpenGL 4.0**
+(`xrGetOpenGLGraphicsRequirementsKHR`), and the window's context was the 3.3 core the renderer
+asks for, which the NVIDIA driver hands back exactly rather than its newest. The desktop now asks
+for 4.6 down to 4.0 core first and falls back to 3.3 (`gcn-recomp/runtime/main.cpp`); flat mode
+renders the same on 4.6. After that the session ran: the swapchain took `GL_SRGB8_ALPHA8`
+(0x8c43), quad 1548x1161, eyes 2889x3180 with 4x MSAA, Touch on both hands, the compositor at
+72-73 Hz against the game's 30, the switch to stereo at the race and back to theater after it,
+and the stereo render thread at 2.1-2.7 ms per frame on an RTX 4080 SUPER.
+
+What the first play on Link turned up:
+
+- **No sound, except while Meta's menu was open.** The game opened SDL's default device,
+  which on that machine is not the headset. Meta's runtime plays only its own endpoint into
+  the headset, and mirrors the desktop's sound while its menu is up, which is when the music
+  appeared. The desktop shell now enables `XR_OCULUS_audio_device_guid` where the runtime has
+  it, turns the WASAPI ID it gives into the device's name, and opens that ("Headphones (Oculus
+  Virtual Audio Device)"). Other runtimes keep the default device.
+- **Neither stick click did anything.** `GCN_XR_INPUT_LOG=1` showed the menu button and
+  both stick clicks *inactive* (bound to nothing present) the whole run, while A, B, X and Y
+  went active as soon as the controllers woke. (`xrEnumerateBoundSourcesForAction` is no
+  help on Meta's runtime: it reports A, which works, as bound to nothing too.) Disabling the
+  machine's implicit API layers one at a time with their manifests' `disable_environment`
+  variables found the cause: **KRVR's `XR_APILAYER_KRVR_layer`**, "controller input ... for
+  Apple Vision Pro", which loads into every app whatever the runtime. The motion
+  compensation, KRVR telemetry and Virtual Desktop layers do not touch them. The desktop shell
+  now sets `DISABLE_KRVR_LAYER=1` for itself unless the runtime about to load is KRVR's.
+- **"Too dark."** Measured with Meta's `OculusMirror.exe` against the game's own window, both
+  captured with `PrintWindow`: with the sRGB swapchain the compositor's output matches the
+  game's frame (sky 18.6 vs 17.1, water 128.6 vs 128.3 mean luma). So the swapchain is not
+  decoded twice. Played side by side with `GCN_XR_SRGB=0` (a linear `GL_RGBA8` swapchain,
+  which the compositor encodes again), the sRGB one is right: it matches what emulators show.
+  The belief overturned is the other way round: **the Quest build has been too bright all
+  along.** It gives the compositor `GL_RGBA8`, which a Quest also takes as linear. Fixing it
+  there is not just a format change. The eyes draw straight into the swapchain images on GL ES,
+  where writes to an sRGB image are encoded unless `EXT_sRGB_write_control` turns that off,
+  and ES 3.0 refuses `glCopyTexSubImage` between attachments and textures of different
+  encodings, which the grab path does. So it needs either an eye target of its own, as on
+  desktop, or sRGB grab textures read without decoding (`EXT_texture_sRGB_decode`), measured
+  on the headset.
+
+- **The title screen's background black, START alone on it**, in every run after the first.
+  Ruled out one at a time, with Meta's mirror and the window captured: the shader cache (a
+  fresh one was still black), the headset audio change (black without it; flat on the
+  headset's device was fine), the swapchain format (black in both), the panel's scale (flat
+  at 3 was fine), the first-person hides (never applied to the flat path), and GL errors
+  (`GCN_GL_DEBUG=1` reported none). The cause was the frontend: a game frame taken on a
+  display frame the runtime says not to render (`shouldRender` false, which Meta's runtime
+  says while the headset is off the viewer's head) was dropped unexecuted, with the EFB
+  copies in it. The title's background is made once from such a copy as the screen opens and
+  sampled from then on. The first run worked because the headset was already on when the
+  title opened; later ones were launched from the desk. Such a frame is now executed into the
+  default framebuffer. The belief that went first: that it was a recent change of mine, then
+  that the NVIDIA driver update in between was to blame.
+
+Still to check by eye: MSAA with the grab path, and Virtual Desktop and SteamVR. The Android app, harness and benchmark
+were rebuilt with NDK r27c after the split and linked, but have not been run on the Quest.
+
 ## Theater and stereo
 
 The app presents the game two ways and switches between them automatically:

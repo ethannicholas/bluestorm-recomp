@@ -7,7 +7,8 @@ code was first written for this game. Fix shared things there: commit in the sub
 commit the new pointer here (and in prime-recomp). Only what is specific to this game lives in
 this repository: `analysis/`, the `recomp/*.txt` tables, the game's answers to the headset
 frontends in `runtime/` (`vr_waverace.cpp`, the `vr::GameHooks`; `start_rig.cpp`, what starts
-stereo; `first_person.cpp`, the renderer's eye hook), the two Android build scripts, and
+stereo; `first_person.cpp`, the renderer's eye and frame hooks; `motion.cpp`, the motion
+telemetry that follows that eye), the two Android build scripts, and
 `docs/dev/`. The headset frontends themselves (`gcn-recomp/android/`) are shared since
 2026-10-10; a decision that is this game's goes in a hook, not in them.
 
@@ -31,10 +32,12 @@ file for its area:
   `gcn-recomp/docs/diagnostics.md`.
 - `docs/dev/graphics.md` — GL profile requirements, what GL ES cannot do, the shader cache.
 - `docs/dev/audio.md` — the mix, AAudio on the headset, and how to test audio over adb.
+- `docs/dev/telemetry.md` — the motion platform: what drives it (the first-person eye), the
+  game's 40-unit metre, the signs checked on a turn, and testing without moving the rig.
 - `docs/dev/vr.md` — the OpenXR app, the theater/stereo switch and the guest addresses behind
   it, splitting a frame for the eyes, the HUD frame, levelling the sea, tracing the compositor,
-  and the one-launch-per-process rule. Read the relevant section before touching
-  `runtime/vr_waverace.cpp`, `gcn-recomp/android/openxr_main.cpp`, `gcn-recomp/android/egl_main.cpp`
+  the one-launch-per-process rule, and PC VR. Read the relevant section before touching
+  `runtime/vr_waverace.cpp`, `gcn-recomp/openxr/`, `gcn-recomp/android/openxr_main.cpp`, `gcn-recomp/android/egl_main.cpp`
   or the eye paths in `gcn-recomp/runtime/gx/render_gl.cpp`.
 
 Several of those sections record an answer that turned out to be wrong and why. Keep that habit:

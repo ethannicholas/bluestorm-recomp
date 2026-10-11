@@ -5,6 +5,7 @@
 // It is installed from a static initializer, so linking this file is what turns the
 // renderer's first person on for this game.
 #include "first_person.h"
+#include "motion.h"
 #include "pace.h"
 #include "gx/render_gl.h"
 #include <cmath>
@@ -28,7 +29,10 @@ float g_fp_anchor[3] = {0.0f, 57.5f, -46.5f};
 struct FpEye { bool valid; float pos[3]; float yaw, pitch, roll; };
 FpEye g_fp_eye;
 float g_fp_height_s = 0.0f, g_fp_yaw_s = 0.1f, g_fp_tilt = 0.6f, g_fp_tilt_s = 0.15f;
-uint32_t g_last_frame = ~0u;
+// What the frame hook found in the batch the renderer is about to draw, for the eye hook
+// that follows it: whether there was a racer, and the eye and the draws to hide if so.
+bool g_have_eye = false;
+gx::EyeOverride g_eye;
 
 void mat4_identity(float* m) {
     memset(m, 0, 16 * sizeof(float));
@@ -86,8 +90,7 @@ static bool mtx3_inverse(const float* m, float r[9]) {
     return true;
 }
 
-// Sets out.view_to_eye, the view-to-eye transform, for a rider standing on a hull placed by
-// `hm`, given the world matrix `wm`.
+// The eye of a rider standing on a hull placed by `hm`, given the world matrix `wm`.
 //
 // Two attempts bracket what is wanted here. Fixed rigidly to the hull, every slap of a
 // wave went straight into the viewer's head, at the game's 30 Hz. Levelled outright, with
@@ -108,10 +111,12 @@ static bool mtx3_inverse(const float* m, float r[9]) {
 //
 // fp_height_s eases the height as well, for anyone who wants it; it is 0 by default,
 // for the reason above.
-static void first_person_eye(const float* wm, const float* hm, const float anchor[3], gx::EyeOverride& out) {
-    mat4_identity(out.view_to_eye);
+//
+// first_person_step moves the eye on by one game frame; first_person_view turns where it
+// now is into the transforms the renderer takes.
+static bool first_person_step(const float* wm, const float* hm, const float anchor[3]) {
     float wi[9];
-    if (!mtx3_inverse(wm, wi)) return;
+    if (!mtx3_inverse(wm, wi)) return false;
     auto to_world_dir = [&](float x, float y, float z, float out[3]) {
         for (int r = 0; r < 3; r++) out[r] = wi[r * 3] * x + wi[r * 3 + 1] * y + wi[r * 3 + 2] * z;
     };
@@ -154,6 +159,11 @@ static void first_person_eye(const float* wm, const float* hm, const float ancho
         e.pitch += (target_pitch - e.pitch) * rate(g_fp_tilt_s);
         e.roll += (target_roll - e.roll) * rate(g_fp_tilt_s);
     }
+    return true;
+}
+
+static void first_person_view(const float* wm, gx::EyeOverride& out) {
+    const FpEye& e = g_fp_eye;
     // The eye's axes in the world: heading, then the scaled pitch, then the scaled roll
     // about the forward axis. Then into view space, where the vertices are.
     const float sy = sinf(e.yaw), cy = cosf(e.yaw);
@@ -203,15 +213,10 @@ static void first_person_eye(const float* wm, const float* hm, const float ancho
     C[15] = 1.0f;
 }
 
-// The eye hook: finds the racer in `b`, and fills in the eye and the draws to hide.
-// `skip` marks the off-screen passes, as the renderer leaves them.
-static bool eye_hook(const Batch& b, const std::vector<uint8_t>& skip, uint32_t frame, gx::EyeOverride& out) {
-    out.hide.clear();
-    mat4_identity(out.hud_to_eye);
-    // A gap in the frames means first person was off in between: start the eye where the
-    // rider is rather than easing in from wherever it was.
-    if (frame != g_last_frame + 1) g_fp_eye.valid = false;
-    g_last_frame = frame;
+// Finds the racer in `b`: the world's matrix and the hull's, and, given `hide`, which draws
+// are the rider. `skip` marks the off-screen passes, as the renderer leaves them.
+static bool find_racer(const Batch& b, const std::vector<uint8_t>& skip, uint32_t frame,
+                       std::vector<uint8_t>* hide, const float** world_m, const float** hull_m) {
     static const bool fplog = getenv("WR_FPLOG") != nullptr;
     // The distinct matrices the main scene's world draws go through, with how many
     // vertices each carries.
@@ -322,9 +327,12 @@ static bool eye_hook(const Batch& b, const std::vector<uint8_t>& skip, uint32_t 
     if (hull == UINT32_MAX) {
         if (fplog) fprintf(stderr, "[fp] f%u no racer: %zu matrices, world has %u verts, %zu racer textures\n",
                            frame, groups.size(), groups[world].verts, racer_tex.size());
-        g_fp_eye.valid = false;
         return false;
     }
+    *world_m = groups[world].m;
+    *hull_m = groups[hull].m;
+    if (!hide) return true;
+    std::vector<uint8_t>& hidden_draws = *hide;
     // Which draws are the rider. Two kinds, and the first version only knew one:
     //
     // - His body is skinned by the game on the CPU and drawn through the *world* matrix,
@@ -353,7 +361,7 @@ static bool eye_hook(const Batch& b, const std::vector<uint8_t>& skip, uint32_t 
         for (uint32_t x : set) if (x == id) return true;
         return false;
     };
-    out.hide.assign(b.cmds.size(), 0);
+    hidden_draws.assign(b.cmds.size(), 0);
     // The body starts from the draws wearing something the reflection pass drew, and then
     // takes in every nearby world draw that shares a texture with what it has so far,
     // until nothing more joins. The second step is not optional: a few of the body's
@@ -368,7 +376,7 @@ static bool eye_hook(const Batch& b, const std::vector<uint8_t>& skip, uint32_t 
         if (group_of[i] == world && near_hull(b.cmds[i])) near[i] = 1;
     auto take = [&](size_t i) {
         const PixelState& st = b.states[b.cmds[i].state];
-        out.hide[i] = 1;
+        hidden_draws[i] = 1;
         body_draws++;
         for (int t = 0; t < 8; t++)
             if (st.tex_id[t] && !st.tex_is_efb[t] && !in_set(body_tex, st.tex_id[t])) body_tex.push_back(st.tex_id[t]);
@@ -382,7 +390,7 @@ static bool eye_hook(const Batch& b, const std::vector<uint8_t>& skip, uint32_t 
     for (bool grew = true; grew;) {
         grew = false;
         for (size_t i = 0; i < b.cmds.size(); i++) {
-            if (!near[i] || out.hide[i]) continue;
+            if (!near[i] || hidden_draws[i]) continue;
             const PixelState& st = b.states[b.cmds[i].state];
             for (int t = 0; t < 8; t++)
                 if (st.tex_id[t] && !st.tex_is_efb[t] && in_set(body_tex, st.tex_id[t])) {
@@ -418,9 +426,8 @@ static bool eye_hook(const Batch& b, const std::vector<uint8_t>& skip, uint32_t 
     int hidden = body_draws;
     for (size_t i = 0; i < b.cmds.size(); i++) {
         const uint32_t k = group_of[i];
-        if (k != UINT32_MAX && rider_piece[k]) { out.hide[i] = 1; hidden++; }
+        if (k != UINT32_MAX && rider_piece[k]) { hidden_draws[i] = 1; hidden++; }
     }
-    first_person_eye(groups[world].m, hm, g_fp_anchor, out);
     if (fplog) {
         for (size_t k = 0; k < groups.size(); k++) {
             const Group& g = groups[k];
@@ -442,9 +449,45 @@ static bool eye_hook(const Batch& b, const std::vector<uint8_t>& skip, uint32_t 
     return true;
 }
 
+// The frame hook: every frame the renderer is given, whatever the view. The eye is moved
+// on here rather than in the eye hook so that it follows the ski through every frame for
+// as long as anything wants it -- the eye itself, in first person, or the motion telemetry
+// (motion.cpp), which follows it in any view. Whenever neither does, or there is no ski,
+// it lapses, and starts again where the rider is rather than easing in from wherever it
+// was.
+static void frame_hook(const Batch& b, const std::vector<uint8_t>& skip) {
+    static uint32_t frame;
+    frame++;
+    const bool fp = gx::render_first_person();
+    const bool motion = wr::motion_enabled();
+    g_have_eye = false;
+    const float *wm = nullptr, *hm = nullptr;
+    if ((fp || motion) && find_racer(b, skip, frame, fp ? &g_eye.hide : nullptr, &wm, &hm) &&
+        first_person_step(wm, hm, g_fp_anchor)) {
+        g_have_eye = true;
+        if (fp) first_person_view(wm, g_eye);
+    } else {
+        g_fp_eye.valid = false;
+    }
+    if (motion) {
+        const FpEye& e = g_fp_eye;
+        wr::motion_frame({e.valid, {e.pos[0], e.pos[1], e.pos[2]}, e.yaw, e.pitch * g_fp_tilt, e.roll * g_fp_tilt});
+    }
+}
+
+// The eye hook: what the frame hook just found in this same batch.
+static bool eye_hook(const Batch&, const std::vector<uint8_t>&, uint32_t, gx::EyeOverride& out) {
+    if (!g_have_eye) return false;
+    memcpy(out.view_to_eye, g_eye.view_to_eye, sizeof(out.view_to_eye));
+    memcpy(out.hud_to_eye, g_eye.hud_to_eye, sizeof(out.hud_to_eye));
+    out.hide.swap(g_eye.hide);
+    return true;
+}
+
 const bool s_installed = [] {
     if (const char* a = getenv("WR_FP_ANCHOR")) sscanf(a, "%f,%f,%f", &g_fp_anchor[0], &g_fp_anchor[1], &g_fp_anchor[2]);
     render_set_eye_hook(eye_hook);
+    render_set_frame_hook(frame_hook);
     return true;
 }();
 
