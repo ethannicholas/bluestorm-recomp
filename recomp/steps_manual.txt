@@ -362,3 +362,13 @@
 # the pad byte), only the body's lean pose and two readers in the camera and AI, so at
 # 60 the rider leaned into a turn twice as fast; the clamped step takes alternate frames.
 8009496C A
+# fn_80085624 and fn_80086D24, the lap timing, once a frame per rider: the race clock the
+# HUD draws is the rider-state record's millisecond count at +312 of its +32 block
+# (0x80619A10 for rider 0) and the lap's at +400 (0x80619A68), each stepped by 33 a frame
+# and capped (9'59"999 in a race, 4'59"999 in the other mode). The emitter leaves integer
+# steps that do not count by one, and the float timer beside them (0x806199F0, +1/30 at
+# 0x80083FD4) was taken for the clock; at 60 the HUD's time ran double (the seventh pass).
+800857D4 A
+800857F4 A
+80086DF0 A
+80086E10 A

@@ -747,3 +747,22 @@ the two hulls rolled alike (wrong particle pairs). That `+4238` marks the player
 nothing in these runs). The sixth pass's bisection of the rider's step groups could not
 have found this: every group was scaled right for a single pass, and the error was in how
 many passes there were.
+
+### The HUD's race clock (2026-10-11)
+
+The user asked why this had not been read off the harness's own frames, and it should have
+been: `--eye --dump-every=30` with `GCN_DUMP_RANGE` over the race at both rates gives the
+clock as drawn, and at the same race time (3.97 s and 5.97 s after the reset) the 30 fps
+frames read 0'00"924 and 0'02"904 and the 60 fps frames 0'01"947 and 0'05"907. Exactly
+double from the launch, with the current build. The float race timer the fourth pass
+watched (`0x806199F0`, +1/30 a frame at `0x80083FD4`, in the table) was never what the HUD
+draws: it is rider 0's +280 of the 828-byte rider-state record at `0x806198B8`, and the
+clock the HUD draws is a millisecond count beside it, +312 of the record's +32 block
+(`0x80619A10`), stepped by 33 a frame in the lap timing `fn_80085624` (`0x800857D4`; the
+lap's own count at +400, `0x800857F4`) and capped at 9'59"999, with a 4'59"999 pair in
+`fn_80086D24` for the other mode. A step of 33 is one the emitter leaves alone (it keeps
+integer steps to those that count by one), and the integer search in the sixth pass
+compared counters that step by one, so it did not see these. The four sites take alternate
+frames at 60 (`recomp/steps_manual.txt`). Found by diffing the rider-state record between
+two 30 fps snapshots fifteen frames apart (a word that gains 495) and against a 60 fps
+snapshot at the same race time (the same word at twice the value).
