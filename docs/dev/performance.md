@@ -766,3 +766,33 @@ compared counters that step by one, so it did not see these. The four sites take
 frames at 60 (`recomp/steps_manual.txt`). Found by diffing the rider-state record between
 two 30 fps snapshots fifteen frames apart (a word that gains 495) and against a 60 fps
 snapshot at the same race time (the same word at twice the value).
+Verified on the same frame dumps with the fix: at 3.98 s and 5.98 s the 60 fps clock reads
+0'00"957 and 0'02"937 against 30's 0'00"924 and 0'02"904 at 3.97 s and 5.97 s, one frame's
+33 ms apart, which is the route's one-frame-earlier launch at 60. The starting countdown
+on the gantry board was already right at both rates (3 at 1.5 s, 3-2 at 2.0 s, 3-2-1 at
+2.5 s, go at 3.5 s).
+
+### The title sequence (2026-10-11)
+
+The logo and title screens ran at double speed at 60, every part of them, and the reason
+was not a missing table entry. Harness frame dumps of the sequence (`--eye --dump-every=10`
+over presented frames 200-700 from boot, with `WR_FPS=60` and without) are byte-identical
+frame for frame at the two rates: nothing on the title was halved or gated, although the
+title's water simulation (`fn_80013830`) has been gated to alternate frames since the fifth
+pass. The step clock the gating keys on, `step_frame()`, was called from the mode runner's
+advance of the game's frame counter (`0x80006F14`), and the logo and title screens never
+reach the mode runner: on them `gcn_step_int` saw the same frame number forever and
+answered 1 every time, so every integer step and every gated call ran every frame. The
+call now sits in `wr_fields_per_frame`, the hook in `fn_80007A94` at the retrace wait,
+which ends every frame the game presents (`runtime/pace.cpp`); a rate switch asked for
+from the headset is applied there too, so the thumbstick toggle now works on the title.
+
+The sequence's own steps, from a store histogram over presented frames 250-600 (the
+emitter's earlier windows all began in the menus): the title-side frame `fn_800129E8`
+steps the mode's frame counter (`0x806910AC`, which every logo and title handler reads for
+its timing) and six texture-scroll phases (`0x80691094`-`0x806910A8`, each wrapped by a
+mask); the handlers `fn_8001400C` and `fn_80014760` step the fade level `0x806910AE` by 8
+a frame. The emitter leaves integer steps that do not count by one, so the scrolls and the
+fades are in `recomp/steps_manual.txt` by hand; all take alternate frames at 60. The SDK's
+counters in the same window (the retrace count at `0x80114E4C`, the scheduler's at
+`0x8010E55C`) are left alone, as before.

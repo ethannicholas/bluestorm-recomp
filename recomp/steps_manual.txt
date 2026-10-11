@@ -372,3 +372,21 @@
 800857F4 A
 80086DF0 A
 80086E10 A
+# The logo and title sequence (2026-10-11, a histogram over presented frames 250-600 from
+# boot, which no earlier window covered): fn_800129E8 is the title-side frame, which steps
+# the mode's frame counter (0x806910AC, read by every logo and title handler for its
+# timing) and six texture-scroll phases (0x80691094..0x806910A8, wrapped by a mask); the
+# handlers fn_8001400C and fn_80014760 step the fade level 0x806910AE by 8 a frame, and
+# fn_80012CFC scrolls five texture phases at 0x8039946C by 64 a frame.
+80012AA8 A
+80012EA8 A
+80012A40 A
+80012A54 A
+80012A68 A
+80012A6C A
+80012A84 A
+80012A94 A
+800140F4 A
+80014120 A
+80014894 A
+800148C8 A

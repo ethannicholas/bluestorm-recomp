@@ -125,7 +125,7 @@ int g_keep = 0;
 // the race at 60; a 60 fps run that goes wrong is bisected many times faster that way.
 uint32_t g_fps_at = 0;
 // A switch asked for from another thread (the headset's left thumbstick click), applied at
-// the next frame step so that the rate only ever changes between frames, on the guest thread.
+// the next frame's end so that the rate only ever changes between frames, on the guest thread.
 std::atomic<int> g_fps_request{0};
 
 const bool installed = [] {
@@ -150,20 +150,30 @@ void toggle_fps() { request_fps(g_fps == 60 ? 30 : 60); }
 float frame_dt() { return 1.0f / (float)g_fps; }
 }  // namespace wr
 
-extern "C" uint32_t wr_fields_per_frame(uint32_t game) { return g_fps == 60 && !(g_keep & 4) ? 0u : game; }
-extern "C" double wr_frame_dt(double game) { return g_fps == 60 && !(g_keep & 2) ? game * 0.5 : game; }
-// Called once a game frame, from the mode runner's advance of the frame counter, with the
-// counter's value before the advance. This is where the step scale learns that a frame has
-// passed, and the counter itself steps like any other integer: every other frame at 60.
-extern "C" uint32_t gcn_step_int(uint32_t pc, double p);
-extern "C" uint32_t wr_frame_count_step(uint32_t frame) {
-    watch_print(frame);
+// Called once a frame from fn_80007A94, the frame's end, at the retrace wait: every frame
+// the game presents passes here, the logo and title screens' as much as a race's. This is
+// where the step scale learns that a frame has passed and where a change of rate is
+// applied. It used to be the mode runner's advance of the frame counter (below), which
+// the logo and title screens never reach: there the step clock stood still, so nothing was
+// gated or halved and the whole title sequence ran at double speed, the title's water
+// included, patches and tables notwithstanding (docs/dev/performance.md, "The title
+// sequence").
+extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
     if (g_fps_at && gx::g_frames_submitted.load(std::memory_order_relaxed) >= g_fps_at) {
         g_fps_at = 0;
         wr::set_fps(60);
     }
     if (int r = g_fps_request.exchange(0, std::memory_order_relaxed)) wr::set_fps(r);
     step_frame();
+    return g_fps == 60 && !(g_keep & 4) ? 0u : game;
+}
+extern "C" double wr_frame_dt(double game) { return g_fps == 60 && !(g_keep & 2) ? game * 0.5 : game; }
+// Called once a game frame in play, from the mode runner's advance of the frame counter,
+// with the counter's value before the advance. The counter steps like any other integer:
+// every other frame at 60.
+extern "C" uint32_t gcn_step_int(uint32_t pc, double p);
+extern "C" uint32_t wr_frame_count_step(uint32_t frame) {
+    watch_print(frame);
     return g_fps == 60 && !(g_keep & 1) ? gcn_step_int(0x80006F14u, 1.0) : 1u;
 }
 
