@@ -94,6 +94,22 @@ for pitch, roll, surge and sway and 2 for heave (`metadata.db`, read as raw byte
 like degrees and m/s^2. Accelerations are therefore sent in m/s^2, not g. If that is wrong, or a
 sign is backwards, `telemetry.txt`'s gains fix it without a rebuild.
 
+## On the rig (2026-10-11)
+
+First, flat with the rig off, to SimRacingStudio's port: SRS picked the game up from the v102
+packet. That run's start showed four discontinuities in its first seconds, and between them a
+heading of -25 degrees (the limit) at 3 km/h and a surge of +14 m/s^2 at 16 km/h, before
+the speed fell back to zero. That would be a twist and a shove on the start line. Roll, yaw
+and sway also reached their limits often in that run.
+
+Then a whole championship in the headset (`--vr --telemetry`) on the rig, with the default
+`telemetry.txt` values: "no weird jerks at all". Its log, 1,407 samples over six races, has
+no heading beyond 10 degrees below 10 km/h, and yaw and roll never at their limits; sway
+reached 15 m/s^2 in 23 samples. So the start in the flat run was not repeated. What caused
+it is open. A guess not yet checked: that run passed through the attract demo before the
+race, so the racer was found in the demo and lost and found again around it. If it comes
+back, record a start (`saves/inputs`) and replay it to a listener on another port.
+
 ## Testing without moving the rig
 
 SimRacingStudio holds UDP 33001 while it runs, and a packet it accepts may move the platform.
