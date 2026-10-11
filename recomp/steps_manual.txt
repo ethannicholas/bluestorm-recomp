@@ -303,3 +303,6 @@
 80031F84 A 1
 80031F98 A 1
 80031FB4 A 1
+# fn_800BAA58: a per-particle byte at +3 fades by 4 a frame until it is spent (eight a
+# frame in Dolphin Park); the emitter leaves integer steps that do not count by one.
+800BAAEC A 1

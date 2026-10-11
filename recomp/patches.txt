@@ -30,3 +30,9 @@
 800147A0 { if (gcn_step_int(0x800147A0u, 1)) { c->lr = 0x800147A4u; fn_80013830(c); } }
 80014D64 { if (gcn_step_int(0x80014D64u, 1)) { c->lr = 0x80014D68u; fn_80013830(c); } }
 80015244 { if (gcn_step_int(0x80015244u, 1)) { c->lr = 0x80015248u; fn_80013830(c); } }
+# The spray (docs/dev/performance.md, fifth pass): fn_8002F478 spawns each rider's spray
+# particles at the hull once a frame, and the particles then live a count of frames. At
+# 60 that is twice the particles a second, and the water near the field washes white; at
+# 60 the spawner runs on every other frame.
+800BBC08 { if (gcn_step_int(0x800BBC08u, 1)) { c->lr = 0x800BBC0Cu; fn_8002F478(c); } }
+800BBD9C { if (gcn_step_int(0x800BBD9Cu, 1)) { c->lr = 0x800BBDA0u; fn_8002F478(c); } }

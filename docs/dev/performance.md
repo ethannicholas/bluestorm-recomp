@@ -411,15 +411,25 @@ at double speed; the wake's white streaks still shooting out ahead; steering abo
 sensitive; and, lower down, the title and menus at double speed (the menu repeat makes a
 double move easy) and the flyover camera the same.
 
-**The streaks are the spray particles.** `fn_8002FABC` moves 58 particles a frame in a race
-(nine on the title screen) by their velocities, four words each; the velocities' dampings
-were in the table but the moves were not, because a byte-copy loop at `0x80003430`, the
-respawn's memcpy, also writes every particle and the histogram took the moves for
-temporaries. At 60 the particles flew at full per-frame speed with half the decay. The Quest
-harness shows it at the Dolphin Park start, where eight riders' spray washes the whole water
-white at frame 2700. The four moves are in `recomp/steps_manual.txt`. The same
-misclassification will hide any step on an object that is reset by memcpy when it spawns;
-the fix in the tool would be to ignore byte stores when classing writers, not done yet.
+**The white wash was the spray's spawn rate.** The Dolphin Park start at 60, with the
+scripted rider waiting on the grid while eight riders launch, washed the water near the
+camera white from frame 2700 to 3000 and was clear at 30. In order, what did not fix it:
+scaling the spray particles' moves (`fn_8002FABC`, classed temporaries because a byte-copy
+loop at `0x80003430` also writes them), gating the water simulation, scaling the wake
+emitters' velocity terms (`fn_80030E2C`), and skip-bisecting every effect range in the
+table. The draw log said why: `GCN_DRAW_SKIP` over the first half of the draws left a grey
+hole where the water had been, and `GCN_DRAWLOG_VERBOSE` at both rates found every draw's
+TEV state, textures and first vertex colours identical, so no draw was drawn differently,
+only more of something was there. `GCN_WATCH_ADDR` on a word of one of the seven groups of
+36 words that moved twice as far at 60 in a snapshot diff named the writers: the moves,
+the copy that compacts the particle list after each frame (so the words at fixed addresses
+are different particles over time, and that diff said less than it seemed to), and the
+spawner `fn_8002F478`, called once a frame per rider from the effects function at
+`0x800BBC08` and `0x800BBD9C` to place new particles at the hull. Twice the spawns a
+second with the same life in frames is twice the spray; `patches.txt` runs the spawner on
+every other frame at 60, and the start is clear. The moves and the wake emitters' terms
+stay in the manual table: they are right in themselves, and the dampings beside them were
+already scaled.
 
 **The feet are a half-applied solver.** `fn_8005DC1C` runs the rider's body as a chain of
 nodes: each is pulled along a direction by a spring term and snapped to its anchor in the
@@ -446,7 +456,7 @@ torque in `fn_80091F5C` and how the lean that builds under it is damped. The two
 bytes a byte-for-byte diff of the data region turned up were coincidences: the pad buffers
 live outside the snapshot's range, in the heap.
 
-**The wake emitters.** `fn_80030E2C` keeps nine 40-byte slots, one per rider: a position,
+**The wake emitters, unverified.** `fn_80030E2C` keeps nine 40-byte slots, one per rider: a position,
 a velocity and an age. The position step was in the table and the age counts down; the
 velocity's dozen per-frame terms (drag against itself, lift, a gravity that grows with the
 age) were classed temporaries, again because the respawn rewrites the slot, so at 60 the
@@ -486,3 +496,11 @@ menu repeat timer is among the rest and not yet picked out. The camera's springs
 (`fn_80059084`: a velocity damped and driven, a position stepped by it) have only the
 position step in the table, the velocity's updates having been classed temporaries, which
 is why the camera moves differently; the Verlet treatment the rider got applies.
+
+**Still open after this pass.** The dolphins still run double: the creature mover
+`fn_8006DFA8` and its damping are scaled, the animation player runs on alternate frames
+inside the water update, and the only Dolphin-Park-only integer step left (`fn_800BAA58`, a
+fade by four) is scaled, so what moves them is something not yet named; a snapshot pair
+across the same seconds at both rates, outside the particle pools, is the next search. The
+water's lighting differs at 60 (the reflections define the surface less), which the gated
+simulation may itself cause. The steering, the HUD's time and km/h as before.
