@@ -165,7 +165,9 @@ Two more switches in `pace.cpp` serve the 60 fps work (`performance.md`): `WR_FP
 frame>` switches to 60 at that frame instead of at boot, so the route above runs its menus
 at 30 and only the race at 60 (`WR_FPS_AT=3035` lands four frames into the race scene);
 and `WR_SNAP=<dir>:<p>,<p>,...` writes the guest's writable data (`0x80340000-0x80692400`)
-to `<dir>/snap_<p>.bin` at those presented frames. Diffing snapshots from before and after
+to `<dir>/snap_<p>.bin` at those presented frames (`WR_SNAP_RANGE=<lo>-<hi>`, hex, snapshots
+another range instead: the heap arena is `806A48C0-817F9E20`, 17 MB a snapshot, and that is
+where the course's objects, the dolphins among them, keep their state). Diffing snapshots from before and after
 an event finds the word that marks it: the race state at `0x806916F8` goes from 1 to 3 at
 the start (written at `0x800CB6D8`), and the start counter at `0x806912AC` counts 100 down
 and is zeroed.

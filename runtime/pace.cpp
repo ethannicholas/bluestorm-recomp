@@ -56,9 +56,20 @@ std::vector<uint32_t> g_watch = [] {
 // WR_SNAP=<dir>:<p>,<p>,...: at those presented frames, write the guest's writable data
 // (0x80340000-0x80692400: .bss, .sdata and .sbss) to <dir>/snap_<p>.bin, for finding the
 // word that flips at an event by comparing snapshots from before and after it.
+// WR_SNAP_RANGE=<lo>-<hi> (hex) snapshots another range instead: the heap, where the
+// course's objects live, is the arena from 0x806A48C0 to 0x817F9E20.
 std::string g_snap_dir;
+uint32_t g_snap_lo = 0x80340000u, g_snap_hi = 0x80692400u;
 std::vector<uint32_t> g_snap_at = [] {
     std::vector<uint32_t> v;
+    if (const char* e = getenv("WR_SNAP_RANGE")) {
+        char* end;
+        uint32_t lo = (uint32_t)strtoul(e, &end, 16);
+        if (*end == '-') {
+            uint32_t hi = (uint32_t)strtoul(end + 1, &end, 16);
+            if (hi > lo) { g_snap_lo = lo; g_snap_hi = hi; }
+        }
+    }
     if (const char* e = getenv("WR_SNAP")) {
         const char* colon = strchr(e, ':');
         if (colon) {
@@ -81,9 +92,9 @@ void snap_check() {
         if (p < g_snap_at[i]) continue;
         std::string path = g_snap_dir + "/snap_" + std::to_string(g_snap_at[i]) + ".bin";
         if (FILE* f = fopen(path.c_str(), "wb")) {
-            fwrite(HOST(0x80340000u), 1, 0x80692400u - 0x80340000u, f);
+            fwrite(HOST(g_snap_lo), 1, g_snap_hi - g_snap_lo, f);
             fclose(f);
-            fprintf(stderr, "[snap] p%u -> %s\n", p, path.c_str());
+            fprintf(stderr, "[snap] p%u %08X-%08X -> %s\n", p, g_snap_lo, g_snap_hi, path.c_str());
         }
         g_snap_at.erase(g_snap_at.begin() + i);
         i--;

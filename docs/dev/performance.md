@@ -509,3 +509,81 @@ or watch a dolphin draw's first vertex position (`GCN_DRAWLOG_VERBOSE` prints it
 the word it was transformed from. The
 water's lighting differs at 60 (the reflections define the surface less), which the gated
 simulation may itself cause. The steering, the HUD's time and km/h as before.
+
+### The steering, sixth pass (2026-10-10 night)
+
+**What was measured.** The Ocean City Time Attack route with the stick held left from 4.2 s
+into the race (`3155:A+SL:3000` at 30; at 60 the hold starts at presented frame 3283 after
+`WR_FPS_AT=3031`, since the frame counter at `0x80690FF8` is halved at 60, so race time is
+f/30 at both rates). Heading from the rider's direction at +92/+100, the hull's lean from
+its up axis at +124, both through `WR_WATCH` (addresses are `0x80620328` + offset; two
+tables in this pass were read off wrong addresses before that was checked, so compute them,
+and prefer the rider-record diff below). Over 4.27-6.27 s the 30 fps rider turns through
+77.6 degrees and leans to up.y 0.70; the 60 fps rider turned 49.4 (64%) and stayed level
+(0.97). The rider reaches the harbour wall at 6.3 s, which is why the window is short; the
+Dolphin Park start is open water but the field runs the scripted rider down, so it gives no
+clean turn either.
+
+**How the stick steers.** `fn_800948E0` slews +3280 toward the pad byte at +3248 by 15 a
+frame, but nothing in the physics reads +3280: its readers are the rider's body animation
+(`fn_8006DFA8` at `0x80070D34`, the lean pose), `fn_800646FC` and `fn_800A43CC`. The
+physics read the pad byte itself, in `fn_80095848`, the rider's control function, which
+makes two things of it. One is a yaw couple: +3436 = stick x a per-character table, applied
+in the rider update at `0x80092A64` as opposite forces along the right axis on particles
+0-2 and 3-5. The other is the jet: +3772/+3768 = sin/cos of (stick x the gain at +3684 x
+70/176 of a turn), and the update at `0x800923BC` builds the thrust direction as cos x
+forward + sin x right, so the stick vectors the thrust up to about 50 degrees. The couple
+is gated at `0x80096508`: when the speed word at +3332 is 11.11 or more it needs +3512,
+the wall-contact depth from `fn_80088E14`, to be non-zero (a slow rider in states 1, 24
+and 30 gets it freely). So at speed the ski steers by the vectored jet alone, and the
+couple is a low-speed and wall aid; the gain +3684 is +3376 below the speed +3676 and
+shrinks above it by +3680.
+
+**What was per-frame and is now converted.** `fn_80097824` measures the rider's motion every
+frame as differences: velocity +3308..3316 = position (+68..76) - last frame's (+3424..3432),
+acceleration +3320..3328 = velocity - last frame's, speed +3332 = |velocity|; and the same
+for a reference point on the hull placed by a per-character table (+3464..3472, its velocity
++3476..3484 and acceleration +3488..3496). At a half step the velocities read half and the
+accelerations a quarter. The readers compare them against the game's constants or feed them
+to forces: the couple's gate and the gain above; `0x80095918`/`0x80096080` (state changes
+at 2.7 x +3332 >= 30); `0x80092810` (a planing lift in state 31 above 5.56); the lateral grip
+at `0x8009297C`, which takes the reference point's velocity against the right axis as a
+force on the accumulators (so at 60 the grip was computed from half the velocity and then
+scaled by the square of the step: an eighth); the camera (`0x8005F8FC`), the AI (`0x8007xxxx`)
+and the sound, whose rumble index is the acceleration's magnitude (`0x800BDBB8`). The
+twelve subtractions carry `R -1` in `recomp/steps_manual.txt`, the acceleration's being a
+difference of already-converted velocities. The HUD's km/h was the same quantity measured
+again by the HUD (fourth pass), which is why it, too, needed `R -1`.
+
+**The result, and what is still short.** With the twelve the 60 fps turn is 53.6 degrees
+over the same two seconds (69% of 30's) and the lean comes back in part (up.y 0.85). The
+rest is not a gate: the thrust power, the jet angle, the dampings and the states are
+identical at both rates in snapshots at the same race time (`sn/t` against `sn/c`,
+`riderdiff.py`), the couple is off in both, and leaving each group of the rider's steps
+unscaled (`GCN_STEP_SKIP` on the integrator's dampings, `fn_800BDFC0`, the 136 force
+sites, the water's forces) made the turn worse or wild, never better. `GCN_STEP_POW`
+(new in the shared runtime, `gcn-recomp/docs/diagnostics.md`) tried the water's forces at
+power 1 (49.7, slightly worse) and the thrust at 1.5 (a faster turn, but the top speed goes
+with it). What is left differs in the dynamics, not the constants: the hull's yaw under a
+sideways push at the stern goes through the Verlet momentum, the lateral damping k (0.57
+across the heading, per frame) and eleven constraint relaxations a frame, and a half step
+with k^s and forces x s^2 is not the same system; a first-order model of it predicts a
+slightly *faster* turn at 60, so the model is missing something, most likely in how the
+relaxation and the k-damping share a frame. The acceleration conversions change nothing in
+the turn (bisected), and are kept for the sound.
+
+**Beliefs this pass overturned.** That the loss was in how +3280 becomes a torque: +3280 is
+only the animation's copy. That +124 is the hull's roll: the particle heights (rows at
+-80/-90/-104 at 30, -73/-92/-96 at 60) show both hulls rolled alike, and +124 is an axis
+the body code derives. That the body chain at +1880 (40-byte nodes) is physics: its one
+caller is in the camera/draw range (`0x8005F6E4`). That 60 from boot is safe in the
+harness: `WR_FPS=60` set at boot hangs the harness at the second frame-counter reset (the
+course load, presented frame 2696 on this route, 2076 on Dolphin Park) with `--fast`,
+every time, while `WR_FPS_AT` at the race is fine; the headset app applies `fps 60` from
+`vr.txt` at boot too, so this wants a look before `fps 60` is recommended there.
+
+**Tooling.** The desktop binary can no longer be rebuilt here (its clang is gone), so the
+loop was the Quest harness: `--frames=N` to stop at a presented frame, `WR_WATCH`, and
+`WR_SNAP` with `WR_SNAP_RANGE` for the heap. Two desktop runs at once derail each other's
+route (the memory card). Never `sed -i "s/\r//"` a script from PowerShell: `\r` reaches
+the device as `r` and the first `r` of every line is deleted; push LF files as they are.

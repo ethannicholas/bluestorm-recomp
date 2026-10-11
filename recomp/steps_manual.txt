@@ -306,3 +306,28 @@
 # fn_800BAA58: a per-particle byte at +3 fades by 4 a frame until it is spent (eight a
 # frame in Dolphin Park); the emitter leaves integer steps that do not count by one.
 800BAAEC A 1
+# fn_80097824, the rider's measured motion: velocity = position - last frame's position
+# (+3308..3316, from +68..76 and +3424..3432), acceleration = velocity - last frame's
+# velocity (+3320..3328), and the speed at +3332 is the velocity's length. Both are
+# per-frame differences, so at a half step the velocity reads half and the acceleration a
+# quarter; every reader compares them against thresholds in the game's units (the
+# steering law in fn_80095848 switches on +3332 at 0x80096508 and scales its gain by it
+# at 0x800962E4; the camera, the sound and the AI read the rest), so each difference is
+# scaled back by R -1 (the acceleration is a difference of already-converted velocities).
+80097870 R -1
+80097874 R -1
+8009788C R -1
+80097890 R -1
+800978AC R -1
+800978B0 R -1
+# The same function then measures a reference point on the hull (+3464..3472, placed off
+# the centroid by a per-character table): its velocity at +3476..3484 and acceleration at
+# +3488..3496 are per-frame differences too. The rider update reads the velocity against
+# the right axis at 0x80092980 for the lateral grip, a force on the accumulators that at a
+# half step was computed from half the velocity; the body solver and the AI read the rest.
+80097A1C R -1
+80097A24 R -1
+80097A80 R -1
+80097A88 R -1
+80097AE4 R -1
+80097AEC R -1
