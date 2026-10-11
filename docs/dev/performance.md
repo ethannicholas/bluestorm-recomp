@@ -500,7 +500,12 @@ is why the camera moves differently; the Verlet treatment the rider got applies.
 **Still open after this pass.** The dolphins still run double: the creature mover
 `fn_8006DFA8` and its damping are scaled, the animation player runs on alternate frames
 inside the water update, and the only Dolphin-Park-only integer step left (`fn_800BAA58`, a
-fade by four) is scaled, so what moves them is something not yet named; a snapshot pair
-across the same seconds at both rates, outside the particle pools, is the next search. The
+fade by four) is scaled, so what moves them is something not yet named. A snapshot pair across the same 3.3 s at both
+rates turned up only the spray pools and copies of the AI riders' positions, which means
+the dolphins' state is in the heap, above the `WR_SNAP` range, and the draw log shows them
+drawn with the camera's matrix over world-space vertices, so `GCN_POSMTX_STACK` cannot
+single one out either. The way in is the course-object list: extend `WR_SNAP` to the heap,
+or watch a dolphin draw's first vertex position (`GCN_DRAWLOG_VERBOSE` prints it) back to
+the word it was transformed from. The
 water's lighting differs at 60 (the reflections define the surface less), which the gated
 simulation may itself cause. The steering, the HUD's time and km/h as before.
