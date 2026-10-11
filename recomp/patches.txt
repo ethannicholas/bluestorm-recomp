@@ -44,3 +44,10 @@
 80091D4C { uint32_t wr_rider_passes(CPU*); c->r[30] = wr_rider_passes(c); }
 80091DC4 { uint32_t wr_rider_passes(CPU*); c->r[30] = wr_rider_passes(c); }
 80091E00 { void wr_rider_passes_end(CPU*); wr_rider_passes_end(c); c->r[3] = LD32((c->r[13] + (uint32_t)-28484)); }
+# The control law fn_80095848, once a paced frame, zeroes every particle's flag word at
+# 0x80095894 (the loop over the hull); the water sets bit 0, "in the water", again in each
+# pass, but the first pass's rider update reads it cleared and takes the stern for out of
+# the water, so a frame's first pass thrusts at three quarters. With two passes a paced
+# frame that happened twice a game frame and the rider accelerated 9% slower; the store
+# takes alternate frames at 60, once a game frame as the game has it.
+80095894 { if (gcn_step_int(0x80095894u, 1)) ST32((c->r[5] + (uint32_t)28), c->r[3]); }

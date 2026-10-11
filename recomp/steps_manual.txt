@@ -357,3 +357,8 @@
 80093A28 A 2
 80093A34 A 2
 80093A40 A 2
+# fn_800948E0, the rider's control: the stick copy at +3280 slews toward the pad byte by
+# up to 15 a frame (0x8009496C). Nothing in the physics reads it (the control law reads
+# the pad byte), only the body's lean pose and two readers in the camera and AI, so at
+# 60 the rider leaned into a turn twice as fast; the clamped step takes alternate frames.
+8009496C A

@@ -711,18 +711,35 @@ with the sixth-pass tables, which the Championship showed to be close enough.
 | 6.0 s | 74 / -46 | 52 / -31 | 61 / -42 |
 | 6.4 s | 91 (wall) / -48 | 66 / -32 | 78 / -38 |
 
-The 60 fps route's stick starts two game frames later (its presses sit at doubled frame
-offsets), which is most of the remaining lag; the turn develops at the 30 fps rate and the
-bank reaches the 30 fps bank. The 30 fps run is bit for bit the old one.
+and with the first-pass fix below as well, 60 reads 43 / -32 at 5.6 s, 68 / -50 at 6.0 and
+87 / -49 at 6.4. The 60 fps route's stick starts two game frames later (its presses sit at
+doubled frame offsets), which accounts for the lag that remains; the turn develops at the
+30 fps rate and the bank reaches the 30 fps bank. The 30 fps run is bit for bit the old one.
 
-**Still open.** The 60 fps rider accelerates a few per cent slower off the line (per-pass
-speed gains of 0.0265 against 0.0275 at launch, a 9% speed deficit by 4.2 s), with the same
-power word and the launch at the same race time. It is not a launch offset; what runs once
-a paced frame between the passes is the suspect, and a per-pass watch on the speed word
-with the new build is the next measurement. The `+4238` halfword, which the third pass
-called the player's four damping passes, is an inner variant (four more integrator calls
-and forces times four, in `fn_800935xx`) set per rider from a global in `fn_800984A4` and
-`fn_800BB69C`; it is 0 for every rider in Time Attack and was not touched.
+**The first pass of a frame.** With the passes right the 60 fps rider still accelerated 9%
+slower off the line, with the same power word and the launch at the same race time. A
+writer watch on the speed word showed the four passes of a 30 fps frame gaining 0.021,
+0.030, 0.030 and 0.030: the first pass of every frame gains less, and at 60 every paced
+frame has that first pass, so a game frame got two small passes instead of one. A watch
+on a stern particle's forward accumulator put the difference at the thrust store itself,
+three quarters of the other passes' -- the constant the rider update applies at
+`0x80092134` when neither stern particle's flag word has bit 0, "in the water". A watch
+on the flag word named the writer: the control law `fn_80095848`, once a paced frame,
+zeroes every particle's flag word at `0x80095894`, and the water sets the bit again in
+each pass, after the first pass's rider update has already read it clear. So the game's
+own first pass thrusts at three quarters, and the patch at `0x80095894` takes that store
+on alternate frames at 60, once a game frame. With that the 60 fps rider's speed off the
+line tracks the 30 fps rider's to within a per cent, one game frame ahead: the launch
+lands a presented frame earlier at 60 (the route holds A from before the countdown, and the
+countdown's last frame is halved), which is a 33 ms lead in the script, not a dynamics
+difference.
+
+The `+4238` halfword, which the third pass called the player's four damping passes, is an
+inner variant (four more integrator calls and forces times four, in `fn_800935xx`) set per
+rider from a global in `fn_800984A4` and `fn_800BB69C`; it is 0 for every rider in Time
+Attack and was not touched. The rider's stick copy at +3280 (`fn_800948E0`, a clamped slew
+of up to 15 a frame that only the lean pose and two readers in the camera and AI consume)
+takes alternate frames too, so the rider leans into a turn at the 30 fps rate.
 
 **Beliefs overturned.** That the rider is integrated once a frame (four passes for a
 player). That the constraints are relaxed eleven times (once per pass, at a tenth). That
