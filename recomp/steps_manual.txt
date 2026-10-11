@@ -332,3 +332,15 @@
 80097A88 R -1
 80097AE4 R -1
 80097AEC R -1
+# fn_800540A4, the course objects' per-frame pass over the list at 0x805A4F90 (296-byte
+# records: position at +4, update and draw functions at +0xB4, a model in the heap): the
+# object's animation frame at +158 advances by one a frame and wraps at the animation's
+# length. Not a plain increment, so the histogram did not list it; at 60 every animated
+# course object -- the dolphins' somersaults, the birds, the fish -- played at double speed.
+80054544 A
+# fn_8005A9C8, the course objects' mover: the object's height at +8 approaches its target by
+# a per-frame amount through four branches at 0x8005AB0C-0x8005AB44; the histogram listed
+# the one that ran in its window (0x8005AB44 B), these are the other three.
+8005AB0C A
+8005AB18 B
+8005AB38 A

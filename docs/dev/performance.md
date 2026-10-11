@@ -599,7 +599,50 @@ Ocean City none, reads rider+3288 (the character index) at `0x8006F0B0`: it is t
 body mover, and the seven were the seven AI riders. So nothing in the tables touches the
 dolphins yet, and no word of theirs has been found; the way in is the draw side
 (`GCN_DRAWLOG_VERBOSE` for a dolphin draw's first vertex, `GCN_WATCH_ADDR` on that word,
-then on what wrote it). The `0x80E5xxxx-0x80EAxxxx` region of the diff (integer-valued
-floats stepping one per hundred frames, written by `0x80009B98`/`0x80010020`; decaying
-pairs written by `0x800201D8`/`0x800201F8`, whose steps are in the table) is the sound
-and the low-range animation, also not them.
+then on what wrote it). The `0x80E5xxxx-0x80EAxxxx` region of the diff is the water's
+two vertex buffers (`fn_800097D0` and `fn_8000F7CC` write them), also not them.
+
+### The dolphins, found (2026-10-11)
+
+The user drove up to a dolphin somersaulting in a loop and toggled 30/60 while watching it,
+and recorded the session. **The recording replays in the harness** (`GCN_REPLAY=<dir>` with
+the log and its card copy beside the harness): it gets through the menus and into the Dolphin
+Park race, which the earlier "sits on the logo" note did not expect. What it cannot do is
+drive the race: the headset app paces itself, so the log holds a clock jump a frame, and the
+stretches the user spent at 60 ran the guest at double CPU scale; a replay at 30 makes the
+same jumps at the same back-edge counts but gets half the frames out of them, so the 357 s of
+polls were spent by presented frame 4120 and the rider never left the grid. The poll density
+between jumps in the log does show where the toggles were. It was not needed: the dolphins
+are in Dolphin Park whether or not the rider moves.
+
+**The way in was the draw side.** `GCN_VTXLOG=<frame>` (shared front end) prints each draw's
+vertex array address, its first vertices in model space and the matrix each selects, and the
+course geometry's matrix is the view matrix, so a bone's view-space translation inverts to a
+world position. At presented frame 4483 of the scripted Dolphin Park route a six-part mesh
+with one texture (`0x80E04600`..`0x80E0655C`, 54 units long) sat at world (-2498, -24, 2554)
+and moved 13 units in a second, mostly up; fish (three parts, 20-30 units, `0x80E16xxx`,
+`0x80E1Cxxx`, `0x80E23xxx`) swam under the grid, gulls (`0x80E11xxx`) flew. Searching the
+*data region's* snapshot for a 3x4 matrix with that translation found the course object
+list: records of 296 bytes from `0x805A4F90` (position at +4, +8, +12; a scaled matrix at
++0xF8; the animation index at +156 and its frame at +158; update and draw functions at +0xB4
+and +0xB8; the model's heap pointer at +0xBC). Five records share the dolphin's functions
+(`fn_8005697C`, `fn_800569F4`), the birds have theirs (`fn_8005C080`, `fn_80057D4C`). The
+first dolphin sits at (-2500, y, 2556) with only its height moving: the somersault in place.
+
+**The step.** The writer watch on the record's frame halfword named `fn_800540A4` at
+`0x80054544`: the course objects' per-frame pass advances every object's animation frame by
+one and wraps it at the animation's length (an add, a divide and a multiply, so the
+histogram's "counts by one" test never saw it). At 60 every animated course object played at
+double speed. `80054544 A` in the table steps it on alternate frames; the dolphin's frame
+now reads the same at both rates through the race (16 at 0.5 s, 31 at 1 s, then the
+somersault's 1-4-7-10 cycle). The object mover `fn_8005A9C8` moves the height toward its
+target through four branches at `0x8005AB08-0x8005AB44`, of which the histogram had listed
+one; the other three are in the manual table now, for the two-second rise at the start.
+
+**Beliefs this overturned.** That the dolphins' state was in the heap: the records are static
+data at `0x805A4F90`, inside the old snapshot range, and only their models are in the heap.
+That `fn_800540A4` was the HUD's speed: it is the course objects' pass, and the km/h word it
+writes is one of the things that pass does. That the `0x80E5xxxx-0x80EAxxxx` words were
+creatures or sound: they are the water's vertex buffers. The vertex log and a data-region
+snapshot together get from a thing on screen to its record in two runs; the heap diff never
+would have, since the records do not move.
