@@ -797,20 +797,31 @@ fades are in `recomp/steps_manual.txt` by hand; all take alternate frames at 60.
 counters in the same window (the retrace count at `0x80114E4C`, the scheduler's at
 `0x8010E55C`) are left alone, as before.
 
-**Mode 0 keeps its own pacing.** `fn_80007A94` takes N = 2 in mode 0 (the logo and title
-screens, and the loading of a course): a frame there is three fields, twenty a second, and
-the game's steps on those screens were sized for that. The 60 fps patch had been returning
-N = 0 for every frame, which made a title frame one field (the title ran half-stepped at 60
-frames a second, half again as fast as the game's twenty), and made a course load never
-finish: from a 60 fps boot the harness went black at the first course load, paced or
-`--fast`, and the attract demo's load the same, which is what the "WR_FPS=60 from boot
-hangs the harness at the course load" note in the sixth pass was. A bisection of
-`WR_PACE_KEEP` over the demo's load (one bit a run, a frame dumped after the load) found
-bit 4, the field count, the one that lets it through. At 60 a mode-0 frame now keeps the
-game's N and runs with the step override at 1 (every step whole, every gated call every
-frame, the clock's step whole), and only play frames take one field and half steps
-(`wr_fields_per_frame`, `g_full_frame` in `runtime/pace.cpp`). The title's hand-tabled
-steps above are inert under the override and stay in the table for the record.
+**Mode 0 keeps its own pacing: wrong, and the worst afternoon of the project.** The reading
+was that `fn_80007A94` takes N = 2 in mode 0 (the logo, the title, a course load) and 1 in
+play, that a title frame is three fields at twenty a second, and that a load given one field
+a frame never finishes; a `WR_PACE_KEEP` bisection over the attract demo's load, which only
+bit 4 (the field count) let through, seemed to confirm it, and for a few hours at 60 a frame
+with `game == 2` kept the game's N and ran under the step override at 1. The branch had been
+read backwards. The pacing log (`[pace]` lines, below) shows N = 2 in play (mode 5, and the
+demo's mode 9) and 1 on the title and during a load, so the change did nothing for the title
+and everything to a race at 60: the game paced at its own rate with the frame counter
+stepping every frame and the clock at its full size, over physics that were half-stepped
+(the rider's passes end the override themselves at `0x80091E00`, so everything after the
+physics in a frame was still halved while everything before it was not). On the headset
+that was a crawling, flooded race with the frame rate gone, through three builds that
+changed the spray gate and could not have helped. The harness did not show it because the
+Time Attack checks looked at the HUD clock (stepped after the physics: right) and the
+launch (from behind, briefly), and the Championship check that finally did show it (the
+rider in last place at 60, rank 1 at 30) was read as a spray difference. What the
+bisection had actually found is that keeping the game's N in mode 9 lets the demo's load
+through: that load's hang, like the race's, was the spray drawer's stride loop (next
+paragraph), and bit 4 merely changed the frame on which the spawner ran relative to the
+reset. The lesson is in the method: a rate claim needs a counter, not a reading. The
+`[pace]` line a second (`WR_PACE_LOG=1` in the harness, always in the headset's logcat)
+now says how many frame ends, frame-counter steps, spray runs and water runs the last
+second had, with the mode, the scale and the game's own field count; at 60 in play it
+should read counter steps and spray and water runs at half the frame ends.
 
 **The race's course load was a second hang, in the spray.** With the field count fixed the
 attract demo loaded at 60, and the race's course load from a 60 fps boot still did not
