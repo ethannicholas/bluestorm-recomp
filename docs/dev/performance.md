@@ -825,13 +825,16 @@ runs inside the spawner `fn_8002F478` at `0x8002F8CC`), as `index += stride` unt
 rider's total: a stride of 0 with particles to draw never ends. A course reset clears the
 table; at 30 the spawner runs before the drawer on the same frame and fills it, but
 `patches.txt` gates the spawner to alternate frames at 60, so the frame after a reset
-that falls on a skipped one draws against zeroes. The gate now skips only once the
-player's stride is set (`wr_spray_strides_set`). The first version checked every rider's
-entry, and the AI riders' entries stay 0 through a whole race (the watch saw rider 0's
-halfword set once and rider 1's never), so the spawner ran every frame: on the headset
-the spray became long streaks behind every ski and the frame rate collapsed, the fifth
-pass's white wash at twice the particles. The player's entry alone is the one a reset
-leaves transiently at zero. The writer watch found the table
+that falls on a skipped one draws against zeroes. The gate now skips only while the
+table still holds what the spawner last left there: `wr_spray_ran` copies it after each
+run and `wr_spray_gate` compares (`runtime/pace.cpp`). Two earlier versions tested the
+entries themselves and were wrong both times: "every entry nonzero" ran the spawner every
+frame because the AI riders' entries stay 0 through a whole race (the watch saw rider 0's
+halfword set once and rider 1's never), and "the player's entry nonzero", taken as rider
+0's, did the same in a Championship, where the player need not be rider 0. Both times the
+headset showed the fifth pass's white wash at twice the particles, long streaks behind
+every ski, and the frame rate collapsed with the doubled spray, while the Time Attack
+route in the harness, where the player is rider 0, looked right. The writer watch found the table
 (`GCN_WATCH_ADDR=804EB080` on the watch build: one store in a whole race, at
 `0x8002FFA8`), and the generated code the stride's readers. This is the kind of hazard the
 alternate-frame gating of the water and the spray carries in general, which is the reason

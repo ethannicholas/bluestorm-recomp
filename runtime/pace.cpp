@@ -209,13 +209,26 @@ extern "C" uint32_t wr_rider_passes(CPU*) {
 }
 extern "C" void wr_rider_passes_end(CPU*) { step_override(NAN); }
 
-// The spray (recomp/patches.txt, the spawner's gate): whether the player's draw stride at
-// 0x804EB080 has been set since the course reset cleared the table. The spawner's update
-// writes 1, 2 or -1 there and never 0, and the drawer, which runs every frame, steps
-// through the particles by it, so the spawner may be skipped only once it has run since
-// the reset; a zero stride with particles to draw is a loop that never ends. The player's
-// entry alone: the other riders' entries stay 0 through a whole race at 30 (the writer
-// watch, 2026-10-11) without the drawer looping on them, and a check over all of them kept
-// the spawner running every frame, which doubled the spray and its cost (the headset:
-// long streaks behind every ski, and the frame rate gone).
-extern "C" uint32_t wr_spray_strides_set() { return mem_r16(0x804EB080u) != 0 ? 1u : 0u; }
+// The spray (recomp/patches.txt, the spawner's gate). The spawner's update sets each
+// rider's draw stride at 0x804EB080 (1, 2 or -1; a rider without particles keeps 0), and
+// the drawer, which runs every frame, steps through the particles by it, so a frame that
+// draws after a course reset cleared the table and before the spawner has run again loops
+// forever. The gate may skip the spawner only while the table still holds what the
+// spawner last left there: wr_spray_ran keeps a copy after each run, and a table that
+// differs from it (cleared by a reset) runs the spawner whatever the frame. Earlier
+// versions tested the entries themselves (all nonzero, then the player's nonzero) and
+// were wrong twice: the AI riders' entries stay 0 through a race, and in a Championship
+// the player need not be rider 0, so on the headset the spawner ran every frame, which
+// doubled the spray and its cost (long streaks behind every ski, the frame rate gone).
+namespace {
+uint8_t g_spray_strides[16];
+bool g_spray_ran = false;
+}
+extern "C" uint32_t wr_spray_gate(uint32_t pc) {
+    if (gcn_step_int(pc, 1.0)) return 1u;
+    return g_spray_ran && memcmp(mem_ptr(0x804EB080u), g_spray_strides, sizeof g_spray_strides) == 0 ? 0u : 1u;
+}
+extern "C" void wr_spray_ran() {
+    memcpy(g_spray_strides, mem_ptr(0x804EB080u), sizeof g_spray_strides);
+    g_spray_ran = true;
+}

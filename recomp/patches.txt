@@ -41,12 +41,11 @@
 # fn_8002F9EC runs every frame and steps through the particles by that stride, so a frame
 # that draws after a course reset cleared the table and before the spawner has run again
 # loops forever (the "WR_FPS=60 from boot hangs at the course load", and the headset's
-# black screen at a load after a toggle to 60, 2026-10-11). The skip is taken only once the
-# player's stride is set: wr_spray_strides_set (runtime/pace.cpp); the other riders' entries
-# stay 0 through a race without harm, and a check over all of them ran the spawner every
-# frame.
-800BBC08 { uint32_t wr_spray_strides_set(void); if (gcn_step_int(0x800BBC08u, 1) || !wr_spray_strides_set()) { c->lr = 0x800BBC0Cu; fn_8002F478(c); } }
-800BBD9C { uint32_t wr_spray_strides_set(void); if (gcn_step_int(0x800BBD9Cu, 1) || !wr_spray_strides_set()) { c->lr = 0x800BBDA0u; fn_8002F478(c); } }
+# black screen at a load after a toggle to 60, 2026-10-11). The skip is taken only while
+# the table still holds what the spawner last left there (wr_spray_gate / wr_spray_ran,
+# runtime/pace.cpp, which has why the two earlier tests of the entries were wrong).
+800BBC08 { uint32_t wr_spray_gate(uint32_t); void wr_spray_ran(void); if (wr_spray_gate(0x800BBC08u)) { c->lr = 0x800BBC0Cu; fn_8002F478(c); wr_spray_ran(); } }
+800BBD9C { uint32_t wr_spray_gate(uint32_t); void wr_spray_ran(void); if (wr_spray_gate(0x800BBD9Cu)) { c->lr = 0x800BBDA0u; fn_8002F478(c); wr_spray_ran(); } }
 # The riders' physics (runtime/pace.cpp, wr_rider_passes; docs/dev/performance.md, "The
 # steering, seventh pass"): the riders' frame fn_80091C04 runs each player's whole
 # physics step four times a frame (the AI riders once). At 60 the count is two passes of
