@@ -796,3 +796,18 @@ a frame. The emitter leaves integer steps that do not count by one, so the scrol
 fades are in `recomp/steps_manual.txt` by hand; all take alternate frames at 60. The SDK's
 counters in the same window (the retrace count at `0x80114E4C`, the scheduler's at
 `0x8010E55C`) are left alone, as before.
+
+**Mode 0 keeps its own pacing.** `fn_80007A94` takes N = 2 in mode 0 (the logo and title
+screens, and the loading of a course): a frame there is three fields, twenty a second, and
+the game's steps on those screens were sized for that. The 60 fps patch had been returning
+N = 0 for every frame, which made a title frame one field (the title ran half-stepped at 60
+frames a second, half again as fast as the game's twenty), and made a course load never
+finish: from a 60 fps boot the harness went black at the first course load, paced or
+`--fast`, and the attract demo's load the same, which is what the "WR_FPS=60 from boot
+hangs the harness at the course load" note in the sixth pass was. A bisection of
+`WR_PACE_KEEP` over the demo's load (one bit a run, a frame dumped after the load) found
+bit 4, the field count, the one that lets it through. At 60 a mode-0 frame now keeps the
+game's N and runs with the step override at 1 (every step whole, every gated call every
+frame, the clock's step whole), and only play frames take one field and half steps
+(`wr_fields_per_frame`, `g_full_frame` in `runtime/pace.cpp`). The title's hand-tabled
+steps above are inert under the override and stay in the table for the record.

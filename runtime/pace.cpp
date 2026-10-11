@@ -127,6 +127,9 @@ uint32_t g_fps_at = 0;
 // A switch asked for from another thread (the headset's left thumbstick click), applied at
 // the next frame's end so that the rate only ever changes between frames, on the guest thread.
 std::atomic<int> g_fps_request{0};
+// Whether the frame being ended is a mode-0 frame kept at the game's own pacing and step
+// size at 60 (wr_fields_per_frame).
+bool g_full_frame = false;
 
 const bool installed = [] {
     if (const char* e = getenv("WR_PACE_KEEP")) g_keep = atoi(e);
@@ -158,6 +161,14 @@ float frame_dt() { return 1.0f / (float)g_fps; }
 // gated or halved and the whole title sequence ran at double speed, the title's water
 // included, patches and tables notwithstanding (docs/dev/performance.md, "The title
 // sequence").
+//
+// `game` is the game's own count: 1 in play, 2 in mode 0 (the logo and title screens and
+// the loading of a course), where a frame is three fields, twenty a second. At 60 a play
+// frame is one field. A mode-0 frame keeps its three, with every step at its full size:
+// the game's own pacing there is not a frame rate anyone sees as such, the title's steps
+// were sized for it, and a course load that is given one field a frame never finishes
+// (the harness went black at the attract demo's load and at every course load from a
+// 60 fps boot; WR_PACE_KEEP=4 was the one bit that let it through).
 extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
     if (g_fps_at && gx::g_frames_submitted.load(std::memory_order_relaxed) >= g_fps_at) {
         g_fps_at = 0;
@@ -165,9 +176,11 @@ extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
     }
     if (int r = g_fps_request.exchange(0, std::memory_order_relaxed)) wr::set_fps(r);
     step_frame();
-    return g_fps == 60 && !(g_keep & 4) ? 0u : game;
+    g_full_frame = g_fps == 60 && !(g_keep & 4) && game == 2;
+    step_override(g_full_frame ? 1.0 : NAN);
+    return g_fps == 60 && !(g_keep & 4) && !g_full_frame ? 0u : game;
 }
-extern "C" double wr_frame_dt(double game) { return g_fps == 60 && !(g_keep & 2) ? game * 0.5 : game; }
+extern "C" double wr_frame_dt(double game) { return g_fps == 60 && !(g_keep & 2) && !g_full_frame ? game * 0.5 : game; }
 // Called once a game frame in play, from the mode runner's advance of the frame counter,
 // with the counter's value before the advance. The counter steps like any other integer:
 // every other frame at 60.
