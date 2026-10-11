@@ -127,6 +127,8 @@ uint32_t g_fps_at = 0;
 // A switch asked for from another thread (the headset's left thumbstick click), applied at
 // the next frame's end so that the rate only ever changes between frames, on the guest thread.
 std::atomic<int> g_fps_request{0};
+// Whether the frame being ended belongs to the attract montage (wr_fields_per_frame).
+bool g_video = false;
 // The pacing log's counters (WR_PACE_LOG, below wr_spray_gate).
 uint32_t g_c_frames = 0, g_c_counter = 0, g_c_spray = 0, g_c_spray_forced = 0, g_c_water = 0;
 uint64_t g_c_last_ns = 0;
@@ -195,10 +197,16 @@ extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
             g_c_frames = g_c_counter = g_c_spray = g_c_spray_forced = g_c_water = 0;
         }
     }
-    step_override(NAN);
+    // The attract montage (mode 1, nothing else: the title's idle plays a video) is not a
+    // simulation to run at 60. Given one field a frame it never got past black; given its
+    // fields with half steps it stuck on its first frame. It plays as the game plays it:
+    // its own field count, every step whole, the clock's step whole.
+    g_video = g_fps == 60 && mem_r32(0x80690FF4u) == 1;
+    step_override(g_video ? 1.0 : NAN);
+    if (g_video) return game;
     return g_fps == 60 && !(g_keep & 4) ? 0u : game;
 }
-extern "C" double wr_frame_dt(double game) { return g_fps == 60 && !(g_keep & 2) ? game * 0.5 : game; }
+extern "C" double wr_frame_dt(double game) { return g_fps == 60 && !(g_keep & 2) && !g_video ? game * 0.5 : game; }
 // Called once a game frame in play, from the mode runner's advance of the frame counter,
 // with the counter's value before the advance. The counter steps like any other integer:
 // every other frame at 60.

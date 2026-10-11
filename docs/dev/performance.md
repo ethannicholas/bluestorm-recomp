@@ -823,6 +823,12 @@ now says how many frame ends, frame-counter steps, spray runs and water runs the
 second had, with the mode, the scale and the game's own field count; at 60 in play it
 should read counter steps and spray and water runs at half the frame ends.
 
+The one place the game's own count is kept at 60 is the attract montage (mode 1, the video
+the title's idle plays): given one field a frame it stayed black, given its fields with half
+steps it stuck on its first frame (identical dumps for twenty seconds), and with its fields,
+every step whole and the clock's step whole it plays (`g_video` in `runtime/pace.cpp`). It
+is a video, not a simulation, and the title's idle on the headset reaches it at 60 now.
+
 **The race's course load was a second hang, in the spray.** With the field count fixed the
 attract demo loaded at 60, and the race's course load from a 60 fps boot still did not
 (the harness stuck at presented frame 2727 on the Ocean City route, and the headset went
