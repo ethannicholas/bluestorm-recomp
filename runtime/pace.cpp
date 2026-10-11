@@ -53,7 +53,8 @@ std::vector<uint32_t> g_watch = [] {
     }
     return v;
 }();
-// WR_SNAP=<dir>:<p>,<p>,...: at those presented frames, write the guest's writable data
+// WR_SNAP=<dir>:<p>,<p>-<q>,...: at those presented frames (a range is every frame of it),
+// write the guest's writable data
 // (0x80340000-0x80692400: .bss, .sdata and .sbss) to <dir>/snap_<p>.bin, for finding the
 // word that flips at an event by comparing snapshots from before and after it.
 // WR_SNAP_RANGE=<lo>-<hi> (hex) snapshots another range instead: the heap, where the
@@ -76,9 +77,10 @@ std::vector<uint32_t> g_snap_at = [] {
             g_snap_dir.assign(e, colon - e);
             for (const char* p = colon + 1; *p;) {
                 char* end;
-                uint32_t a = (uint32_t)strtoul(p, &end, 10);
+                uint32_t a = (uint32_t)strtoul(p, &end, 10), b = a;
                 if (end == p) break;
-                v.push_back(a);
+                if (*end == '-') b = (uint32_t)strtoul(end + 1, &end, 10);  // <p>-<q>: every frame of the range
+                for (uint32_t f = a; f <= b && f < a + 4096; f++) v.push_back(f);
                 p = *end == ',' ? end + 1 : end;
             }
         }
