@@ -127,8 +127,22 @@ uint32_t g_fps_at = 0;
 // A switch asked for from another thread (the headset's left thumbstick click), applied at
 // the next frame's end so that the rate only ever changes between frames, on the guest thread.
 std::atomic<int> g_fps_request{0};
-// Whether the frame being ended belongs to the attract montage (wr_fields_per_frame).
-bool g_video = false;
+// The rate asked for (WR_FPS, `fps` in vr.txt, the thumbstick); g_fps is the rate in force,
+// which is the wanted one in a race and 30 everywhere else (wr_fields_per_frame).
+int g_wanted = 30;
+// Whether the game is in a race: the same guest state that puts the headset in stereo
+// (runtime/vr_waverace.cpp, docs/dev/vr.md "Theater and stereo"), less the starting-light
+// rig, which is a draw test. The on-course count at 0x80602160 is positive from the course
+// intro to 170 frames past the finish and clears the moment a race is quit; the wave height
+// at 0x806193BC is non-zero from the starting lights to the finish. So this is true from
+// the lights (up to a second and a half into the countdown) to the chequered flag.
+bool in_race() { return (int32_t)mem_r32(0x80602160u) > 0 && mem_r32(0x806193BCu) != 0; }
+void apply_fps(int fps) {
+    g_fps = fps;
+    clock_set_cpu_scale(fps == 60 ? 2.0 : 1.0);
+    step_set_scale(fps == 60 && !(g_keep & 8) ? 0.5 : 1.0);
+    fprintf(stderr, "[pace] %d frames per second\n", fps);
+}
 // The pacing log's counters (WR_PACE_LOG, below wr_spray_gate).
 uint32_t g_c_frames = 0, g_c_counter = 0, g_c_spray = 0, g_c_spray_forced = 0, g_c_water = 0;
 uint64_t g_c_last_ns = 0;
@@ -144,14 +158,13 @@ const bool installed = [] {
 namespace wr {
 void set_fps(int fps) {
     if (fps != 30 && fps != 60) return;
-    g_fps = fps;
-    clock_set_cpu_scale(fps == 60 ? 2.0 : 1.0);
-    step_set_scale(fps == 60 && !(g_keep & 8) ? 0.5 : 1.0);
-    fprintf(stderr, "[pace] %d frames per second\n", fps);
+    g_wanted = fps;
+    fprintf(stderr, "[pace] %d frames per second wanted (in a race)\n", fps);
 }
 int fps() { return g_fps; }
+int wanted_fps() { return g_wanted; }
 void request_fps(int fps) { g_fps_request.store(fps, std::memory_order_relaxed); }
-void toggle_fps() { request_fps(g_fps == 60 ? 30 : 60); }
+void toggle_fps() { request_fps(g_wanted == 60 ? 30 : 60); }
 float frame_dt() { return 1.0f / (float)g_fps; }
 }  // namespace wr
 
@@ -173,12 +186,19 @@ float frame_dt() { return 1.0f / (float)g_fps; }
 // size over half-stepped physics, which showed on the headset as a crawling, flooded race
 // with the frame rate gone. A course load that never finished at 60 was what that change
 // was for; its cause was the spray drawer (wr_spray_gate), not the field count.
+//
+// 60 is the race's only (2026-10-11 night, docs/dev/performance.md "The race only"). The
+// rate wanted is applied while in_race() holds and 30 is restored the frame it stops, so
+// the title, the menus, the loads, the videos and the results run as the game runs them,
+// whatever the thumbstick says, and only the race, the part the headset shows in stereo,
+// is paced at 60.
 extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
     if (g_fps_at && gx::g_frames_submitted.load(std::memory_order_relaxed) >= g_fps_at) {
         g_fps_at = 0;
         wr::set_fps(60);
     }
     if (int r = g_fps_request.exchange(0, std::memory_order_relaxed)) wr::set_fps(r);
+    if (const int want = in_race() ? g_wanted : 30; want != g_fps) apply_fps(want);
     step_frame();
     g_c_frames++;
     {
@@ -190,23 +210,16 @@ extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
 #endif
                 ;
             if (on && g_c_last_ns)
-                fprintf(stderr, "[pace] %d fps: frame ends %u, counter steps %u, spray runs %u (forced %u), water runs %u, mode %d, scale %.2f%s\n",
-                        g_fps, g_c_frames, g_c_counter, g_c_spray, g_c_spray_forced, g_c_water,
-                        (int)mem_r32(0x80690FF4u), step_scale(), game == 2 ? ", game 2" : "");
+                fprintf(stderr, "[pace] %d fps (%d wanted): frame ends %u, counter steps %u, spray runs %u (forced %u), water runs %u, mode %d, scale %.2f%s%s\n",
+                        g_fps, g_wanted, g_c_frames, g_c_counter, g_c_spray, g_c_spray_forced, g_c_water,
+                        (int)mem_r32(0x80690FF4u), step_scale(), game == 2 ? ", game 2" : "", in_race() ? ", race" : "");
             g_c_last_ns = now;
             g_c_frames = g_c_counter = g_c_spray = g_c_spray_forced = g_c_water = 0;
         }
     }
-    // The attract montage (mode 1, nothing else: the title's idle plays a video) is not a
-    // simulation to run at 60. Given one field a frame it never got past black; given its
-    // fields with half steps it stuck on its first frame. It plays as the game plays it:
-    // its own field count, every step whole, the clock's step whole.
-    g_video = g_fps == 60 && mem_r32(0x80690FF4u) == 1;
-    step_override(g_video ? 1.0 : NAN);
-    if (g_video) return game;
     return g_fps == 60 && !(g_keep & 4) ? 0u : game;
 }
-extern "C" double wr_frame_dt(double game) { return g_fps == 60 && !(g_keep & 2) && !g_video ? game * 0.5 : game; }
+extern "C" double wr_frame_dt(double game) { return g_fps == 60 && !(g_keep & 2) ? game * 0.5 : game; }
 // Called once a game frame in play, from the mode runner's advance of the frame counter,
 // with the counter's value before the advance. The counter steps like any other integer:
 // every other frame at 60.

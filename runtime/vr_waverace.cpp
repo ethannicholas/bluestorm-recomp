@@ -78,7 +78,7 @@ void set_first_person(bool on, const VrConfig& c) {
     gx::render_set_first_person(on);
 }
 
-// `fps 60` in vr.txt runs the game at 60 frames a second (pace.cpp); 30 is the game's own.
+// `fps 60` in vr.txt runs the race at 60 frames a second (pace.cpp); 30 is the game's own.
 void config_loaded(const VrConfig& c) { wr::set_fps((int)c.get("fps", 30.0f)); }
 
 void config_defaults(VrConfig& c) {
@@ -109,7 +109,7 @@ void config_defaults(VrConfig& c) {
     c.extra["fp_yaw_s"] = 0.1f;
     c.extra["fp_tilt"] = 0.6f;
     c.extra["fp_tilt_s"] = 0.15f;
-    c.extra["fps"] = (float)wr::fps();  // what WR_FPS set, unless vr.txt says otherwise
+    c.extra["fps"] = (float)wr::wanted_fps();  // what WR_FPS set, unless vr.txt says otherwise
 }
 
 const bool installed = [] {

@@ -25,14 +25,10 @@
 # animation player (fn_8000CCF0) and fn_8000E9B0. A wave equation cannot be halved store
 # by store, and gating only the simulation left the pushes at twice the rate and the foam
 # white, so at 60 frames a second the whole update runs on every other frame instead:
-# gcn_step_int is 1 on the frames a step falls on and 0 between. fn_80013830 is the same
-# simulation for the title screen's water.
+# gcn_step_int is 1 on the frames a step falls on and 0 between. (fn_80013830, the same
+# simulation for the title screen's water, was gated here too until 60 became the race's only.)
 800BBBDC { uint32_t wr_count_water(void); if (gcn_step_int(0x800BBBDCu, 1)) { wr_count_water(); c->lr = 0x800BBBE0u; fn_800BDDC4(c); } }
 800BBD20 { uint32_t wr_count_water(void); if (gcn_step_int(0x800BBD20u, 1)) { wr_count_water(); c->lr = 0x800BBD24u; fn_800BDDC4(c); } }
-800141A0 { if (gcn_step_int(0x800141A0u, 1)) { c->lr = 0x800141A4u; fn_80013830(c); } }
-800147A0 { if (gcn_step_int(0x800147A0u, 1)) { c->lr = 0x800147A4u; fn_80013830(c); } }
-80014D64 { if (gcn_step_int(0x80014D64u, 1)) { c->lr = 0x80014D68u; fn_80013830(c); } }
-80015244 { if (gcn_step_int(0x80015244u, 1)) { c->lr = 0x80015248u; fn_80013830(c); } }
 # The spray (docs/dev/performance.md, fifth pass): fn_8002F478 spawns each rider's spray
 # particles at the hull once a frame, and the particles then live a count of frames. At
 # 60 that is twice the particles a second, and the water near the field washes white; at

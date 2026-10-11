@@ -772,7 +772,7 @@ Verified on the same frame dumps with the fix: at 3.98 s and 5.98 s the 60 fps c
 on the gantry board was already right at both rates (3 at 1.5 s, 3-2 at 2.0 s, 3-2-1 at
 2.5 s, go at 3.5 s).
 
-### The title sequence (2026-10-11)
+### The title sequence (2026-10-11; undone the same night, see "The race only")
 
 The logo and title screens ran at double speed at 60, every part of them, and the reason
 was not a missing table entry. Harness frame dumps of the sequence (`--eye --dump-every=10`
@@ -856,3 +856,53 @@ route in the harness, where the player is rider 0, looked right. The writer watc
 `0x8002FFA8`), and the generated code the stride's readers. This is the kind of hazard the
 alternate-frame gating of the water and the spray carries in general, which is the reason
 to replace it (still open).
+
+### The race only (2026-10-11 night)
+
+Asked for the title and menus' "speed doubling" at 60, the harness could not find any
+doubling: eye frames through the logo, the memory card screen, the main menu, character
+select and course select at 30, and at 60 from boot with the route's frame numbers doubled,
+show the same screen at the same moment, and the idle title is byte-for-byte 60's frame 2p
+= 30's frame p, from boot and switched on by the thumbstick. What was wrong was other
+things, and finding them one by one is what ended the attempt to run the whole game at 60:
+
+- Every video stood still at 60: the course and character previews on the menus and the
+  attract montage. Two causes. Three increments in `fn_801049E0`, tabled in the fourth
+  pass as "the pad's held-frame counters", are the video player's disc-read completion
+  callback (`fn_80111B2C` is `DVDReadAsync`) and its ring of frame buffers, and halving
+  them broke the ring; they are out of the tables. And the player's frame update
+  `fn_80105158` is clocked by `OSGetTime`: it advances by (milliseconds since its stamp +
+  2) * rate / 1000 frames and takes a new stamp every frame whatever the quotient, so a
+  16 ms frame never reaches a frame. No table entry can reach that; a patch that kept the
+  stamp while the quotient was 0 fixed it, and is reverted with the rest.
+- Every change of screen took the same number of *presented* frames at 60 as at 30, half
+  the time, whatever `WR_PACE_KEEP` bit was set and however long A was held. A
+  `GCN_STORE_HIST` over both transitions on the route listed 108 state steps, three of
+  them tabled; the writer watch on the next-screen word (`0x80690A10`) named the screens'
+  state machines (`fn_8009D504`, `fn_8009E6B4` and their siblings), and reading them gave
+  the pattern: every screen counts a phase in a float timer at `0x80691704`, stepped by
+  one a frame in each of its states, derives a level at `0x80691744` from it and counts
+  the level down by 10 on its exit -- forty-odd steps over the character, course and
+  option screens, plus the fades (integer steps of 10 and 20, floats of 0.05 and 0.1), a
+  slide stepped by the sign of a difference, a per-object countdown, an idle animation's
+  frame count. Half of them are below the emitter's 0.9-runs-a-frame rule, half are
+  integer steps it does not take, and a listing at 0.2 runs a frame, the first one made,
+  drops them all because a transition's steps run for thirty to a hundred frames of a
+  360-frame window. Tabling thirty of them fixed the first change of screen and most of
+  the second; the rest of the game's screens had not been looked at.
+
+That is a table with no end, for screens that gain nothing from 60. So 60 is the race's
+only: `runtime/pace.cpp` applies the rate wanted (`WR_FPS`, `fps 60` in `vr.txt`, the
+thumbstick) while the game is in a race and 30 the frame it is not, on the guest state the
+stereo switch uses (`docs/dev/vr.md`, "Theater and stereo"): the on-course count at
+`0x80602160` positive and the wave height at `0x806193BC` non-zero, which is from the
+starting lights (up to a second and a half into the countdown) to the chequered flag. The
+title, the menus, the loads, the videos and the results run as the game runs them, and the
+headset is in 60 exactly where it is in stereo. Undone with that: the title sequence's
+twelve table entries and the gate on its water (the section above), the attract montage's
+special case (`g_video`), and everything of this section's. Kept: the step clock at the
+frame's end (it is where every frame passes), the pad-counter entries' removal (they were
+wrong), the pacing log, which now prints the rate wanted beside the rate in force and
+"race" while the predicate holds. The scripted routes no longer need their frame numbers
+doubled for a 60 fps run: the menus hold their counts at 30, and `WR_FPS=60` from boot now
+does what `WR_FPS_AT` was for.

@@ -238,7 +238,7 @@ compiled; later runs will take advantage of cached copies.
 | Start | Menu (left) |
 | D-pad | Left thumbstick while holding the left grip |
 | *(first person on/off)* | Right thumbstick click |
-| *(30 or 60 fps)* | Left thumbstick click |
+| *(30 or 60 fps, in a race)* | Left thumbstick click |
 
 If something goes wrong, `adb logcat -s waverace` shows the app's log, including compositor and
 game frame counts every second.
