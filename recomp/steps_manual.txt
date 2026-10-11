@@ -245,18 +245,61 @@
 8009354C A 2
 # Outside the emitter's address window (0x80020000-0x80100000), found by hand from the
 # Time Attack histogram listed over the whole DOL (2026-10-10):
-# fn_8000CCF0, the keyframe animation player below the window: an object's time at +56
-# steps by (1/30)/its duration at +44 once a frame per object (nine in the race scene). It
-# ran at its 30 fps rate per frame at 60: the course's animated objects at double speed.
-8000D324 A 1
+# (The keyframe animation player fn_8000CCF0 runs inside the water-and-effects update,
+# which patches.txt gates to alternate frames at 60; its time step needs nothing here.)
 # fn_80103C08, above the window: a phase in small data (0x80691DD0) stepped by 0.005 a
 # frame, read by one function in the low range; at 60 it ran double.
 80104380 A 1
 # fn_80106100, above the window: the replay recorder's frame count (0x80691E04), one a
 # frame in a race, which samples the rider's position every eighth frame.
 80106140 A 1
-# fn_80008FC4, below the window: the sound engine's frame count (0x80691084), one a frame,
-# read by the mixer and by the animation player (fn_8000CCF0). The only per-frame integer
-# left unhalved at 60 in a snapshot diff of the guest's data; the HUD's race time, which
-# ran double while the timer word was right, is the suspect reader.
-800097B4 A 1
+# fn_8002FABC, the spray particles (58 a frame in a race, 9 on the title screen): each
+# particle's position steps by its velocity (+0, +8, +96, +104 of the 108-byte particle).
+# The histogram classed them temporaries because a byte-copy loop at 0x80003430, the
+# respawn's memcpy, also writes them; the dampings on the velocities were already in the
+# table, so at 60 the particles flew at full per-frame speed with half the decay: the
+# white streaks out ahead of the ski (the headset, 2026-10-10).
+80030098 A 1
+800300A8 A 1
+800300B8 A 1
+800300C8 A 1
+# fn_8006DFA8, the course's creatures (seven in Dolphin Park, none in Ocean City, which
+# is why the first windows missed them): each steps its position by a displacement
+# capped at a per-frame maximum. Classed temporaries because the bone matrix builder
+# writes the same words every frame. fn_8006D378 damps a per-creature value each frame.
+8006F1B0 A 1
+8006F1B8 A 1
+8006F1C0 A 1
+8006D99C A 1
+# fn_801049E0, above the window: the pad's held-frame counters, one a frame per button
+# or direction while it is held (found with a histogram over a 90-frame RIGHT on course
+# select). They are what the menus' repeat reads; unhalved, the repeat came twice as fast
+# at 60 and a single move became a double one.
+80104A00 A 1
+80104A94 A 1
+80104AD4 A 1
+# fn_80030E2C, the wake emitters (nine slots, one per rider): each slot's velocity
+# (+12, +16, +20 of the 40-byte slot) takes a dozen per-frame terms -- drag, lift, a
+# gravity that grows with the slot's age -- and its position steps by the velocity. The
+# position step was in the table; the velocity terms were classed temporaries (the
+# respawn rewrites the slot), so at 60 the velocities built twice as fast and the strips
+# shot out ahead. The two terms that add half the rider's own per-frame displacement
+# (0x80031D44, 0x80031D6C) are left alone: that displacement already halves at 60.
+80031D10 A 1
+80031D28 A 1
+80031D50 A 1
+80031D94 A 1
+80031DA8 A 1
+80031DD8 A 1
+80031DF0 A 1
+80031E38 A 1
+80031E4C A 1
+80031E84 A 1
+80031E9C A 1
+80031ED0 A 1
+80031F00 A 1
+80031F3C A 1
+80031F50 A 1
+80031F84 A 1
+80031F98 A 1
+80031FB4 A 1

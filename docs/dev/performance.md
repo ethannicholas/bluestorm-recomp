@@ -380,9 +380,10 @@ read the same at both, `WR_WATCH`), written once a frame at `0x8005420C` in the 
 the helper has copied the centroid (+68..76) into small data and taken a Newton square root
 of something. Converting the root's last multiply with `R -1` changed nothing, so the root is
 not on the path to this word; the entry was taken out again. What +3432 is, and where the 36
-comes from, is the next thing to read. The sound engine's frame count (`fn_80008FC4`,
-`0x80691084`), the one per-frame integer a snapshot diff of the guest's data still found
-unhalved at 60, is halved; the animation player reads it.
+comes from, is the next thing to read. A frame count at `0x80691084` (`fn_80008FC4`), the
+one per-frame integer a snapshot diff of the guest's data still found unhalved at 60, was
+halved here and taken back out in the fifth pass: its function is the water simulation,
+not the sound engine, and the water is treated whole there.
 
 **The HUD's race time is still double, and is not a stored number.** With every per-frame
 integer and float accumulator in the guest's writable data halved at 60 (snapshot diffs at
@@ -401,3 +402,87 @@ timer word are only its own stepper, which is how the HUD's time was known to co
 somewhere else. `GCN_STORE_HIST` output on the device can have the harness's progress line
 interleaved into a writers' line by the other thread; the parser skips such tokens now.
 
+
+### The second headset report (2026-10-10, fifth pass)
+
+With the bones fixed the user raced properly at 60 and reported: the rider's feet turning
+through 180 degrees now and then with the ankles shrunk to a point; dolphins and buoys still
+at double speed; the wake's white streaks still shooting out ahead; steering about half as
+sensitive; and, lower down, the title and menus at double speed (the menu repeat makes a
+double move easy) and the flyover camera the same.
+
+**The streaks are the spray particles.** `fn_8002FABC` moves 58 particles a frame in a race
+(nine on the title screen) by their velocities, four words each; the velocities' dampings
+were in the table but the moves were not, because a byte-copy loop at `0x80003430`, the
+respawn's memcpy, also writes every particle and the histogram took the moves for
+temporaries. At 60 the particles flew at full per-frame speed with half the decay. The Quest
+harness shows it at the Dolphin Park start, where eight riders' spray washes the whole water
+white at frame 2700. The four moves are in `recomp/steps_manual.txt`. The same
+misclassification will hide any step on an object that is reset by memcpy when it spawns;
+the fix in the tool would be to ignore byte stores when classing writers, not done yet.
+
+**The feet are a half-applied solver.** `fn_8005DC1C` runs the rider's body as a chain of
+nodes: each is pulled along a direction by a spring term and snapped to its anchor in the
+same add (`0x8005E1C8/D4/E0`), then pulled back by any overshoot past its reach
+(`0x8005E270/7C/88`). The emitter scaled all six as rates. The anchor snap and the overshoot
+are position corrections; at half they leave a node lagging its anchor every frame, which is
+the stretched-ankle picture. The six are on the skip list; the spring term rides along
+unscaled, which converges twice as fast in time and is the lesser wrong. Not verified in a
+frame dump, since the scripted rider never showed it; the user's next session is the test.
+
+**Steering, measured.** With the stick held left from four seconds into the race (`A+SL` in
+the input script) the first second and a half of the turn agree at both rates, then differ:
+the 30 fps rider's turn rate keeps building to about 48 degrees a second while the 60 fps
+rider's stays flat near 33, with the speeds within 5%. So the steering's first response is
+right and something that accumulates under a held stick is not. Where the game keeps the
+stick: two guest snapshots at the same race frame, one with the stick held and one without,
+differ in 24,000 bytes, and the only word in the rider's record that reads the stick's value
+is +3280 (`0x80620FF8`, -87 held, 0 not). Its readers (`GCN_READERS`) are the rider's input
+function `fn_800948E0`, which slews it toward the pad's signed stick at +3248 by at most 15
+a frame (`0x8009496C`, an integer step by a variable amount, which the emitter's rule leaves
+out), and `fn_80070D34`. Unscaled, the slew reaches full lock in half the time at 60, which
+is the opposite of what the user feels, so the loss is further down: how +3280 becomes a
+torque in `fn_80091F5C` and how the lean that builds under it is damped. The two raw stick
+bytes a byte-for-byte diff of the data region turned up were coincidences: the pad buffers
+live outside the snapshot's range, in the heap.
+
+**The wake emitters.** `fn_80030E2C` keeps nine 40-byte slots, one per rider: a position,
+a velocity and an age. The position step was in the table and the age counts down; the
+velocity's dozen per-frame terms (drag against itself, lift, a gravity that grows with the
+age) were classed temporaries, again because the respawn rewrites the slot, so at 60 the
+velocities built twice as fast and the strips shot out ahead. Sixteen of them are in
+`recomp/steps_manual.txt`; the two that add half the rider's own per-frame displacement are
+left alone, since that displacement already halves. The Dolphin Park start at 60, where
+eight riders launch at once, is the test: at frame 2700 the water near the camera was
+washed white in every build before this one, and is clear at 30.
+
+**Water.** The water mesh is written by `fn_800097D0`, which samples a 64-by-64 field of
+16-bit heights for each of 1,860 vertices with bilinear interpolation; the field is the
+32 KB region at `0x80346488` that changes every frame, two buffers of it. `GCN_WATCH_ADDR`
+on a word of it names the writers: `fn_80008FC4` and the `fn_8000A2E0` it calls, the
+integer loops at hundreds of stores a frame that the first pass took for the sound mixer
+and left alone as "audio and data decoding". They are the wave simulation, called once a
+frame from the rider's water forces (`0x800BDF8C`), and `fn_80013830` is the same for the
+title screen's water. A wave equation cannot be scaled store by store, so `patches.txt`
+gates it with `gcn_step_int`. Gating the simulation call alone was not enough: the caller
+`fn_800BDDC4` is the water-and-effects update, which first pushes every rider's hull into
+the field (`fn_8000E94C`, once per rider), then runs the simulation, then the keyframe
+animation player and `fn_8000E9B0`; with the pushes still at twice the rate the field held
+twice the energy and its foam washed the Dolphin Park start white at 60 in every build
+(clear at 30). So the whole update runs on every other frame at 60, from its two call
+sites, and the animation player's own step needs no entry. The buoys ride the field, so
+they follow it. The field's frame count (`0x80691084`) halves by itself. **The white start
+is still open:** with the whole update gated, the spray and the wake emitters scaled and
+every effect range skip-tested, the water near the camera at the Dolphin Park start is
+still washed white at 60 (frames 2700-3000 with the scripted rider waiting on the grid
+while the field launches) and clear at 30; the rider's own run at speed looks right. It is
+something the table does not reach, so the next tool is a frame dump with the draw log
+(`GCN_DRAWLOG`, `docs/dev/vr.md`) to name the draw that paints it.
+
+**The menus.** A histogram over presented frames 1000-3030 of the route (title, menus,
+flyover) lists 289 per-frame state steps not in the tables, most of them the sound mixer's
+and decoders' (`fn_80008FC4`, `fn_8000A2E0`, `fn_80013830`) which must be left alone; the
+menu repeat timer is among the rest and not yet picked out. The camera's springs
+(`fn_80059084`: a velocity damped and driven, a position stepped by it) have only the
+position step in the table, the velocity's updates having been classed temporaries, which
+is why the camera moves differently; the Verlet treatment the rider got applies.

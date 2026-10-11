@@ -100,3 +100,16 @@
 8008AD80  # fn_8008AB68
 8008AD8C  # fn_8008AB68
 8008AD98  # fn_8008AB68
+# fn_8005DC1C, the rider's body: a chain of nodes each pulled along a direction by a spring
+# term and snapped to its anchor in the same add (0x8005E1C8/D4/E0), then pulled back by
+# any overshoot past its reach (0x8005E270/7C/88). The anchor snap and the overshoot are
+# position corrections, not rates; scaled by half, a node lags its anchor by half a frame
+# every frame, and in the headset the rider's feet turned through 180 degrees now and
+# then with the ankles shrunk to a point (2026-10-10). The spring term rides along
+# unscaled, which converges twice as fast in time and is the lesser wrong.
+8005E1C8
+8005E1D4
+8005E1E0
+8005E270
+8005E27C
+8005E288
