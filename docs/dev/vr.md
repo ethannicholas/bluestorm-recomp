@@ -132,14 +132,14 @@ What the first play on Link turned up:
   game's frame (sky 18.6 vs 17.1, water 128.6 vs 128.3 mean luma). So the swapchain is not
   decoded twice. Played side by side with `GCN_XR_SRGB=0` (a linear `GL_RGBA8` swapchain,
   which the compositor encodes again), the sRGB one is right: it matches what emulators show.
-  The belief overturned is the other way round: **the Quest build has been too bright all
-  along.** It gives the compositor `GL_RGBA8`, which a Quest also takes as linear. Fixing it
-  there is not just a format change. The eyes draw straight into the swapchain images on GL ES,
-  where writes to an sRGB image are encoded unless `EXT_sRGB_write_control` turns that off,
-  and ES 3.0 refuses `glCopyTexSubImage` between attachments and textures of different
-  encodings, which the grab path does. So it needs either an eye target of its own, as on
-  desktop, or sRGB grab textures read without decoding (`EXT_texture_sRGB_decode`), measured
-  on the headset.
+  The belief overturned is the other way round: **the Quest build had been too bright all
+  along.** It gave the compositor `GL_RGBA8`, which a Quest also takes as linear. Fixed on
+  2026-10-11 (gcn-recomp, `docs/graphics.md`, "The swapchain is sRGB"): the Quest 3 has both
+  `GL_EXT_sRGB_write_control` and `GL_EXT_texture_sRGB_decode` (`dumpsys SurfaceFlinger`
+  lists the driver's extensions), so the Android shell asks for `GL_SRGB8_ALPHA8` first, the
+  frontend turns the encode off and logs a read-back proof (`sRGB swapchain, encode on write
+  off: mid-grey stored as 128`), and the renderer's eye grabs copy into sRGB textures read
+  without decoding. `GCN_XR_SRGB=0` in `gcn_env.txt` brings the old look back to compare.
 
 - **The title screen's background black, START alone on it**, in every run after the first.
   Ruled out one at a time, with Meta's mirror and the window captured: the shader cache (a
