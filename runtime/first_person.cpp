@@ -311,17 +311,27 @@ static bool find_racer(const Batch& b, const std::vector<uint8_t>& skip, uint32_
     };
     for (auto& g : groups)
         if (g.racer && size2(g) > kPieceMax * kPieceMax) g.racer = false;
-    // The hull is the longest piece that is at least twice as long as it is wide. The
-    // course intro flies the camera past a buoy, which is rigid, within reach, textured
-    // like the reflection pass's buoys and bigger than the hull; it was the hull for two
-    // seconds before the shape was asked for. The rider is every piece placed near the
-    // hull: the rider's parts have their origins within 40 units of the hull's.
+    // The hull is the longest piece that is at least twice as long as it is wide, and is
+    // wide at all and made of a ski's worth of vertices. The course intro flies the camera
+    // past a buoy, which is rigid, within reach, textured like the reflection pass's buoys
+    // and bigger than the hull; it was the hull for two seconds before the shape was asked
+    // for. Southern Island's destructible hut is rigid pieces of its own, placed by their
+    // own matrices, and the reflection pass draws them when the ski is beside them, so
+    // their textures are the racer's for that frame: a plank 145 units long, 1 across and
+    // 18 vertices was the hull for the rest of the session once the ski stopped at the
+    // hut, and the eye went with it (2026-10-11, the headset's recording replayed). The
+    // hull is 28 across with 1,383 vertices; nothing a course breaks into is either. The
+    // rider is every piece placed near the hull: the rider's parts have their origins
+    // within 40 units of the hull's.
+    constexpr float kHullMinAcross = 8.0f;
+    constexpr uint32_t kHullMinVerts = 100;
     uint32_t hull = UINT32_MAX;
     float best = -1.0f;
     for (size_t k = 0; k < groups.size(); k++) {
         const Group& g = groups[k];
         if (!g.racer) continue;
         const float across = g.hi[0] - g.lo[0], along = g.hi[2] - g.lo[2];
+        if (across < kHullMinAcross || g.verts < kHullMinVerts) continue;
         if (along >= 2.0f * across && along > best) { best = along; hull = (uint32_t)k; }
     }
     if (hull == UINT32_MAX) {

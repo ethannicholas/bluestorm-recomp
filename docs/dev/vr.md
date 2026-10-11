@@ -843,6 +843,14 @@ worth keeping even where they look redundant:
   units every way, and textured like the buoys the reflection pass draws at that moment. It was
   the hull for the two seconds before the countdown, and the eye sat inside it. A hull is 28
   across and 82 long; nothing else near a ski has that shape.
+- *Wide, and made of vertices.* Southern Island's destructible hut is rigid pieces with
+  matrices of their own, and when the ski stops beside it the reflection pass draws them, so
+  their textures are the racer's for that frame. A plank 145 long, 1 across and 18 vertices
+  is long and narrow by the rule above and longer than the hull, so it was the hull from the
+  moment the ski reached the hut to the end of the session, with the eye on the pier looking
+  at a post (2026-10-11, the headset's recording replayed in the harness with `WR_FPLOG=1`,
+  which names the piece taken each frame). A hull is at least 8 across and 100 vertices; the
+  real one is 28 and 1,383.
 
 One thing in the dump worth recording because it looked wrong for a while: the hull's origin is
 *above* the camera's forward axis (view-space y of +8 at a depth of 151) though the racer is drawn
