@@ -263,10 +263,11 @@
 800300A8 A 1
 800300B8 A 1
 800300C8 A 1
-# fn_8006DFA8, the course's creatures (seven in Dolphin Park, none in Ocean City, which
-# is why the first windows missed them): each steps its position by a displacement
-# capped at a per-frame maximum. Classed temporaries because the bone matrix builder
-# writes the same words every frame. fn_8006D378 damps a per-creature value each frame.
+# fn_8006DFA8, first taken for the course's creatures (seven in Dolphin Park, none in
+# Ocean City) and read again in the sixth pass: it reads rider+3288 at 0x8006F0B0, so it is
+# the riders' body mover and the seven were the AI riders. Each steps a position by a
+# displacement capped at a per-frame maximum. Classed temporaries because the bone matrix
+# builder writes the same words every frame. fn_8006D378 damps a per-rider value each frame.
 8006F1B0 A 1
 8006F1B8 A 1
 8006F1C0 A 1

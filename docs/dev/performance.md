@@ -587,3 +587,19 @@ loop was the Quest harness: `--frames=N` to stop at a presented frame, `WR_WATCH
 `WR_SNAP` with `WR_SNAP_RANGE` for the heap. Two desktop runs at once derail each other's
 route (the memory card). Never `sed -i "s/\r//"` a script from PowerShell: `\r` reaches
 the device as `r` and the first `r` of every line is deleted; push LF files as they are.
+
+**The dolphins, after this pass.** Heap snapshots at both rates (`WR_SNAP_RANGE=806A48C0-817F9E20`,
+Dolphin Park with the field launching, 3 s and 6.3 s of race, `snap4.py` in the scratch
+notes: words whose change at 60 is twice their change at 30) turned up bone matrices at
+`0x8102xxxx` and `0x81197xxx`, which the writer watch names as `fn_8004A460` and
+`fn_8004BAA4`, the skinning of a *rider* record (it reads +68..76 and the heading at
++3632..3644): the AI riders bobbing on the grid, not dolphins. And `fn_8006DFA8`, which the
+fifth pass called the course's creatures because Dolphin Park showed seven of them and
+Ocean City none, reads rider+3288 (the character index) at `0x8006F0B0`: it is the riders'
+body mover, and the seven were the seven AI riders. So nothing in the tables touches the
+dolphins yet, and no word of theirs has been found; the way in is the draw side
+(`GCN_DRAWLOG_VERBOSE` for a dolphin draw's first vertex, `GCN_WATCH_ADDR` on that word,
+then on what wrote it). The `0x80E5xxxx-0x80EAxxxx` region of the diff (integer-valued
+floats stepping one per hundred frames, written by `0x80009B98`/`0x80010020`; decaying
+pairs written by `0x800201D8`/`0x800201F8`, whose steps are in the table) is the sound
+and the low-range animation, also not them.
