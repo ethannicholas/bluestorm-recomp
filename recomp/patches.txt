@@ -36,8 +36,15 @@
 # particles at the hull once a frame, and the particles then live a count of frames. At
 # 60 that is twice the particles a second, and the water near the field washes white; at
 # 60 the spawner runs on every other frame.
-800BBC08 { if (gcn_step_int(0x800BBC08u, 1)) { c->lr = 0x800BBC0Cu; fn_8002F478(c); } }
-800BBD9C { if (gcn_step_int(0x800BBD9Cu, 1)) { c->lr = 0x800BBDA0u; fn_8002F478(c); } }
+# The spawner also runs the particles' update (fn_8002FABC at 0x8002F8CC), which sets the
+# per-rider draw stride at 0x804EB080 (1, 2 or -1: never 0 once set); the drawer
+# fn_8002F9EC runs every frame and steps through the particles by that stride, so a frame
+# that draws after a course reset cleared the table and before the spawner has run again
+# loops forever (the "WR_FPS=60 from boot hangs at the course load", and the headset's
+# black screen at a load after a toggle to 60, 2026-10-11). The skip is taken only once the
+# table is set: wr_spray_strides_set (runtime/pace.cpp).
+800BBC08 { uint32_t wr_spray_strides_set(void); if (gcn_step_int(0x800BBC08u, 1) || !wr_spray_strides_set()) { c->lr = 0x800BBC0Cu; fn_8002F478(c); } }
+800BBD9C { uint32_t wr_spray_strides_set(void); if (gcn_step_int(0x800BBD9Cu, 1) || !wr_spray_strides_set()) { c->lr = 0x800BBDA0u; fn_8002F478(c); } }
 # The riders' physics (runtime/pace.cpp, wr_rider_passes; docs/dev/performance.md, "The
 # steering, seventh pass"): the riders' frame fn_80091C04 runs each player's whole
 # physics step four times a frame (the AI riders once). At 60 the count is two passes of

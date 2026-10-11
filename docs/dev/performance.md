@@ -811,3 +811,23 @@ game's N and runs with the step override at 1 (every step whole, every gated cal
 frame, the clock's step whole), and only play frames take one field and half steps
 (`wr_fields_per_frame`, `g_full_frame` in `runtime/pace.cpp`). The title's hand-tabled
 steps above are inert under the override and stay in the table for the record.
+
+**The race's course load was a second hang, in the spray.** With the field count fixed the
+attract demo loaded at 60, and the race's course load from a 60 fps boot still did not
+(the harness stuck at presented frame 2727 on the Ocean City route, and the headset went
+black at a course load after a toggle to 60). A `WR_PACE_KEEP` bisection of that one
+pointed at the steps, and `simpleperf` on the stuck harness process (it runs as shell, so
+shell may profile it; the app needs `run-as`) gave the guest stack: the mode runner, the
+effects frame `fn_800BBDDC`, the spray drawer `fn_8002F9EC`, and `fn_800308A0` spinning in
+its strip loop. The drawer steps through each rider's particles by a per-rider stride
+halfword at `0x804EB080` (1, 2 or -1, set by the particles' update `fn_8002FABC`, which
+runs inside the spawner `fn_8002F478` at `0x8002F8CC`), as `index += stride` until the
+rider's total: a stride of 0 with particles to draw never ends. A course reset clears the
+table; at 30 the spawner runs before the drawer on the same frame and fills it, but
+`patches.txt` gates the spawner to alternate frames at 60, so the frame after a reset
+that falls on a skipped one draws against zeroes. The gate now skips only once every
+rider's stride is set (`wr_spray_strides_set`). The writer watch found the table
+(`GCN_WATCH_ADDR=804EB080` on the watch build: one store in a whole race, at
+`0x8002FFA8`), and the generated code the stride's readers. This is the kind of hazard the
+alternate-frame gating of the water and the spray carries in general, which is the reason
+to replace it (still open).
