@@ -209,14 +209,13 @@ extern "C" uint32_t wr_rider_passes(CPU*) {
 }
 extern "C" void wr_rider_passes_end(CPU*) { step_override(NAN); }
 
-// The spray (recomp/patches.txt, the spawner's gate): whether every rider's draw stride at
+// The spray (recomp/patches.txt, the spawner's gate): whether the player's draw stride at
 // 0x804EB080 has been set since the course reset cleared the table. The spawner's update
-// writes 1, 2 or -1 there for each rider and never 0, and the drawer, which runs every
-// frame, steps through the particles by it, so the spawner may be skipped only once it has
-// run since the reset; a zero stride with particles to draw is a loop that never ends.
-extern "C" uint32_t wr_spray_strides_set() {
-    const uint32_t riders = mem_r32(0x806916FCu);
-    for (uint32_t i = 0; i < riders && i < 8; i++)
-        if (mem_r16(0x804EB080u + 2 * i) == 0) return 0u;
-    return 1u;
-}
+// writes 1, 2 or -1 there and never 0, and the drawer, which runs every frame, steps
+// through the particles by it, so the spawner may be skipped only once it has run since
+// the reset; a zero stride with particles to draw is a loop that never ends. The player's
+// entry alone: the other riders' entries stay 0 through a whole race at 30 (the writer
+// watch, 2026-10-11) without the drawer looping on them, and a check over all of them kept
+// the spawner running every frame, which doubled the spray and its cost (the headset:
+// long streaks behind every ski, and the frame rate gone).
+extern "C" uint32_t wr_spray_strides_set() { return mem_r16(0x804EB080u) != 0 ? 1u : 0u; }
