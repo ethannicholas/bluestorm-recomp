@@ -36,3 +36,11 @@
 # 60 the spawner runs on every other frame.
 800BBC08 { if (gcn_step_int(0x800BBC08u, 1)) { c->lr = 0x800BBC0Cu; fn_8002F478(c); } }
 800BBD9C { if (gcn_step_int(0x800BBD9Cu, 1)) { c->lr = 0x800BBDA0u; fn_8002F478(c); } }
+# The riders' physics (runtime/pace.cpp, wr_rider_passes; docs/dev/performance.md, "The
+# steering, seventh pass"): the riders' frame fn_80091C04 runs each player's whole
+# physics step four times a frame (the AI riders once). At 60 the count is two passes of
+# the original size per paced frame, with every step site inside the loop unscaled; the
+# first instruction after both loops ends the override.
+80091D4C { uint32_t wr_rider_passes(CPU*); c->r[30] = wr_rider_passes(c); }
+80091DC4 { uint32_t wr_rider_passes(CPU*); c->r[30] = wr_rider_passes(c); }
+80091E00 { void wr_rider_passes_end(CPU*); wr_rider_passes_end(c); c->r[3] = LD32((c->r[13] + (uint32_t)-28484)); }

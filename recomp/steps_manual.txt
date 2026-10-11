@@ -344,3 +344,16 @@
 8005AB0C A
 8005AB18 B
 8005AB38 A
+# fn_80093858, the integrator's distance constraints (65 of them, 12-byte records of two
+# particle pointers and a tenth of the rest length): one pass a frame adds to each end's
+# accumulator (rest / (10 * length) - 0.109) times the separation, about a tenth of the
+# violation, and the position step at 0x80093A90 then applies it with the momentum. The
+# hull is a soft spring system, not a rigid body; at a half step the correction ran twice
+# a frame unscaled, the hull was twice as stiff, and the same roll torque banked it two
+# thirds as far (the turn's seventh pass). The correction is a force in the Verlet sense.
+80093A04 A 2
+80093A10 A 2
+80093A1C A 2
+80093A28 A 2
+80093A34 A 2
+80093A40 A 2

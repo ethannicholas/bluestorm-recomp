@@ -646,3 +646,87 @@ writes is one of the things that pass does. That the `0x80E5xxxx-0x80EAxxxx` wor
 creatures or sound: they are the water's vertex buffers. The vertex log and a data-region
 snapshot together get from a thing on screen to its record in two runs; the heap diff never
 would have, since the records do not move.
+
+### The steering, seventh pass: the bank, and the four passes (2026-10-11)
+
+**What was measured.** `WR_SNAP` now takes frame ranges, so one run dumps the rider's
+record (`WR_SNAP_RANGE=80620298-806214C4`) every presented frame of the turn, and
+`tools/rider_trace.py` tabulates it: the velocity's heading, the hull's heading, the slip
+between them, the roll from the hull's right axis (+132..140), the momentum on the hull's
+axes, the particle heights. Over the Ocean City turn the 30 fps hull banks to 37 degrees by
+5.5 s and 46 by 5.8, and the turn rate rises with the bank; the 60 fps hull (sixth-pass
+tables) banked to 24 and 31. **The loss was the bank.** The sixth pass had concluded both
+hulls rolled alike from the heights of particles 0, 3, 2 and 5: that compared the wrong
+pairs. The hull is twelve particles in three rows of three, 0/3/6/9 the left bottom row,
+2/5/7/10 the right, 1/4/8/11 the top (a keel-shaped prism, 72 long, 24 wide, 21 high);
+0 and 3 are both on the left, and left against right the 30 fps hull sat 16 units lower on
+the right, the 60 fps one 4.
+
+**What the roll is.** The site the sixth pass called the lateral grip, `0x8009297C`, is the
+roll torque: gravity plus (right axis . the stern's velocity +3476) times the gain +3692
+goes on the right bottom row, gravity minus it on the left. The reference point +3464 is
+the stern, 27 units behind the centroid (the character table at `0x805A4880`), so the ski
+banks when its stern slides out: the jet pushes the stern out, the stern's lateral velocity
+banks the hull, the bank turns the ski, and the turn adds yaw rate times the lever arm to
+the stern's velocity. A loop with gain near one, which is why a modest error in the
+dynamics settled at a very different bank. The torque's input was the same at both rates
+(right . stern velocity about -5 units a frame from 5 s on), so the response to it differed.
+
+**The hull is not rigid.** The integrator's constraints (65 of them, 12-byte records of two
+particle pointers and a tenth of the rest length at `0x80620628`) are relaxed once per
+call: each adds (rest / length - 1) / 10 of the separation to one end's accumulator and
+subtracts it from the other's, and the position step at `0x80093A90` applies that with
+the momentum. The "eleven relaxations" of the third pass were a misreading of the 11 at
+rider+40, the last hull particle's index. The six correction sites are tabled as forces
+(`A 2`, `recomp/steps_manual.txt`); with them alone the 60 fps turn moved from 55 to 57
+degrees of hull heading at 6 s against 74, and powers 1.5 to 3 ran 54 to 60: the hull's
+stiffness was a part of it, not the thing.
+
+**The four passes.** A writer watch on one bottom particle's vertical accumulator
+(`GCN_WATCH_ADDR=80620430` on the watch build; `watchseq.py` in the scratch notes parses
+it) showed the whole sequence of stores -- the rider update's thrust and roll torque, the
+water's buoyancy and lift, the damping, the integrator's zeroing, the constraints, the
+momentum store -- **four times between two frame marks at 30, and four times per presented
+frame at 60**. The riders' frame `fn_80091C04` runs each player's whole physics step in a
+loop of four passes a frame (`0x80091D4C` and `0x80091DC4` load the count), the AI riders'
+once, and then measures (`fn_80097824`, once a frame). The sixth-pass treatment scaled the
+sites inside the pass -- forces at s^2, dampings at k^s -- and so ran eight half-size
+passes a game frame: the dampings, the constraint corrections and the lateral k acted
+twice as often, and the hull was stiffer and more damped than the game's. The game's own
+dynamics come back with **two passes of the original size per paced frame**: the patches at
+`0x80091D4C`/`0x80091DC4` set the count to four times the step scale and the shared
+runtime's `step_override(1)` (gcn-recomp `docs/diagnostics.md`) leaves every site in the
+loop unscaled; the patch at `0x80091E00`, the first instruction after both loops, ends it
+(`WR_PACE_KEEP=16` keeps the four passes). What runs once a paced frame outside the loop
+keeps the table's scaling: the control law `fn_80095848`, the frame's measurements
+(`fn_80097824`, `R -1`), the HUD's km/h. The AI riders' single pass is still a half-step
+with the sixth-pass tables, which the Championship showed to be close enough.
+
+**The result.** Hull heading and bank over the turn, race time against the 30 fps run:
+
+| race time | 30 fps heading / bank | 60 before (sixth pass) | 60 now |
+|---|---|---|---|
+| 5.0 s | 27 / -25 | 21 / -20 | 22 / -23 |
+| 5.6 s | 54 / -40 | 40 / -25 | 46 / -33 |
+| 6.0 s | 74 / -46 | 52 / -31 | 61 / -42 |
+| 6.4 s | 91 (wall) / -48 | 66 / -32 | 78 / -38 |
+
+The 60 fps route's stick starts two game frames later (its presses sit at doubled frame
+offsets), which is most of the remaining lag; the turn develops at the 30 fps rate and the
+bank reaches the 30 fps bank. The 30 fps run is bit for bit the old one.
+
+**Still open.** The 60 fps rider accelerates a few per cent slower off the line (per-pass
+speed gains of 0.0265 against 0.0275 at launch, a 9% speed deficit by 4.2 s), with the same
+power word and the launch at the same race time. It is not a launch offset; what runs once
+a paced frame between the passes is the suspect, and a per-pass watch on the speed word
+with the new build is the next measurement. The `+4238` halfword, which the third pass
+called the player's four damping passes, is an inner variant (four more integrator calls
+and forces times four, in `fn_800935xx`) set per rider from a global in `fn_800984A4` and
+`fn_800BB69C`; it is 0 for every rider in Time Attack and was not touched.
+
+**Beliefs overturned.** That the rider is integrated once a frame (four passes for a
+player). That the constraints are relaxed eleven times (once per pass, at a tenth). That
+the two hulls rolled alike (wrong particle pairs). That `+4238` marks the player (it marks
+nothing in these runs). The sixth pass's bisection of the rider's step groups could not
+have found this: every group was scaled right for a single pass, and the error was in how
+many passes there were.

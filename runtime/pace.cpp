@@ -24,6 +24,7 @@
 // "The clock"), so at 60 the guest also has to be a CPU twice as fast: clock_set_cpu_scale.
 #include "runtime.h"
 #include "pace.h"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -117,7 +118,7 @@ void watch_print(uint32_t frame) {
 // WR_PACE_KEEP=<bits>, for finding what a 60 fps run trips over: 1 advances the frame
 // counter every frame instead of every other, 2 keeps the clock's full 1/30 step, 4 keeps
 // the two-field pacing (then only the CPU scale is in effect), 8 leaves the steps.txt
-// sites unscaled.
+// sites unscaled, 16 keeps the riders' four physics passes a paced frame (wr_rider_passes).
 int g_keep = 0;
 // WR_FPS_AT=<presented frame>: switch to 60 at that frame rather than at boot, so that a
 // scripted route can run its menus at 30 (where the script's frame counts hold) and only
@@ -165,3 +166,22 @@ extern "C" uint32_t wr_frame_count_step(uint32_t frame) {
     step_frame();
     return g_fps == 60 && !(g_keep & 1) ? gcn_step_int(0x80006F14u, 1.0) : 1u;
 }
+
+
+// The riders' physics (docs/dev/performance.md, "The steering, seventh pass"): the riders'
+// frame fn_80091C04 runs the whole of a player's physics -- the rider update fn_80091F5C
+// with its forces, the water fn_800BE4E0, the damping fn_800BDFC0, the integrator
+// fn_80093858 with its constraints -- in a loop of four passes a frame (the AI riders get
+// one), each pass a complete step of a fixed size. At 60 the loop runs two passes of that
+// size per paced frame with every step site inside it unscaled (gcn-recomp/docs/
+// diagnostics.md, "Finding a game's per-frame steps"), so the hull's dynamics are the
+// game's own; the control law and the frame's measurements, outside the loop, keep the
+// table's scaling. The patches at 0x80091D4C and 0x80091DC4 set the count and the
+// override, the one at 0x80091E00 (the first instruction after both loops) ends it.
+extern "C" uint32_t wr_rider_passes(CPU*) {
+    double s = step_scale();
+    if (g_keep & 16) return 4u;
+    step_override(1.0);
+    return (uint32_t)llround(4.0 * s);
+}
+extern "C" void wr_rider_passes_end(CPU*) { step_override(NAN); }
