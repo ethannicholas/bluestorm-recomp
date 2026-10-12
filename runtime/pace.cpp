@@ -192,6 +192,7 @@ float frame_dt() { return 1.0f / (float)g_fps; }
 // the title, the menus, the loads, the videos and the results run as the game runs them,
 // whatever the thumbstick says, and only the race, the part the headset shows in stereo,
 // is paced at 60.
+void water_snapshot_drop();  // below, with the freeze
 extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
     if (g_fps_at && gx::g_frames_submitted.load(std::memory_order_relaxed) >= g_fps_at) {
         g_fps_at = 0;
@@ -199,6 +200,7 @@ extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
     }
     if (int r = g_fps_request.exchange(0, std::memory_order_relaxed)) wr::set_fps(r);
     if (const int want = in_race() ? g_wanted : 30; want != g_fps) apply_fps(want);
+    if (g_fps == 30 && !in_race()) water_snapshot_drop();
     step_frame();
     g_c_frames++;
     {
@@ -270,12 +272,20 @@ bool g_spray_ran = false;
 // them the stride check forced), the water update's runs -- against the rate and the
 // scale, for seeing from a headset log what the gates are doing.
 extern "C" uint32_t wr_count_water() { g_c_water++; return 1u; }
-// WR_WATER_FREEZE=1 (gcn_env.txt on the headset) or `water_freeze 1` in vr.txt: the
-// water-and-effects update never runs, at either rate, so the sea stands still -- the
-// wave field, the hull pushes, the keyframe-animated course objects and the wake and foam
-// builders inside it all freeze. A test switch: with the surface fixed, whatever still
-// changes on a switch of rate is not the water's own motion.
-namespace { bool g_water_freeze = false; }
+// WR_WATER_FREEZE=1 (gcn_env.txt on the headset) or `water_freeze 1` in vr.txt: the sea
+// stands still, at either rate. The water-and-effects update fn_800BDDC4 still runs (it is
+// also where the surface's mesh is built: skipping it whole removed the water, 2026-10-11),
+// but in place of the wave simulation fn_80008FC4 the field is put back to a snapshot
+// taken the first time it is held, and the two builders the simulation ends with
+// (fn_80009D28, fn_8000A2E0) run on that; the simulation's frame count stops with it. The
+// snapshot is dropped when the race ends, so the next course takes its own. A test switch:
+// with the surface fixed, whatever still changes on a switch of rate is not the water's
+// own motion.
+namespace {
+bool g_water_freeze = false;
+constexpr uint32_t kWaveFieldLo = 0x80346408u, kWaveFieldHi = 0x8034E348u;  // the cells, 8,144 of (int16 h, int16 v)
+std::vector<uint8_t> g_water_snapshot;
+}
 namespace wr {
 void set_water_freeze(bool on) { g_water_freeze = on; if (on) fputs("[pace] water frozen", stderr), fputc(10, stderr); }
 }
@@ -283,6 +293,12 @@ extern "C" uint32_t wr_water_frozen() {
     static const bool env = [] { const char* e = getenv("WR_WATER_FREEZE"); return e && atoi(e) != 0; }();
     return env || g_water_freeze ? 1u : 0u;
 }
+extern "C" void wr_water_hold() {
+    const size_t n = kWaveFieldHi - kWaveFieldLo;
+    if (g_water_snapshot.size() != n) { g_water_snapshot.assign(mem_ptr(kWaveFieldLo), mem_ptr(kWaveFieldLo) + n); return; }
+    memcpy(mem_ptr(kWaveFieldLo), g_water_snapshot.data(), n);
+}
+void water_snapshot_drop() { g_water_snapshot.clear(); }
 extern "C" uint32_t wr_spray_gate(uint32_t pc) {
     if (gcn_step_int(pc, 1.0)) { g_c_spray++; return 1u; }
     if (g_spray_ran && memcmp(mem_ptr(0x804EB080u), g_spray_strides, sizeof g_spray_strides) == 0) return 0u;

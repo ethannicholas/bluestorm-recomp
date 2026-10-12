@@ -162,10 +162,11 @@ Push the harness under a new name while another copy is running, and `chmod +x` 
 a pushed file comes back without its executable bit.
 
 `WR_WATER_FREEZE=1` (in `gcn_env.txt` on the headset) or `water_freeze 1` in `vr.txt` holds the
-sea still at either rate: the water-and-effects update never runs, so the wave field, the
-hull's pushes, the keyframe-animated course objects and the wake and foam builders inside
-it all stop. A test switch, for telling the water's own motion from whatever else changes
-when the rate is switched. Two more switches in `pace.cpp` serve the 60 fps work (`performance.md`): `WR_FPS_AT=<presented
+sea still at either rate: in the water-and-effects update, the wave simulation is replaced by a
+restore of the field from a snapshot taken the first time it is held (dropped when the race
+ends), and the surface's mesh is still built from it. The first version skipped the whole
+update, which is also where the mesh is built, and so removed the water. A test switch, for
+telling the water's own motion from whatever else changes when the rate is switched. Two more switches in `pace.cpp` serve the 60 fps work (`performance.md`): `WR_FPS_AT=<presented
 frame>` switches to 60 at that frame instead of at boot, so the route above runs its menus
 at 30 and only the race at 60 (`WR_FPS_AT=3035` lands four frames into the race scene);
 and `WR_SNAP=<dir>:<p>,<p>-<q>,...` writes the guest's writable data (`0x80340000-0x80692400`)

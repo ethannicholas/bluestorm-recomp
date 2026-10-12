@@ -25,12 +25,15 @@
 # animation player (fn_8000CCF0) and fn_8000E9B0. A wave equation cannot be halved store
 # by store, and gating only the simulation left the pushes at twice the rate and the foam
 # white, so at 60 frames a second the whole update runs on every other frame instead:
-# gcn_step_int is 1 on the frames a step falls on and 0 between; WR_WATER_FREEZE (or
-# `water_freeze 1` in vr.txt, runtime/pace.cpp) skips it at either rate, a test switch
-# that holds the sea still. (fn_80013830, the same
+# gcn_step_int is 1 on the frames a step falls on and 0 between. (fn_80013830, the same
 # simulation for the title screen's water, was gated here too until 60 became the race's only.)
-800BBBDC { uint32_t wr_count_water(void); uint32_t wr_water_frozen(void); if (!wr_water_frozen() && gcn_step_int(0x800BBBDCu, 1)) { wr_count_water(); c->lr = 0x800BBBE0u; fn_800BDDC4(c); } }
-800BBD20 { uint32_t wr_count_water(void); uint32_t wr_water_frozen(void); if (!wr_water_frozen() && gcn_step_int(0x800BBD20u, 1)) { wr_count_water(); c->lr = 0x800BBD24u; fn_800BDDC4(c); } }
+800BBBDC { uint32_t wr_count_water(void); if (gcn_step_int(0x800BBBDCu, 1)) { wr_count_water(); c->lr = 0x800BBBE0u; fn_800BDDC4(c); } }
+800BBD20 { uint32_t wr_count_water(void); if (gcn_step_int(0x800BBD20u, 1)) { wr_count_water(); c->lr = 0x800BBD24u; fn_800BDDC4(c); } }
+# WR_WATER_FREEZE (or `water_freeze 1` in vr.txt; runtime/pace.cpp): inside the update,
+# the wave simulation fn_80008FC4 is replaced by a restore of the field from a snapshot and
+# the two builders it ends with, so the surface's mesh is still built and the sea stands
+# still. A test switch. (Skipping the whole update removed the water: the mesh is built in it.)
+800BDF8C { uint32_t wr_water_frozen(void); void wr_water_hold(void); c->lr = 0x800BDF90u; if (wr_water_frozen()) { wr_water_hold(); fn_80009D28(c); c->lr = 0x800BDF90u; fn_8000A2E0(c); } else fn_80008FC4(c); }
 # The spray (docs/dev/performance.md, fifth pass): fn_8002F478 spawns each rider's spray
 # particles at the hull once a frame, and the particles then live a count of frames. At
 # 60 that is twice the particles a second, and the water near the field washes white; at
