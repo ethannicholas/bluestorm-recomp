@@ -2,12 +2,6 @@
 # power of the step scale where it is not 1: the recompiler scales each by the
 # runtime step scale. Written by tools/rate_sites.py --emit-steps from a
 # GCN_STORE_HIST run; see docs/dev/performance.md, "60 frames per second".
-80020030 A
-80020044 A
-80020058 A
-80020098 A
-800200AC A
-800200C0 A
 800201F4 A
 80020210 A
 8002022C A

@@ -113,3 +113,19 @@
 8005E270
 8005E27C
 8005E288
+# The water's lighting frame (fn_8001F920, 2026-10-11 night): the function builds a frame
+# of two vectors at +12 and +24 of its record from a direction at +0 and, for each, takes
+# out its component along a unit vector of the matrix at r12+32 -- v += d * -(v . m), the
+# same shape as a step with the old value in it, six stores a frame. A construction, not a
+# rate: at half the step each vector kept half the component, the frame was skewed, and
+# the water's reflections at 60 lost brightness (the grid of Ocean City with the sea held:
+# the water's 90th-percentile luma 55.3 against 58.4 at 30, its mean 2% down; with these
+# six unscaled 59.2 and the mean within 1%). Seen on the headset as the reflections' peak
+# brightness dropping on the switch to 60 while sitting still; found by bisecting the table
+# against that luma with the sea frozen (performance.md, "The water at 60").
+80020030
+80020044
+80020058
+80020098
+800200AC
+800200C0

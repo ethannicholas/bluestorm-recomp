@@ -943,3 +943,25 @@ builders `fn_8000E9B0` calls, into vertex arrays near `0x80391428`. So the choic
 
 Neither is small, and the difference is motion at 30 Hz in a stationary-camera view,
 not lighting. Left for a decision.
+
+**The reflections were dimmer at 60, and the sea was not the reason (2026-10-11 night).**
+The user, sitting still on the grid and switching rates, saw the reflections' peak
+brightness drop at 60 every time, which the paragraph above had put down to motion. The
+test that settled it was holding the sea still (`WR_WATER_FREEZE`, `water_freeze 1` in
+`vr.txt`, `docs/dev/diagnostics.md`; the first version skipped the whole water update,
+which is also where the surface's mesh is built, and so removed the water altogether --
+the numbers said "no difference" and the frames had not been looked at). With the field
+held and the mesh still built, the headset still showed the change, and the harness did
+too, smaller: on the Ocean City grid at the same moment the water's 90th-percentile luma
+(rows 400-470 and 600-720 of the eye frame, the ski's column left out) is 58.4 at 30 and
+55.3 at 60, the mean 2% down, every sample. Bisecting the step table against that luma
+with the sea frozen (`WR_PACE_KEEP` bits, then `GCN_STEP_SKIP` in eighths, sixteenths and
+groups, eight runs a round) ended at six sites in `fn_8001F920`, `0x80020030`-`0x800200C0`:
+the function builds a frame of two vectors from a direction and, for each, takes out its
+component along a unit vector of a matrix -- v += d * -(v . m), six stores a frame, the
+shape of a step with the old value in it. A construction, not a rate: at half the step
+each vector kept half the component and the water's lighting frame was skewed. The six
+are in `recomp/steps_skip.txt` now; with them unscaled the 60 fps grid reads 59.2 and the
+mean within 1% of 30's. (Two other groups moved the number the other way, brighter than
+30: the first sixteen effect sites darken the near water when unscaled, and a cluster
+above `0x800C4000` brightens the far; both are rates doing their job.)
