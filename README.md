@@ -329,6 +329,7 @@ Escape quits. Touch controller bindings for the Quest are listed
 | `--first-person[=x,y,z]` | With `--eye`, view from the rider's seat, optionally at that offset from the ski |
 | `--vr` | Play on a PC VR headset (Windows; see [Playing in VR on a PC](#playing-in-vr-on-a-pc)) |
 | `--telemetry[=host:port]` | Send motion to a motion platform (see [Motion platforms](#motion-platforms)) |
+| `--no-music` | Play without the soundtrack (sound effects stay), for recording video |
 | `--sample` | Print periodic profiling samples of what the game code is doing |
 | `--log-all` | Verbose hardware logging |
 
