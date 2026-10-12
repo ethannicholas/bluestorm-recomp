@@ -8,4 +8,5 @@ void toggle_fps();          // 30 to 60 or back, likewise
 int fps();                  // the rate in force now: the wanted one in a race, 30 elsewhere
 int wanted_fps();           // the rate asked for
 float frame_dt();           // seconds per game frame, at the rate in force
+void set_water_freeze(bool on);  // `water_freeze 1` in vr.txt: the sea stands still (a test switch)
 }

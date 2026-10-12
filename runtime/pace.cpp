@@ -270,6 +270,19 @@ bool g_spray_ran = false;
 // them the stride check forced), the water update's runs -- against the rate and the
 // scale, for seeing from a headset log what the gates are doing.
 extern "C" uint32_t wr_count_water() { g_c_water++; return 1u; }
+// WR_WATER_FREEZE=1 (gcn_env.txt on the headset) or `water_freeze 1` in vr.txt: the
+// water-and-effects update never runs, at either rate, so the sea stands still -- the
+// wave field, the hull pushes, the keyframe-animated course objects and the wake and foam
+// builders inside it all freeze. A test switch: with the surface fixed, whatever still
+// changes on a switch of rate is not the water's own motion.
+namespace { bool g_water_freeze = false; }
+namespace wr {
+void set_water_freeze(bool on) { g_water_freeze = on; if (on) fputs("[pace] water frozen", stderr), fputc(10, stderr); }
+}
+extern "C" uint32_t wr_water_frozen() {
+    static const bool env = [] { const char* e = getenv("WR_WATER_FREEZE"); return e && atoi(e) != 0; }();
+    return env || g_water_freeze ? 1u : 0u;
+}
 extern "C" uint32_t wr_spray_gate(uint32_t pc) {
     if (gcn_step_int(pc, 1.0)) { g_c_spray++; return 1u; }
     if (g_spray_ran && memcmp(mem_ptr(0x804EB080u), g_spray_strides, sizeof g_spray_strides) == 0) return 0u;

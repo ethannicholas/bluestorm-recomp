@@ -79,7 +79,10 @@ void set_first_person(bool on, const VrConfig& c) {
 }
 
 // `fps 60` in vr.txt runs the race at 60 frames a second (pace.cpp); 30 is the game's own.
-void config_loaded(const VrConfig& c) { wr::set_fps((int)c.get("fps", 30.0f)); }
+void config_loaded(const VrConfig& c) {
+    wr::set_fps((int)c.get("fps", 30.0f));
+    wr::set_water_freeze(c.get("water_freeze", 0.0f) != 0.0f);
+}
 
 void config_defaults(VrConfig& c) {
     // Game units to the metre. 100 was a guess and left the racers looking about half the
