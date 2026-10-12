@@ -10,7 +10,12 @@ emulator's CPU core.
 
 > **This repository contains no game code or data.** You must supply your own disc image,
 > dumped from a copy of the game that you own. The build process reads the executable out of
-> *your* image and recompiles it locally. Nothing derived from the game is distributed here.
+> *your* image and recompiles it locally. No game code or assets are distributed here; what
+> this repository holds about the game is a table of its function addresses and names.
+
+## License
+
+The code in this repository and in `gcn-recomp` is released under the [MIT License](LICENSE).
 
 ## Legal
 
@@ -225,7 +230,7 @@ survive reinstalling the app.
 
 ### Playing
 
-The app appears on the headset under **Library → Unknown Sources → Wave Race**.
+The app appears on the headset under **Library → Unknown Sources → Blue Storm Recomp**.
 
 Outside of races, your view will be a 2D screen in front of you. It will transition to stereoscopic
 3D at the beginning of the race. During a race, clicking the right thumbstick switches between the

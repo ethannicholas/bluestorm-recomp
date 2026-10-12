@@ -13,6 +13,7 @@ add_subdirectory(gcn-recomp)
 gcn_add_game(
   NAME waverace
   TITLE "Wave Race: Blue Storm"
+  LABEL "Blue Storm Recomp"
   DISC_ID GWRE01
   DOL_SHA1 d500d8f5bab39ae5fed67d0a0864095a9ea190d9
   SYMBOLS ${CMAKE_SOURCE_DIR}/analysis/symbols.txt
