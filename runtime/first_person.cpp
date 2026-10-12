@@ -26,7 +26,12 @@ float g_fp_anchor[3] = {0.0f, 57.5f, -46.5f};
 // into view space): see first_person_eye. Invalid until a hull has been found since first
 // person was switched on, and after any frame without one, so the eye starts where the
 // rider is rather than easing in from wherever it was.
-struct FpEye { bool valid; float pos[3]; float yaw, pitch, roll; };
+struct FpEye {
+    bool valid;
+    float pos[3];
+    float yaw, pitch, roll;
+    float raw_yaw, raw_pitch, raw_roll;   // the hull's, this frame: what the eye eases toward
+};
 FpEye g_fp_eye;
 float g_fp_height_s = 0.0f, g_fp_yaw_s = 0.1f, g_fp_tilt = 0.6f, g_fp_tilt_s = 0.15f;
 // What the frame hook found in the batch the renderer is about to draw, for the eye hook
@@ -140,6 +145,9 @@ static bool first_person_step(const float* wm, const float* hm, const float anch
     const float dt = wr::frame_dt();  // once per game frame
     auto rate = [dt](float tau) { return tau > 0.0f ? 1.0f - expf(-dt / tau) : 1.0f; };
     FpEye& e = g_fp_eye;
+    e.raw_yaw = target_yaw;
+    e.raw_pitch = target_pitch;
+    e.raw_roll = target_roll;
     const float dx = target[0] - e.pos[0], dz = target[2] - e.pos[2];
     // A respawn after a crash moves the ski a long way in one frame; follow it there.
     if (!e.valid || dx * dx + dz * dz > 300.0f * 300.0f) {
@@ -481,7 +489,8 @@ static void frame_hook(const Batch& b, const std::vector<uint8_t>& skip) {
     }
     if (motion) {
         const FpEye& e = g_fp_eye;
-        wr::motion_frame({e.valid, {e.pos[0], e.pos[1], e.pos[2]}, e.yaw, e.pitch * g_fp_tilt, e.roll * g_fp_tilt});
+        wr::motion_frame({e.valid, {e.pos[0], e.pos[1], e.pos[2]}, e.yaw, e.pitch * g_fp_tilt, e.roll * g_fp_tilt,
+                          e.raw_yaw, e.raw_pitch, e.raw_roll});
     }
 }
 

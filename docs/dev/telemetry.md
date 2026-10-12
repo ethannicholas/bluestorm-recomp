@@ -23,16 +23,20 @@ the eye lapses, as it used to on a gap in the frames.
 
 `runtime/motion.cpp` turns the eye into motion:
 
-- **pitch, roll** are the eye's eased angles, already scaled by `fp_tilt`. Roll is negated:
-  the eye's is positive with the right side up, the telemetry's with the right side down.
-- **yaw** is the eye's eased heading, negated so that it rises turning right.
+- **pitch, roll** are the eye's eased angles, already scaled by `fp_tilt`, blended by `raw`
+  toward the hull's own (all the way, by default since the second rig session; see "Livelier"
+  below). Roll is negated: the eye's is positive with the right side up, the telemetry's with
+  the right side down.
+- **yaw** is the eye's eased heading, blended the same way, negated so that it rises turning
+  right.
 - **velocity** is the eye's position differenced per game frame (`frame_dt`) and eased over
   `ski_velocity_s` (0.05 s); **acceleration** is that differenced again and eased over
   `ski_accel_s` (0.15 s, the eye's own `fp_tilt_s`). The position is the hull's exactly, so
   this second easing is the only smoothing the accelerations get. At 0.1 s the heave was
   still jumpy at 30 Hz.
 - **surge** and **sway** are that acceleration along and across the eye's heading, **heave** is
-  its world-vertical part (no gravity), and the **lateral velocity** is the slide.
+  its world-vertical part (no gravity, eased again over `heave_s`), and the **lateral
+  velocity** is the slide. On top of each goes a knock for an impact ("Livelier" below).
 
 ## No jerks
 
@@ -109,6 +113,80 @@ reached 15 m/s^2 in 23 samples. So the start in the flat run was not repeated. W
 it is open. A guess not yet checked: that run passed through the attract demo before the
 race, so the racer was found in the demo and lost and found again around it. If it comes
 back, record a start (`saves/inputs`) and replay it to a listener on another port.
+
+## Livelier: the `raw` blend
+
+After the championship the motion felt "a little tame", and the request was to blend in some
+of the motion from before the smoothing. The first answer, `raw` (0 to 1, with `raw_angles`
+and `raw_accel` to set the halves apart), mixed the eye's eased, fp_tilt-scaled pitch and roll
+and its eased heading toward the hull's own, and the eased acceleration toward one
+differenced frame to frame with none. It was blended before telemetry.cpp's safeguards, so
+the ease to rest, the crossfades and the limits applied to it as to everything else.
+
+The scripted Ocean City Harbor route with three hard turns added, run at 0, 0.5 and 1 to a
+listener (each run from its own directory, with its own `telemetry.txt` and a copy of
+`saves/`). Mean step between packets during the race, first at 30 fps, then again at 60 once
+60 became the race's default (a packet a game frame, so the steps there are about half):
+
+| fps | raw | pitch | roll | surge | sway | heave | pitch rms |
+|-----|-----|-------|------|-------|------|-------|-----------|
+| 30  | 0   | 0.16  | 0.55 | 1.07  | 1.25 | 1.79  | 2.0       |
+| 30  | 0.5 | 0.31  | 0.56 | 1.72  | 1.70 | 1.90  | 2.2       |
+| 30  | 1   | 0.55  | 0.81 | 1.86  | 1.81 | 1.99  | 3.4       |
+| 60  | 0   | 0.05  | 0.19 | 0.50  | 0.80 | 0.90  | 1.8       |
+| 60  | 0.5 | 0.12  | 0.33 | 0.86  | 0.97 | 0.97  | 2.3       |
+| 60  | 1   | 0.23  | 0.43 | 0.93  | 0.98 | 0.98  | 3.0       |
+
+On those numbers it did what was asked: at 1, three to four times the pitch activity and
+about twice the roll and surge, with pitch's swing 1.5-1.7 times as big (fp_tilt's 0.6 gone). The largest
+step on any channel stayed under 2.2 in every run (1.8-2.1 at 60), which is the rate limit
+(60 per second) across the longest gap between packets. With the raw accelerations the limit
+is doing much of the work: their mean step is close to it, and at 60 fps sway and heave sit
+on it from 0.5 up. That last point was the real problem, and it took a ride to see it.
+
+Running the three at once did not work: each stopped sending after 30 s. Nor did `timeout`
+stop the game under Git Bash (the native process outlives it); `taskkill` does.
+
+### At 0.5 on the rig: better, but no pitch, no knocks, no waves
+
+Ridden at `raw 0.5`: "better", but "almost no pitch action" going off a ramp and diving, a
+collision "feels like nothing", and no vertical movement from the waves. The ride's input log
+(`saves/inputs/20261011-222353`) was replayed with `--fast` to a listener, at `raw 1` with
+every range and rate limit opened up, which gives the unsmoothed signal a game frame at a time
+(the limits work in wall time, so `--fast` is only good with them off). It showed:
+
+- **The pitch is there.** The hull pitches 30 degrees on a dive (12 up to -33 in 0.18 s, some
+  300 degrees a second); p90 12 degrees, p99 25 in a race. At 0.5 with `angle_rate 60`, the
+  dive reached the rig as a lean to -22 over a third of a second.
+- **The unsmoothed accelerations are the chop**, not motion a platform can make: at 96 km/h
+  the heave goes -76, -66, -19, ... 187, 158, ... -202 m/s^2 frame to frame, its
+  autocorrelation gone in three frames (10-20 Hz). Median 25 m/s^2 for heave, 16 for sway.
+- **So the rate limit was the smoothing.** Modelled on that ride, the accelerations sent at 0.5
+  sat at `accel_rate` 80-90% of the frames (heave 90%), a triangle wave slewing at 60 m/s^2 a
+  second, and even at `raw 0` 62% (surge) and 88% (heave). The six biggest collisions reached
+  the rig as -4.9, -9.3, -8.5, -10.2, +2.7 and +0.1 m/s^2: two the wrong way. Whatever a
+  platform makes of a signal held at its slew limit, it is not a knock or a wave.
+- **The impacts stand clear of it.** With only the velocity's 0.05 s easing, collisions read
+  -200 to -340 m/s^2 and landings +160 to +220, where the chop is 20-40.
+
+What replaced the blend (`motion.cpp`): the accelerations are never blended toward the
+unsmoothed ones; heave is eased again over `heave_s`; and an impact is the fast acceleration's
+excess over the eased one beyond `impact_threshold` (50), times `impact` (0.25), held at its
+peak and released over `impact_s` (0.2 s), and only from 0.5 s after the track restarts, while
+the eased value is still rising from zero. `raw` blends the angles only, and is 1 by default.
+In the shared module the rates went up to `angle_rate 120` and `accel_rate 300`, with yaw
+split off as `yaw_rate` and left at 60: the unexplained start in the flat run above was a
+heading swing. The same model gave, per channel, the share of race frames at the rate limit and
+the six collisions' lows:
+
+| | surge at limit | heave at limit | collisions (m/s^2) |
+|---|---|---|---|
+| `raw 0.5`, rate 60 | 80% | 90% | -4.9 -9.3 -8.5 -10.2 +2.7 +0.1 |
+| impacts, rate 300 | 1% | 2% | -15 (all six, the range limit) |
+
+Pitch at `raw 1` and 120 degrees a second is at its limit 1% of the frames. Then on the rig,
+at `raw 1` with these defaults, about 20 minutes of races: "amazing, much better". Its input
+log is `saves/inputs/20261011-225452`.
 
 ## Testing without moving the rig
 

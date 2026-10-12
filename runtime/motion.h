@@ -13,12 +13,14 @@ bool motion_enabled();
 
 // The first-person eye after this game frame's step (first_person.cpp): where it is, in the
 // world's own frame and game units, and its eased heading, pitch and roll in radians, the
-// pitch and roll already scaled the way the eye takes them. `valid` is false while there is
-// no ski on screen.
+// pitch and roll already scaled the way the eye takes them; and the hull's own heading,
+// pitch and roll this frame, neither eased nor scaled, for the `raw` blend. `valid` is false
+// while there is no ski on screen.
 struct EyePose {
     bool valid;
     float pos[3];
     float yaw, pitch, roll;
+    float raw_yaw, raw_pitch, raw_roll;
 };
 void motion_frame(const EyePose& eye);
 

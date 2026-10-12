@@ -13,6 +13,23 @@
 // are then turned into the ski's heading: surge along it, sway across it, heave up the
 // world's vertical.
 //
+// That is the motion as the eye has it, and on a rig it is on the tame side. `raw` (0 to 1,
+// 1 by default) blends the eye's angles toward the hull's own: its pitch and roll at full size rather than
+// fp_tilt's, and unsmoothed, and its heading. A dive off a ramp pitches the hull 30 degrees
+// in a tenth of a second, and the eye takes the edge off that.
+//
+// The accelerations are not blended the same way. Differenced frame to frame with no easing
+// they are the hull bouncing on the chop, 100-200 m/s^2 back and forth ten or twenty times
+// a second at speed, far faster than a platform moves; sent, they held the old rate limit
+// four frames in five and buried everything else. Heave is the worst of it, so it is eased
+// again over `heave_s` (0.15 s) on top of `ski_accel_s`. What was buried is impacts: a
+// collision is 200-350 m/s^2 for a few frames after the velocity's own easing, a landing
+// 150-220, well clear of the chop's 20-40. So an impact is that fast acceleration's excess
+// over the eased one beyond `impact_threshold` (50 m/s^2), scaled by `impact` (0.25), held
+// at its peak and let go over `impact_s` (0.2 s): a knock, in the right direction, long
+// enough for a platform to make. Whatever the motion, it goes through the same safeguards
+// (telemetry.cpp): the ease to rest, the crossfades and the range and rate limits.
+//
 // A difference across a discontinuity is a spike, and a spike is a blow to whoever is on the
 // platform, so the track is careful about what it differences:
 //
@@ -49,9 +66,13 @@ struct Track {
     float pos[3];
     float vel[3];   // m/s, eased
     float acc[3];   // m/s^2, eased
+    float heave;    // m/s^2, acc[1] eased again
+    float tracked;  // seconds of accelerations since the track restarted
+    float knock[3]; // m/s^2, the impact being let go
 };
 Track g_track;
 constexpr int kPauseFrames = 4;
+constexpr float kImpactAfter = 0.5f;   // seconds; ski_accel_s and heave_s are 0.15 each
 
 }  // namespace
 
@@ -76,8 +97,9 @@ void motion_frame(const EyePose& eye) {
     if (t.known == 0 || jump) {
         for (int i = 0; i < 3; i++) {
             t.pos[i] = eye.pos[i];
-            t.vel[i] = t.acc[i] = 0.0f;
+            t.vel[i] = t.acc[i] = t.knock[i] = 0.0f;
         }
+        t.heave = t.tracked = 0.0f;
         t.known = 1;
         t.still = 0;
         m.discontinuity = true;
@@ -94,15 +116,27 @@ void motion_frame(const EyePose& eye) {
         } else {
             static const float vel_s = telemetry::get("ski_velocity_s", 0.05f);
             static const float acc_s = telemetry::get("ski_accel_s", 0.15f);
+            static const float heave_s = telemetry::get("heave_s", 0.15f);
+            static const float impact = telemetry::get("impact", 0.25f);
+            static const float impact_threshold = telemetry::get("impact_threshold", 50.0f);
+            static const float impact_s = telemetry::get("impact_s", 0.2f);
             auto rate = [span](float tau) { return tau > 0.0f ? 1.0f - expf(-span / tau) : 1.0f; };
             for (int i = 0; i < 3; i++) {
                 const float v = d[i] / u / span;
                 const float prev = t.vel[i];
                 t.vel[i] += (v - t.vel[i]) * rate(vel_s);
-                const float a = (t.vel[i] - prev) / span;
+                const float a = (t.vel[i] - prev) / span;   // the fast acceleration
                 t.acc[i] += (a - t.acc[i]) * rate(acc_s);
+                if (i == 1) t.heave += (t.acc[1] - t.heave) * rate(heave_s);
+                // Only once the eased one has had time to follow: just after a restart it is
+                // still easing up from zero, and the chop would read as a knock.
+                const float excess = t.tracked >= kImpactAfter ? a - (i == 1 ? t.heave : t.acc[i]) : 0.0f;
+                const float k = copysignf(fmaxf(0.0f, fabsf(excess) - impact_threshold), excess) * impact;
+                if (fabsf(k) > fabsf(t.knock[i])) t.knock[i] = k;
+                else t.knock[i] -= t.knock[i] * rate(impact_s);
             }
             t.known = 3;
+            t.tracked += span;
         }
         for (int i = 0; i < 3; i++) t.pos[i] = eye.pos[i];
     }
@@ -116,15 +150,22 @@ void motion_frame(const EyePose& eye) {
     const float fwd[3] = {sy, 0.0f, cy};
     const float right[3] = {-cy, 0.0f, sy};
     auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    static const float raw_ang = telemetry::get("raw", 1.0f);
+    auto mix = [](float eased, float r, float k) { return eased + (r - eased) * k; };
+    float dyaw = eye.raw_yaw - eye.yaw;   // across the wrap the short way
+    while (dyaw > 3.14159265f) dyaw -= 6.2831853f;
+    while (dyaw < -3.14159265f) dyaw += 6.2831853f;
+    float acc[3];
+    for (int i = 0; i < 3; i++) acc[i] = (i == 1 ? t.heave : t.acc[i]) + t.knock[i];
     constexpr float kDeg = 57.2957795f;
     m.active = true;
     m.speed_kmh = sqrtf(t.vel[0] * t.vel[0] + t.vel[2] * t.vel[2]) * 3.6f;
-    m.pitch = eye.pitch * kDeg;
-    m.roll = -eye.roll * kDeg;     // the eye's roll is positive with the right side rising
-    m.yaw = -eye.yaw * kDeg;       // turning right lowers the eye's yaw; a heading rises
-    m.surge = dot(t.acc, fwd);
-    m.sway = dot(t.acc, right);
-    m.heave = t.acc[1];
+    m.pitch = mix(eye.pitch, eye.raw_pitch, raw_ang) * kDeg;
+    m.roll = -mix(eye.roll, eye.raw_roll, raw_ang) * kDeg;   // the eye's roll is positive with the right side rising
+    m.yaw = -(eye.yaw + dyaw * raw_ang) * kDeg;              // turning right lowers the eye's yaw; a heading rises
+    m.surge = dot(acc, fwd);
+    m.sway = dot(acc, right);
+    m.heave = acc[1];
     m.sway_velocity = dot(t.vel, right);
     telemetry::publish(m);
 }
