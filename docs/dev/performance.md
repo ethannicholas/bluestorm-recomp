@@ -906,3 +906,40 @@ wrong), the pacing log, which now prints the rate wanted beside the rate in forc
 "race" while the predicate holds. The scripted routes no longer need their frame numbers
 doubled for a 60 fps run: the menus hold their counts at 30, and `WR_FPS=60` from boot now
 does what `WR_FPS_AT` was for.
+
+### The water at 60: what differs (2026-10-11 night)
+
+Asked about the water's lighting and reflections at 60, frame-by-frame dumps of the Ocean
+City start at both rates (`wt30` 3100-3140, `wt60` 3169-3249, the same race time) say
+this: at the same moment the two pictures match, the lighting included, and the heat map
+of their difference shows only the wave pattern's phase a little apart over the whole
+surface (the simulation ran the same number of steps on different frames of the rider's
+passes). What differs is motion. The mean change of the lower half of the frame from one
+presented frame to the next is 1.7-2.0 at 30 and, at 60, alternates 1.5, 0.8, 1.5, 0.8:
+the surface moves on the frames the gated water update runs and stands on the others,
+while the ski, the camera and the sky move every frame. A surface animating at 30 inside a
+60 fps picture is what "the reflections define the surface less" looks like; nothing in
+the shading differs.
+
+What a real treatment needs. The wave field is 8,143 cells of a 16-bit height and
+velocity from `0x80346408` (the base the simulation `fn_80008FC4` addresses as
+`0x80340000 + 25544`, heights from +192), updated by neighbour springs (differences
+shifted by 5, sums by 9) along columns then rows and finished with h += v * 2/3 and v -=
+v / 256. A half step of the field for the draw (h -= v / 3 after the update, restored
+before the next) was tried and changed nothing in the frame diffs: the drawn surface is
+not read from the field at draw time but built inside the gated update, by `fn_8000A2E0`
+(0x1254 bytes, per-rider regions, floats into objects at +100..+108) and the effect
+builders `fn_8000E9B0` calls, into vertex arrays near `0x80391428`. So the choices are:
+
+- Interpolate the mesh: keep the previous build's vertex arrays and, on the skipped
+  frame, write the average of the two. Needs the builder's output layout (which arrays,
+  how many vertices, the frame-parity double buffering `fn_8000E9B0` selects by bits of
+  the word at `r13 - 30280`), nothing of the simulation.
+- Run the simulation at 60: the spring shifts become 7 and 11, the integration h += v / 3,
+  the damping v / 512, the update ungated; then the pushes and the effect builders inside
+  it run every frame and their own rates (the wake, the foam, the keyframe player's time)
+  must be halved, which was the fifth pass's reason for gating the whole update. The
+  integer shifts also lose two bits of ripple.
+
+Neither is small, and the difference is motion at 30 Hz in a stationary-camera view,
+not lighting. Left for a decision.
