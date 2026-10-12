@@ -76,10 +76,10 @@ reflection copy by screen position, and the pair's second pass draws from a came
 not made from. And the left thumbstick click that overrode the game's choice of theater or stereo
 was only ever clicked by accident, so it became a `stereo_toggle` setting, off for this game; later
 the same day it was removed from the shared frontend altogether, since a switch that is off by
-default and only ever pressed by accident is not worth a setting. The left click is now the game's
-(`vr::GameHooks::left_click`), and here it toggles 30 and 60 fps: `wr::toggle_fps` in
-`runtime/pace.cpp` queues the change for the guest thread, which applies it at the next frame
-step, the way `WR_FPS_AT` does. A game with no `wants_stereo` hook now has only `start_in_stereo`. Nothing in `gcn-recomp` names this game: `gcn-recomp/tools/check_generic.py`
+default and only ever pressed by accident is not worth a setting. The left click is the game's
+(`vr::GameHooks::left_click`); from 2026-10-10 to 2026-10-11 it toggled 30 and 60 fps for
+comparing the two, and since the night of 2026-10-11 the race runs at 60 by default and the
+click does nothing: `fps 30` in `vr.txt` is the switch (`runtime/pace.cpp`). A game with no `wants_stereo` hook now has only `start_in_stereo`. Nothing in `gcn-recomp` names this game: `gcn-recomp/tools/check_generic.py`
 passes, and runs as a hook after every edit here too (`.claude/settings.json`).
 
 ## PC VR (2026-10-11)

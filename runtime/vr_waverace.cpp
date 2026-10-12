@@ -78,9 +78,10 @@ void set_first_person(bool on, const VrConfig& c) {
     gx::render_set_first_person(on);
 }
 
-// `fps 60` in vr.txt runs the race at 60 frames a second (pace.cpp); 30 is the game's own.
+// The race runs at 60 frames a second on the headset (pace.cpp); `fps 30` in vr.txt is the
+// game's own rate.
 void config_loaded(const VrConfig& c) {
-    wr::set_fps((int)c.get("fps", 30.0f));
+    wr::set_fps((int)c.get("fps", (float)wr::wanted_fps()));
     wr::set_water_freeze(c.get("water_freeze", 0.0f) != 0.0f);
 }
 
@@ -112,7 +113,7 @@ void config_defaults(VrConfig& c) {
     c.extra["fp_yaw_s"] = 0.1f;
     c.extra["fp_tilt"] = 0.6f;
     c.extra["fp_tilt_s"] = 0.15f;
-    c.extra["fps"] = (float)wr::wanted_fps();  // what WR_FPS set, unless vr.txt says otherwise
+    c.extra["fps"] = (float)wr::wanted_fps();  // 60, or WR_FPS; `fps 30` is the game's own
 }
 
 const bool installed = [] {
@@ -121,8 +122,6 @@ const bool installed = [] {
     h.config_loaded = config_loaded;
     h.wants_stereo = wants_stereo;
     h.set_first_person = set_first_person;
-    // Left thumbstick click: 30 or 60 frames a second, for comparing the two in the headset.
-    h.left_click = wr::toggle_fps;
     vr::set_game_hooks(h);
     return true;
 }();

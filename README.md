@@ -238,7 +238,6 @@ compiled; later runs will take advantage of cached copies.
 | Start | Menu (left) |
 | D-pad | Left thumbstick while holding the left grip |
 | *(first person on/off)* | Right thumbstick click |
-| *(30 or 60 fps, in a race)* | Left thumbstick click |
 
 If something goes wrong, `adb logcat -s waverace` shows the app's log, including compositor and
 game frame counts every second.
@@ -273,6 +272,7 @@ theater_stereo 0         # show the theater screen as a stereo pair (the water's
 theater_depth 1          # how much of your eye separation the pair is drawn with; less is flatter
 panel_band 0             # depth-buffer band of draws pinned to the screen itself; 0 pins none
 perf_boost 1             # ask the headset for its highest CPU and GPU clocks
+fps 60                   # the race's frame rate, 60 or 30; the menus always run at the game's 30
 first_person 0           # start races in first person rather than behind the chase camera
 fp_x 0                   # where the first-person eye sits relative to the ski, in game units:
 fp_y 57.5                #   x right, y up, z forward

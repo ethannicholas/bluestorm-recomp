@@ -313,8 +313,9 @@ scene, and a 60 fps run then needs a third of the frames. `compare_runs.py --res
 the two runs up on the race scene (the fourth restart of the frame counter) rather than on
 boot.
 
-**The headset's toggle, and the freeze it found (2026-10-10).** Clicking the left thumbstick
-switches between 30 and 60 in play (`vr::GameHooks::left_click`, `wr::toggle_fps`; the
+**The headset's toggle, and the freeze it found (2026-10-10).** (The toggle is gone since the
+night of 2026-10-11: 60 is the race's default and `fps 30` in `vr.txt` the switch.) Clicking the
+left thumbstick switched between 30 and 60 in play (`vr::GameHooks::left_click`, `wr::toggle_fps`; the
 change is applied on the guest thread at the next frame step, like `WR_FPS_AT`). The first
 build of it froze the game for tens of seconds at every click: the log showed one game frame
 every 1.67 s for over a minute after a click to 60. `WR_FPS_AT` had switched mid-run without

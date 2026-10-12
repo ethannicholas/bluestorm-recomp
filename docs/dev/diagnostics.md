@@ -166,10 +166,11 @@ sea still at either rate: in the water-and-effects update, the wave simulation i
 restore of the field from a snapshot taken the first time it is held (dropped when the race
 ends), and the surface's mesh is still built from it. The first version skipped the whole
 update, which is also where the mesh is built, and so removed the water. A test switch, for
-telling the water's own motion from whatever else changes when the rate is switched. Two more switches in `pace.cpp` serve the 60 fps work (`performance.md`): `WR_FPS_AT=<presented
-frame>` switches to 60 at that frame instead of at boot, so the route above runs its menus
-at 30 and only the race at 60 (`WR_FPS_AT=3035` lands four frames into the race scene);
-and `WR_SNAP=<dir>:<p>,<p>-<q>,...` writes the guest's writable data (`0x80340000-0x80692400`)
+telling the water's own motion from whatever else changes when the rate is switched. The race's rate is 60 by default, in the harness as on the headset; `WR_FPS=30` is the game's
+own, `fps` in `vr.txt` overrides both, and the menus run at 30 whatever is set, so a scripted
+route keeps its frame numbers either way (`performance.md`, "The race only"). Two more switches in
+`pace.cpp` serve the 60 fps work: `WR_FPS_AT=<presented frame>` asks for 60 from that frame rather
+than from boot (from before the menus ran at 30; it is not needed now); and `WR_SNAP=<dir>:<p>,<p>-<q>,...` writes the guest's writable data (`0x80340000-0x80692400`)
 to `<dir>/snap_<p>.bin` at those presented frames, every frame of a range (`WR_SNAP_RANGE=<lo>-<hi>`, hex, snapshots
 another range instead: the heap arena is `806A48C0-817F9E20`, 17 MB a snapshot, and that is
 where the course's objects, the dolphins among them, keep their state). A range narrowed

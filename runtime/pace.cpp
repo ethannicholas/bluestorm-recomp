@@ -124,12 +124,10 @@ int g_keep = 0;
 // scripted route can run its menus at 30 (where the script's frame counts hold) and only
 // the race at 60; a 60 fps run that goes wrong is bisected many times faster that way.
 uint32_t g_fps_at = 0;
-// A switch asked for from another thread (the headset's left thumbstick click), applied at
-// the next frame's end so that the rate only ever changes between frames, on the guest thread.
-std::atomic<int> g_fps_request{0};
-// The rate asked for (WR_FPS, `fps` in vr.txt, the thumbstick); g_fps is the rate in force,
-// which is the wanted one in a race and 30 everywhere else (wr_fields_per_frame).
-int g_wanted = 30;
+// The rate asked for: 60 by default, WR_FPS over that, `fps` in vr.txt over both (the
+// frontends pass the file's value through wr::set_fps, with wanted_fps() as its default);
+// g_fps is the rate in force, the wanted one in a race and 30 everywhere else.
+int g_wanted = 60;
 // Whether the game is in a race: the same guest state that puts the headset in stereo
 // (runtime/vr_waverace.cpp, docs/dev/vr.md "Theater and stereo"), less the starting-light
 // rig, which is a draw test. The on-course count at 0x80602160 is positive from the course
@@ -163,19 +161,17 @@ void set_fps(int fps) {
 }
 int fps() { return g_fps; }
 int wanted_fps() { return g_wanted; }
-void request_fps(int fps) { g_fps_request.store(fps, std::memory_order_relaxed); }
-void toggle_fps() { request_fps(g_wanted == 60 ? 30 : 60); }
 float frame_dt() { return 1.0f / (float)g_fps; }
 }  // namespace wr
 
 // Called once a frame from fn_80007A94, the frame's end, at the retrace wait: every frame
 // the game presents passes here, the logo and title screens' as much as a race's. This is
-// where the step scale learns that a frame has passed and where a change of rate is
-// applied. It used to be the mode runner's advance of the frame counter (below), which
+// where the step scale learns that a frame has passed and where the rate is applied. It used to be the mode runner's advance of the frame counter (below), which
 // the logo and title screens never reach: there the step clock stood still, so nothing was
 // gated or halved and the whole title sequence ran at double speed, the title's water
 // included, patches and tables notwithstanding (docs/dev/performance.md, "The title
-// sequence").
+// sequence"). (The headset's left thumbstick click switched the rate here from 2026-10-10
+// to 2026-10-11, for comparing the two; 60 is the default now and vr.txt the switch.)
 //
 // `game` is the game's own count: 2 in play (mode 5, the attract demo's 9) and 1 on the
 // logo and title screens and during a course load (mode -1 and 0), as the pacing log below
@@ -190,7 +186,7 @@ float frame_dt() { return 1.0f / (float)g_fps; }
 // 60 is the race's only (2026-10-11 night, docs/dev/performance.md "The race only"). The
 // rate wanted is applied while in_race() holds and 30 is restored the frame it stops, so
 // the title, the menus, the loads, the videos and the results run as the game runs them,
-// whatever the thumbstick says, and only the race, the part the headset shows in stereo,
+// and only the race, the part the headset shows in stereo,
 // is paced at 60.
 void water_snapshot_drop();  // below, with the freeze
 extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
@@ -198,7 +194,6 @@ extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
         g_fps_at = 0;
         wr::set_fps(60);
     }
-    if (int r = g_fps_request.exchange(0, std::memory_order_relaxed)) wr::set_fps(r);
     if (const int want = in_race() ? g_wanted : 30; want != g_fps) apply_fps(want);
     if (g_fps == 30 && !in_race()) water_snapshot_drop();
     step_frame();
