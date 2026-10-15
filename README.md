@@ -153,7 +153,9 @@ $env:XR_RUNTIME_JSON = 'C:\Program Files (x86)\Steam\steamapps\common\SteamVR\st
 them somewhere else. SimRacingStudio shows the game as *Wave Race: Blue Storm*.
 
 The motion follows the rider's seat on the ski, whichever view you are actually playing in:
-the platform pitches and rolls with the hull, and collisions and landings give it a knock.
+the platform pitches and rolls with the hull, turns with the ski when its tail swings out in a
+hard turn, hums with the chop, and collisions and landings give it a knock. A bass shaker gets
+the engine, which screams during a turbo boost.
 
 Nothing the game does should jerk you: the platform eases to rest in the menus and when you
 pause, eases back in when a race starts or you resume, fades across a respawn rather than
@@ -174,13 +176,19 @@ angle_rate 120      #   and how fast pitch and roll may change, in degrees a sec
 yaw_rate 60         #   and yaw
 max_accel 15        # the most acceleration sent, in m/s^2 (about 1.5 g)
 accel_rate 300      #   and how fast it may change, in m/s^2 a second
-yaw_washout_s 1.5   # yaw is sent as the turn in progress, returning to centre over this
+slip_deadzone 12    # the platform turns only when the ski's nose is this many degrees off
+slip_gain 0.5       #   the way it is going, by this much of the rest,
+slip_max 12         #   up to this many degrees
 raw 1               # 0 to 1: how much of the hull's own tilt to use, rather than the
                     #   first-person view's gentler, smoothed one
 impact 0.25         # how hard collisions and landings knock; 0 turns them off
 impact_threshold 50 #   how big a hit has to be to knock, in m/s^2
 impact_s 0.2        #   seconds a knock takes to fade
 heave_s 0.15        # extra seconds of smoothing on the vertical; higher is gentler on chop
+chop 0.03           # how much of the chop's buzz comes through; 0 turns it off
+engine_redline 7000 # the engine's revs at engine_top_kmh, from 1500 at rest
+engine_top_kmh 120
+engine_max 9000     #   and during a turbo boost
 ski_accel_s 0.15    # seconds over which accelerations are smoothed; higher is gentler
 ski_velocity_s 0.05 # the same for the velocity they are taken from
 log 0               # 1 prints what is sent, twice a second

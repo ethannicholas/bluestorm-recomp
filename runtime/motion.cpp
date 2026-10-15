@@ -15,8 +15,14 @@
 //
 // That is the motion as the eye has it, and on a rig it is on the tame side. `raw` (0 to 1,
 // 1 by default) blends the eye's angles toward the hull's own: its pitch and roll at full size rather than
-// fp_tilt's, and unsmoothed, and its heading. A dive off a ramp pitches the hull 30 degrees
-// in a tenth of a second, and the eye takes the edge off that.
+// fp_tilt's, and unsmoothed. A dive off a ramp pitches the hull 30 degrees in a tenth of a
+// second, and the eye takes the edge off that.
+//
+// Yaw is not the heading. Turning the platform with every turn was jarring in Mario Kart, and
+// a ski is turning nearly all the time, so the platform turns only by the slip: how far the
+// hull's nose is off the way it is moving, which is the stern swinging out in a hard carve
+// (the game banks the hull by it; docs/dev/performance.md, "the seventh pass"). Past
+// `slip_deadzone` only, so a quarter of the race at most.
 //
 // The accelerations are not blended the same way. Differenced frame to frame with no easing
 // they are the hull bouncing on the chop, 100-200 m/s^2 back and forth ten or twenty times
@@ -27,7 +33,10 @@
 // 150-220, well clear of the chop's 20-40. So an impact is that fast acceleration's excess
 // over the eased one beyond `impact_threshold` (50 m/s^2), scaled by `impact` (0.25), held
 // at its peak and let go over `impact_s` (0.2 s): a knock, in the right direction, long
-// enough for a platform to make. Whatever the motion, it goes through the same safeguards
+// enough for a platform to make. The chop short of that threshold is a texture: scaled by
+// `chop` (0.03), it is about 0.75 m/s^2 RMS of heave at speed, the size Mario Kart's road
+// texture felt right at, and it is the water's own rather than made-up noise, which on a rig
+// felt like noise. Whatever the motion, it goes through the same safeguards
 // (telemetry.cpp): the ease to rest, the crossfades and the range and rate limits.
 //
 // A difference across a discontinuity is a spike, and a spike is a blow to whoever is on the
@@ -45,10 +54,14 @@
 //   position, the second sets the velocity outright, and only from the third is an
 //   acceleration differenced, easing up from zero. The first two are sent marked as a
 //   discontinuity, which the shared module fades across.
+#include "runtime.h"
 #include "motion.h"
 #include "pace.h"
 #include "telemetry.h"
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace wr {
 namespace {
@@ -69,9 +82,34 @@ struct Track {
     float heave;    // m/s^2, acc[1] eased again
     float tracked;  // seconds of accelerations since the track restarted
     float knock[3]; // m/s^2, the impact being let go
+    float chop;     // m/s^2, the fast heave's excess over the eased one, short of a knock
+    float yaw;      // degrees, the slip's yaw, eased
 };
 Track g_track;
 constexpr int kPauseFrames = 4;
+
+// The first rider's record (docs/dev/performance.md, "The steering"): rider 0 is the player's
+// ski. +4184 is the turbo's level, a float that ramps 0 to 1 over a quarter of a second when
+// Z fires the boost, holds while the countdown at +3256 runs (200, two a frame at 60), and
+// ramps back; found by snapshotting the record around each Z press of a recorded ride.
+constexpr uint32_t kRider0 = 0x80620328u;
+constexpr uint32_t kTurboLevel = kRider0 + 4184;
+
+float boost_level() {
+    uint32_t w = mem_r32(kTurboLevel);
+    float f;
+    memcpy(&f, &w, 4);
+    return f >= 0.0f && f <= 1.0f ? f : 0.0f;   // anything else is not a race's rider
+}
+
+// WR_MOTIONLOG=1 prints what goes into the telemetry module each game frame: the speed, the
+// slip, the chop and the boost (WR_MOTIONLOG_EVERY=n every nth frame).
+const int g_log_every = [] {
+    const char* e = getenv("WR_MOTIONLOG");
+    if (!e || !*e || *e == '0') return 0;
+    const char* n = getenv("WR_MOTIONLOG_EVERY");
+    return n ? (atoi(n) > 0 ? atoi(n) : 1) : 1;
+}();
 constexpr float kImpactAfter = 0.5f;   // seconds; ski_accel_s and heave_s are 0.15 each
 
 }  // namespace
@@ -99,7 +137,7 @@ void motion_frame(const EyePose& eye) {
             t.pos[i] = eye.pos[i];
             t.vel[i] = t.acc[i] = t.knock[i] = 0.0f;
         }
-        t.heave = t.tracked = 0.0f;
+        t.heave = t.tracked = t.chop = t.yaw = 0.0f;
         t.known = 1;
         t.still = 0;
         m.discontinuity = true;
@@ -134,6 +172,7 @@ void motion_frame(const EyePose& eye) {
                 const float k = copysignf(fmaxf(0.0f, fabsf(excess) - impact_threshold), excess) * impact;
                 if (fabsf(k) > fabsf(t.knock[i])) t.knock[i] = k;
                 else t.knock[i] -= t.knock[i] * rate(impact_s);
+                if (i == 1) t.chop = fminf(impact_threshold, fmaxf(-impact_threshold, excess));
             }
             t.known = 3;
             t.tracked += span;
@@ -152,21 +191,53 @@ void motion_frame(const EyePose& eye) {
     auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
     static const float raw_ang = telemetry::get("raw", 1.0f);
     auto mix = [](float eased, float r, float k) { return eased + (r - eased) * k; };
-    float dyaw = eye.raw_yaw - eye.yaw;   // across the wrap the short way
-    while (dyaw > 3.14159265f) dyaw -= 6.2831853f;
-    while (dyaw < -3.14159265f) dyaw += 6.2831853f;
+    static const float chop_gain = telemetry::get("chop", 0.03f);
     float acc[3];
-    for (int i = 0; i < 3; i++) acc[i] = (i == 1 ? t.heave : t.acc[i]) + t.knock[i];
+    for (int i = 0; i < 3; i++) acc[i] = (i == 1 ? t.heave + t.chop * chop_gain : t.acc[i]) + t.knock[i];
     constexpr float kDeg = 57.2957795f;
     m.active = true;
     m.speed_kmh = sqrtf(t.vel[0] * t.vel[0] + t.vel[2] * t.vel[2]) * 3.6f;
     m.pitch = mix(eye.pitch, eye.raw_pitch, raw_ang) * kDeg;
     m.roll = -mix(eye.roll, eye.raw_roll, raw_ang) * kDeg;   // the eye's roll is positive with the right side rising
-    m.yaw = -(eye.yaw + dyaw * raw_ang) * kDeg;              // turning right lowers the eye's yaw; a heading rises
     m.surge = dot(acc, fwd);
     m.sway = dot(acc, right);
     m.heave = acc[1];
     m.sway_velocity = dot(t.vel, right);
+
+    // Yaw: the slip, not the heading. The hull's nose against the way it is moving, right
+    // positive (the nose inside a right turn, as the stern swings out), past a dead zone and
+    // scaled; nothing at a crawl, where the velocity has no direction worth the name.
+    static const float slip_deadzone = telemetry::get("slip_deadzone", 12.0f);
+    static const float slip_gain = telemetry::get("slip_gain", 0.5f);
+    static const float slip_max = telemetry::get("slip_max", 12.0f);
+    static const float slip_s = telemetry::get("slip_s", 0.1f);
+    float slip = atan2f(t.vel[0], t.vel[2]) - eye.raw_yaw;   // turning right lowers the yaw
+    while (slip > 3.14159265f) slip -= 6.2831853f;
+    while (slip < -3.14159265f) slip += 6.2831853f;
+    slip *= kDeg;
+    const float moving = fminf(1.0f, fmaxf(0.0f, (m.speed_kmh - 10.0f) / 20.0f));
+    const float yaw = fminf(slip_max, fmaxf(0.0f, fabsf(slip) - slip_deadzone) * slip_gain);
+    m.yaw_heading = false;
+    t.yaw += (copysignf(yaw, slip) * moving - t.yaw) * (1.0f - expf(-dt / slip_s));
+    m.yaw = t.yaw;
+
+    // The engine, for the shaker: the revs follow the speed from idle to `engine_redline` at
+    // `engine_top_kmh`, and a turbo boost takes them on to the top, `engine_max`. The
+    // shaker's engine is a recording played at the revs sent (SimRacingStudio's FMOD car
+    // engine), so the boost is heard as the engine screaming.
+    static const float idle = telemetry::get("engine_idle", 1500.0f);
+    static const float redline = telemetry::get("engine_redline", 7000.0f);
+    static const float max_rpm = telemetry::get("engine_max", 9000.0f);
+    static const float top_kmh = telemetry::get("engine_top_kmh", 120.0f);
+    const float boost = boost_level();
+    const float rpm = idle + (redline - idle) * fminf(1.0f, m.speed_kmh / top_kmh);
+    m.rpm = rpm + (max_rpm - rpm) * boost;
+    m.max_rpm = max_rpm;
+
+    static unsigned log_n = 0;
+    if (g_log_every && log_n++ % g_log_every == 0)
+        fprintf(stderr, "[motion] %5.1f km/h slip %+6.1f yaw %+5.1f | heave %+6.2f chop %+6.1f knock %+6.1f | boost %.2f %4.0f rpm\n",
+                m.speed_kmh, slip, m.yaw, t.heave, t.chop, t.knock[1], boost, m.rpm);
     telemetry::publish(m);
 }
 

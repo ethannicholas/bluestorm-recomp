@@ -193,3 +193,71 @@ log is `saves/inputs/20261011-225452`.
 SimRacingStudio holds UDP 33001 while it runs, and a packet it accepts may move the platform.
 So the checks above sent to another port (`--telemetry=127.0.0.1:33011`) and decoded each
 packet with SRS's own format string. Anything sent to 33001 has to wait for someone at the rig.
+
+## What Mario Kart's ride taught (2026-10-14)
+
+`mariokartdd-recomp` took the same shared module onto a rig and found four things wrong with
+its first version (its `docs/dev/vr.md`, "On a rig"): yawing with every turn was jarring; the
+platform sat dead still on a straight; a climb tilted it too little; the shaker had no engine.
+Its road texture was first made up as filtered noise, and on the rig felt like white noise,
+all one note; what worked was its karts' own suspension. Three of the four applied here.
+
+**Yaw: the slip, not the heading.** This game sent the heading washed out, and at `raw 1` the
+hull's own, so every carve turned the rig, and a ski is carving nearly all the time. It is now
+the slip (`yaw_heading` false): the angle between the hull's nose and its velocity, which is
+the stern swinging out, the same thing the game banks the hull by (performance.md, "the
+seventh pass"). Its sign was checked on the replayed championship ride
+(`saves/inputs/20261011-225452`): with more than 15 degrees of slip, it agreed with the sway
+(into the turn) in 89% of frames and opposed the slide in 97%. Its size there in a race: 5.9
+degrees median, 17 at the 90th percentile, 28 at the 99th. Past 8 degrees it would have yawed
+38% of the race; past `slip_deadzone` 12, 22%, in runs of a quarter of a second median and a
+second at the 90th percentile. So: past 12 degrees, `slip_gain` 0.5 of the rest, at most
+`slip_max` 12, eased over `slip_s` 0.1 s, and faded out below 10-30 km/h. Sent in real time,
+yaw stepped 0.33 degrees a packet at the 99th percentile, 1.7 at most.
+
+**The chop as a texture, not noise.** The heave already rises and falls with the swell, and
+pitch and roll at `raw 1` are the hull's own, so the platform was never quite still. What was
+thrown away is the chop: the fast acceleration's excess over the eased one, 18 m/s^2 median and
+25 RMS at speed, which only counted when it passed the 50 m/s^2 impact threshold. Below that
+it now goes on heave times `chop` (0.03): about 0.75 m/s^2 RMS, the size of Mario Kart's
+suspension texture on a road. It is the water's own motion, so it is not one note.
+
+**Pitch: not doubled.** Mario Kart's climbs tilted a couple of degrees; the hull's pitch here is
+already its own at full size (`raw 1`), 30 degrees on a dive, against the 25-degree limit.
+
+**The engine, and the turbo.** The packet's rpm was zero. SimRacingStudio does not make a noise
+from it: its engine haptic is a recording, an FMOD Studio car-engine event (`sounds/engine/` in
+its install, one event with `RPM` and `Load` parameters) played on the shakers' sound card at
+the revs sent. So the rpm is all a game controls. It follows the speed, from `engine_idle` 1500
+at rest to `engine_redline` 7000 at `engine_top_kmh` 120 (the ride's racing speed is 104 km/h
+median, 116 at the 90th percentile; at 100 it sat on the redline all race), and a turbo boost
+takes it to `engine_max` 9000.
+
+The boost was found by snapshotting rider 0's record (`WR_SNAP_RANGE=80620328-806214C4`) every
+frame around two Z presses of that ride, at presented frames 9211 and 14086 (the input log's
+second column is the presented frame, in decimal). Both showed the same words start to move:
+
+| rider + | what |
+|---|---|
+| 3256 | the boost's countdown: 200 at the press, two a frame at 60, to 0 |
+| 4180 | an integer level, 0 to 15 and back |
+| 4184 | the same as a float, 0 to 1: up in about 15 frames, held while the countdown runs, down in about 15. This is what the engine follows. |
+| 3336 | a speed cap, which climbs through the boost (44 to 57) and stays |
+| 3244 | a flag word, 0x04000000 set for a few frames at the press |
+
+The boosted speed is 133 km/h median, against 104. `+3344`, which performance.md calls the
+engine's power, was tried first as the revs and is no good: it steps between 0.49, 0.65, 0.82
+and 1.01 from frame to frame. Rider 0 is the player's ski in these rides; in a two-player race
+that is untested.
+
+The shared module used to send the revs only while active, so they cut to zero when a race
+ended or paused and came back at full revs on resuming: a 4,400 rpm step in one packet, which
+a shaker plays as a thump. They now ease with the motion's own fade (gcn-recomp,
+`telemetry.cpp`). On the real-time replay after that, the largest step was 1,330 rpm, a
+collision taking 6 km/h off the speed in a frame.
+
+All of this was measured on the replayed ride (`WR_MOTIONLOG=1` prints what goes in each game
+frame, `WR_MOTIONLOG_EVERY=n` every nth), with `--hidden` because the eye comes from the
+renderer, sent to a listener on port 33011. `WR_SNAP`'s directory cannot be an absolute
+Windows path: its first colon ends the directory, so run from the directory the snapshots
+should go in. Not yet ridden.
