@@ -370,8 +370,7 @@ disc image.
 ## How it works
 
 The recompiler, the GameCube runtime, the renderer and the desktop frontend are
-[gcn-recomp](https://github.com/ethannicholas/gcn-recomp), a git submodule shared with
-[prime-recomp](https://github.com/ethannicholas/prime-recomp); they were first written here.
+[gcn-recomp](https://github.com/ethannicholas/gcn-recomp), a git submodule.
 This repository holds what is specific to Wave Race: the function layout (`analysis/`), the
 recompiler's steering tables (`recomp/*.txt`) and the game's own answers to the headset
 frontend's questions (`runtime/`).
