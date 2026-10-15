@@ -1,0 +1,12 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Wave Race: Blue Storm",
+  "wikidata": "Q945371",
+  "system": "GameCube",
+  "type": "recomp",
+  "project": "Blue Storm Recomp",
+  "status": "released",
+  "targets": ["macOS", "Windows", "Meta Quest 3"],
+  "toolchain": "gcn-recomp",
+  "original": {"region": "USA", "serial": "GWRE01"}
+}
