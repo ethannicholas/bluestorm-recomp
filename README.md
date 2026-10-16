@@ -1,21 +1,26 @@
 # bluestorm-recomp
 
 A static recompilation of *Wave Race: Blue Storm* (Nintendo GameCube, 2001) to native code,
-for macOS, Windows and the Meta Quest 3 (in VR).
+for macOS, Windows, and the Meta Quest 3.
 
 The game's PowerPC executable is translated ahead of time into C, then compiled and linked
-against a runtime that stands in for the GameCube hardware (graphics, audio, DVD, controllers,
-memory card). The result is a native program that runs the original game logic without an
-emulator's CPU core.
+against a runtime that provides virtual GameCube hardware (graphics, audio, DVD, controllers,
+memory card). The result is a native program that runs without an emulator.
+
+This recompilation contains several enhancements over the original:
+
+* VR support, both PCVR and standalone
+* 60fps support (but see Known Issues)
+* First person camera (toggleable with a right stick click)
+* Telemetry support for motion simulators
 
 > **This repository contains no game code or data.** You must supply your own disc image,
 > dumped from a copy of the game that you own. The build process reads the executable out of
-> *your* image and recompiles it locally. No game code or assets are distributed here; what
-> this repository holds about the game is a table of its function addresses and names.
+> the disc image and recompiles it locally. No game code or assets are distributed here,
 
 ## License
 
-The code in this repository and in `gcn-recomp` is released under the [MIT License](LICENSE).
+The code in this repository is released under the [MIT License](LICENSE).
 
 ## Legal
 
@@ -25,11 +30,10 @@ The code in this repository and in `gcn-recomp` is released under the [MIT Licen
   layer and the renderer) plus metadata describing code layout (function addresses and
   names in `analysis/`). It contains no copyrighted game code, assets, BIOS/IPL files or
   DSP microcode.
-- You need a legally obtained copy of the game. Dump it from your own disc using your own
-  GameCube/Wii (e.g. with [CleanRip](https://wiibrew.org/wiki/CleanRip)). Do not download
-  game images, and do not share the image, the extracted executable, the generated C code
-  (`build/gen/`), built binaries, or memory card files, since all of these contain or are
-  derived from the game.
+- You need a legally obtained copy of the game. Dump it from your own disc (e.g. with
+  [CleanRip](https://wiibrew.org/wiki/CleanRip)). Do not download game images, and do not
+  share the image, the extracted executable, the generated C code (`build/gen/`), built
+  binaries, or memory card files, since all of these contain or are derived from the game.
 
 ## Supported version
 
@@ -72,15 +76,15 @@ winget install Kitware.CMake Ninja-build.Ninja Python.Python.3.13 LLVM.LLVM Micr
 
 ### 1. Provide your game image
 
-Dump your disc, then place the image in `rom/` as an **uncompressed `.iso`**:
+Dump your disc, then place the image in `rom/` as an `.iso` or `.ciso`, e.g.:
 
 ```
 rom/game.iso
 ```
 
-If your dump is in a compressed format (`.rvz`, `.gcz`, `.ciso`), convert it to ISO first,
-for example with Dolphin (right-click the game → *Convert File…* → *Uncompressed Disc Image*),
-or with `dolphin-tool convert`, or [`nodtool`](https://github.com/encounter/nod):
+If your dump is in another format (`.rvz`, `.gcz`), convert it to ISO first, for example with
+Dolphin (right-click the game → *Convert File…* → *Uncompressed Disc Image*), or with
+`dolphin-tool convert`, or [`nodtool`](https://github.com/encounter/nod):
 
 ```sh
 cargo install --locked nodtool
@@ -93,7 +97,7 @@ Dolphin only gained RVZ support in 5.0-12188, so the 5.0 release that package ma
 cannot convert one.
 
 The build uses the first `.iso` it finds in `rom/`. To use an image elsewhere, pass
-`-DGAME_ISO=/path/to/game.iso` when configuring.
+`-DGAME_ISO=/path/to/game.iso` when building.
 
 ### 2. Build
 
@@ -105,10 +109,6 @@ The build uses the first `.iso` it finds in `rom/`. To use an image elsewhere, p
 .\build.ps1         # Windows
 ```
 
-The recompiler and runtime are the `gcn-recomp` git submodule; the build scripts fetch it if
-it is missing (or clone with `--recurse-submodules`). After pulling, `git submodule update`
-brings it to the commit this repository expects.
-
 ### 3. Run
 
 ```sh
@@ -119,23 +119,17 @@ brings it to the commit this repository expects.
 Run it from the repository root: the memory card is created in `saves/` relative to the
 current directory.
 
-There may be some shader compilation stutters during your first playthrough, but the shaders cache
+There may be some shader compilation stutters during your first playthrough, but the shader cache
 should take care of this on subsequent runs.
 
 ## Playing in VR on a PC
 
-On Windows, `--vr` plays the game on a PC VR headset through OpenXR, using whichever runtime you
-have set as active: SteamVR, Virtual Desktop, Meta Quest Link, or any other that supports OpenGL.
+On Windows, `--vr` plays the game on a PCVR headset through OpenXR, using whichever runtime you
+have set as active.
 
 ```powershell
 .\build\waverace.exe --vr
 ```
-
-Connect the headset and start its PC software first. The game behaves as it does
-[on the Quest](#playing): a flat screen in the menus, stereo 3D during races, and first person on
-the right thumbstick click. The window on the desktop mirrors what the headset shows. The Touch,
-Index and Windows Mixed Reality controllers are all mapped; on Index, Start is a firm press on the
-left trackpad. A gamepad and the keyboard work at the same time as the headset's controllers.
 
 The same [`vr.txt`](#tuning-the-vr-view) settings apply, read from a `vr.txt` in the directory you
 run the game from. To use a runtime other than the active one, point `XR_RUNTIME_JSON` at its
@@ -150,18 +144,10 @@ $env:XR_RUNTIME_JSON = 'C:\Program Files (x86)\Steam\steamapps\common\SteamVR\st
 `--telemetry` sends the jet ski's motion to a motion simulator, in the format of
 [SimRacingStudio](https://www.simracingstudio.com/)'s custom game API: UDP packets to
 `127.0.0.1:33001`, which is where SimRacingStudio listens by default. `--telemetry=host:port` sends
-them somewhere else. SimRacingStudio shows the game as *Wave Race: Blue Storm*.
+them somewhere else.
 
-The motion follows the rider's seat on the ski, whichever view you are actually playing in:
-the platform pitches and rolls with the hull, turns with the ski when its tail swings out in a
-hard turn, hums with the chop, and collisions and landings give it a knock. A bass shaker gets
-the engine, which screams during a turbo boost.
-
-Nothing the game does should jerk you: the platform eases to rest in the menus and when you
-pause, eases back in when a race starts or you resume, fades across a respawn rather than
-jumping, and every channel is limited in both how far and how fast it can move, a crash
-included. Every channel can be scaled, inverted or limited with a `telemetry.txt` in the
-directory you run the game from (all optional):
+Every channel can be scaled, inverted or limited with a `telemetry.txt` in the directory you run
+the game from (all optional):
 
 ```
 pitch_gain 1        # multiply each channel; a negative value inverts it
@@ -196,13 +182,9 @@ log 0               # 1 prints what is sent, twice a second
 
 ## Running on a Quest 3
 
-The Android build and packaging scripts are PowerShell, so these steps are written for a Windows PC;
-the same CMake configuration works from any host with the NDK (see `build-android.ps1`), but you
-would need to package the APK by hand.
-
 ### Requirements
 
-On the PC:
+On your PC:
 
 - [Android NDK](https://developer.android.com/ndk/downloads), unpacked to
   `%LOCALAPPDATA%\Android\Sdk\ndk\<version>\`
@@ -215,7 +197,7 @@ On the PC:
 - A JDK, for signing the APK: `winget install Microsoft.OpenJDK.21`
 - CMake, Ninja and Python, as for the desktop build
 
-On the headset:
+On your Quest 3:
 
 - [Developer mode](https://developer.oculus.com/documentation/native/android/mobile-device-setup/)
   enabled (this needs a Meta developer account, set up through the Meta Horizon phone app).
@@ -232,35 +214,13 @@ With your disc image in `rom/` as described above:
 ```
 
 The disc image is not part of the APK. It is copied to the app's data directory on the headset,
-`/sdcard/Android/data/com.ethannicholas.waverace/files/game.iso`, which takes a few minutes the first
-time. Your save file (the emulated memory card) and the shader cache live in the same directory, and
-survive reinstalling the app.
+`/sdcard/Android/data/com.ethannicholas.waverace/files/game.iso`, which may take a few minutes the
+first time. Your save file (the emulated memory card) and the shader cache live in the same
+directory, and survive reinstalling the app.
 
 ### Playing
 
 The app appears on the headset under **Library → Unknown Sources → Blue Storm Recomp**.
-
-Outside of races, your view will be a 2D screen in front of you. It will transition to stereoscopic
-3D at the beginning of the race. During a race, clicking the right thumbstick switches between the
-game's chase camera and a first-person view from the rider's seat.
-
-Like the desktop build, the first run through a course hitches briefly while shaders are
-compiled; later runs will take advantage of cached copies.
-
-| GameCube | Touch controller |
-|---|---|
-| Control stick | Left thumbstick |
-| C-stick | Right thumbstick |
-| A / B | A / B (right) |
-| X / Y | X / Y (left) |
-| Z | Right grip |
-| L / R | Left / right trigger |
-| Start | Menu (left) |
-| D-pad | Left thumbstick while holding the left grip |
-| *(first person on/off)* | Right thumbstick click |
-
-If something goes wrong, `adb logcat -s waverace` shows the app's log, including compositor and
-game frame counts every second.
 
 ### Tuning the VR view
 
@@ -307,7 +267,7 @@ fp_height_s 0            #   and its height; 0 follows exactly
 
 ## Controls
 
-On the desktop:
+On a Mac / Windows computer:
 
 | GameCube | Keyboard | Gamepad |
 |---|---|---|
@@ -322,8 +282,21 @@ On the desktop:
 | Start | Enter | Start |
 | D-pad | I / J / K / L | D-pad |
 
-Escape quits. Touch controller bindings for the Quest are listed
-[above](#playing).
+Escape quits.
+
+On a Quest 3:
+
+| GameCube | Touch controller |
+|---|---|
+| Control stick | Left thumbstick |
+| C-stick | Right thumbstick |
+| A / B | A / B (right) |
+| X / Y | X / Y (left) |
+| Z | Right grip |
+| L / R | Left / right trigger |
+| Start | Menu (left) |
+| D-pad | Left thumbstick while holding the left grip |
+| *(toggle first person)* | Right thumbstick click |
 
 ## Command-line options
 
