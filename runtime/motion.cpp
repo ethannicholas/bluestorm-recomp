@@ -21,8 +21,8 @@
 // Yaw is not the heading. Turning the platform with every turn was jarring in Mario Kart, and
 // a ski is turning nearly all the time, so the platform turns only by the slip: how far the
 // hull's nose is off the way it is moving, which is the stern swinging out in a hard carve
-// (the game banks the hull by it; docs/dev/performance.md, "the seventh pass"). Past
-// `slip_deadzone` only, so a quarter of the race at most.
+// (the game banks the hull by it; docs/dev/performance.md, "the seventh pass"). It is sent
+// as it is, all of it; `slip_deadzone`, `slip_gain` and `slip_max` can take some back.
 //
 // The accelerations are not blended the same way. Differenced frame to frame with no easing
 // they are the hull bouncing on the chop, 100-200 m/s^2 back and forth ten or twenty times
@@ -118,6 +118,13 @@ bool motion_enabled() { return telemetry::enabled(); }
 
 void motion_frame(const EyePose& eye) {
     if (!telemetry::enabled()) return;
+    // Pitch doubled, as in Mario Kart: on a rig the hull's own pitch hardly read, even over a
+    // ramp. (The shared module no longer limits it; the rig has its own travel.)
+    static const bool defaults = [] {
+        telemetry::set_default("pitch_gain", 2.0f);
+        return true;
+    }();
+    (void)defaults;
     telemetry::Motion m;
     Track& t = g_track;
     if (!eye.valid) {
@@ -205,20 +212,22 @@ void motion_frame(const EyePose& eye) {
     m.sway_velocity = dot(t.vel, right);
 
     // Yaw: the slip, not the heading. The hull's nose against the way it is moving, right
-    // positive (the nose inside a right turn, as the stern swings out), past a dead zone and
-    // scaled; nothing at a crawl, where the velocity has no direction worth the name.
-    static const float slip_deadzone = telemetry::get("slip_deadzone", 12.0f);
-    static const float slip_gain = telemetry::get("slip_gain", 0.5f);
-    static const float slip_max = telemetry::get("slip_max", 12.0f);
-    static const float slip_s = telemetry::get("slip_s", 0.1f);
+    // positive (the nose inside a right turn, as the stern swings out), as it is; nothing at a
+    // crawl, where the velocity has no direction worth the name. A dead zone, a gain, a limit
+    // (0 is none) and easing are there to try; at first, past 12 degrees, half, at most 12,
+    // over 0.1 s, it hardly turned the rig at all.
+    static const float slip_deadzone = telemetry::get("slip_deadzone", 0.0f);
+    static const float slip_gain = telemetry::get("slip_gain", 1.0f);
+    static const float slip_max = telemetry::get("slip_max", 0.0f);
+    static const float slip_s = telemetry::get("slip_s", 0.0f);
     float slip = atan2f(t.vel[0], t.vel[2]) - eye.raw_yaw;   // turning right lowers the yaw
     while (slip > 3.14159265f) slip -= 6.2831853f;
     while (slip < -3.14159265f) slip += 6.2831853f;
     slip *= kDeg;
     const float moving = fminf(1.0f, fmaxf(0.0f, (m.speed_kmh - 10.0f) / 20.0f));
-    const float yaw = fminf(slip_max, fmaxf(0.0f, fabsf(slip) - slip_deadzone) * slip_gain);
-    m.yaw_heading = false;
-    t.yaw += (copysignf(yaw, slip) * moving - t.yaw) * (1.0f - expf(-dt / slip_s));
+    float yaw = fmaxf(0.0f, fabsf(slip) - slip_deadzone) * slip_gain;
+    if (slip_max > 0.0f) yaw = fminf(slip_max, yaw);
+    t.yaw += (copysignf(yaw, slip) * moving - t.yaw) * (slip_s > 0.0f ? 1.0f - expf(-dt / slip_s) : 1.0f);
     m.yaw = t.yaw;
 
     // The engine, for the shaker: the revs follow the speed from idle to `engine_redline` at
@@ -236,8 +245,9 @@ void motion_frame(const EyePose& eye) {
 
     static unsigned log_n = 0;
     if (g_log_every && log_n++ % g_log_every == 0)
-        fprintf(stderr, "[motion] %5.1f km/h slip %+6.1f yaw %+5.1f | heave %+6.2f chop %+6.1f knock %+6.1f | boost %.2f %4.0f rpm\n",
-                m.speed_kmh, slip, m.yaw, t.heave, t.chop, t.knock[1], boost, m.rpm);
+        fprintf(stderr, "[motion] %5.1f km/h slip %+6.1f yaw %+5.1f | pitch %+6.1f (hull %+6.1f eye %+6.1f path %+6.1f) roll %+6.1f | heave %+6.2f chop %+6.1f knock %+6.1f | boost %.2f %4.0f rpm\n",
+                m.speed_kmh, slip, m.yaw, m.pitch, eye.raw_pitch * kDeg, eye.pitch * kDeg,
+                atan2f(t.vel[1], sqrtf(t.vel[0] * t.vel[0] + t.vel[2] * t.vel[2])) * kDeg, m.roll, t.heave, t.chop, t.knock[1], boost, m.rpm);
     telemetry::publish(m);
 }
 

@@ -150,21 +150,22 @@ Every channel can be scaled, inverted or limited with a `telemetry.txt` in the d
 the game from (all optional):
 
 ```
-pitch_gain 1        # multiply each channel; a negative value inverts it
+pitch_gain 2        # multiply each channel; a negative value inverts it
 roll_gain 1
 yaw_gain 1
 surge_gain 1        # forward acceleration
 sway_gain 1         # sideways acceleration
 heave_gain 1        # vertical acceleration
 fade_s 1            # seconds to ease in and out of rest, and to fade across a respawn
-max_angle 25        # the most pitch, roll or yaw sent, in degrees
-angle_rate 120      #   and how fast pitch and roll may change, in degrees a second
-yaw_rate 60         #   and yaw
-max_accel 15        # the most acceleration sent, in m/s^2 (about 1.5 g)
-accel_rate 300      #   and how fast it may change, in m/s^2 a second
-slip_deadzone 12    # the platform turns only when the ski's nose is this many degrees off
-slip_gain 0.5       #   the way it is going, by this much of the rest,
-slip_max 12         #   up to this many degrees
+max_angle 0         # the most pitch, roll or yaw sent, in degrees; 0 is no limit
+angle_rate 0        #   and how fast pitch and roll may change, in degrees a second
+yaw_rate 0          #   and yaw
+max_accel 0         # the most acceleration sent, in m/s^2
+accel_rate 0        #   and how fast it may change, in m/s^2 a second
+slip_deadzone 0     # the platform turns by how far the ski's nose is off the way it is
+slip_gain 1         #   going: past this many degrees, by this much of the rest,
+slip_max 0          #   up to this many degrees (0 is no limit),
+slip_s 0            #   eased over this many seconds
 raw 1               # 0 to 1: how much of the hull's own tilt to use, rather than the
                     #   first-person view's gentler, smoothed one
 impact 0.25         # how hard collisions and landings knock; 0 turns them off
@@ -172,7 +173,8 @@ impact_threshold 50 #   how big a hit has to be to knock, in m/s^2
 impact_s 0.2        #   seconds a knock takes to fade
 heave_s 0.15        # extra seconds of smoothing on the vertical; higher is gentler on chop
 chop 0.03           # how much of the chop's buzz comes through; 0 turns it off
-engine_redline 7000 # the engine's revs at engine_top_kmh, from 1500 at rest
+engine_idle 1500    # the engine's revs at rest
+engine_redline 7000 #   at engine_top_kmh
 engine_top_kmh 120
 engine_max 9000     #   and during a turbo boost
 ski_accel_s 0.15    # seconds over which accelerations are smoothed; higher is gentler
@@ -311,6 +313,8 @@ On a Quest 3:
 | `--vr` | Play on a PC VR headset (Windows; see [Playing in VR on a PC](#playing-in-vr-on-a-pc)) |
 | `--telemetry[=host:port]` | Send motion to a motion platform (see [Motion platforms](#motion-platforms)) |
 | `--no-music` | Play without the soundtrack (sound effects stay), for recording video |
+| `--record=FILE` | Record a movie of the game with its sound -- in VR, what your left eye sees; needs [ffmpeg](https://ffmpeg.org/) on the PATH. Written when you quit. |
+| `--record-size=WxH` | The movie's size (default 2560x1440) |
 | `--sample` | Print periodic profiling samples of what the game code is doing |
 | `--log-all` | Verbose hardware logging |
 

@@ -27,8 +27,9 @@ the eye lapses, as it used to on a gap in the frames.
   toward the hull's own (all the way, by default since the second rig session; see "Livelier"
   below). Roll is negated: the eye's is positive with the right side up, the telemetry's with
   the right side down.
-- **yaw** is the eye's eased heading, blended the same way, negated so that it rises turning
-  right.
+- **yaw** is the slip: the hull's nose against its velocity, right positive (see "Yaw: the
+  slip, not the heading" below). It was first the eye's eased heading, blended the same way and
+  washed out by the shared module; that turned the rig with every carve.
 - **velocity** is the eye's position differenced per game frame (`frame_dt`) and eased over
   `ski_velocity_s` (0.05 s); **acceleration** is that differenced again and eased over
   `ski_accel_s` (0.15 s, the eye's own `fp_tilt_s`). The position is the hull's exactly, so
@@ -54,15 +55,18 @@ as the ski appeared and disappeared, and going through it turned up worse cases:
   accelerations ease up from zero from the third. The first two are marked discontinuities.
 - **A respawn** jumps the eye more than 300 units in a frame. It restarts the track the same
   way, and the eye's own angles snap to the new hull too, so it is marked a discontinuity.
-- **Heading** wraps from +180 to -180. It is now unwrapped and washed out (`yaw_washout_s`):
-  the turn in progress, returning to centre.
+- **Heading** wraps from +180 to -180. It was unwrapped and washed out (`yaw_washout_s`):
+  the turn in progress, returning to centre. Since 2026-10-16 there is no heading to wrap: yaw
+  is the slip, and the shared module takes nothing else.
 - **A crash** into a wall read -70 m/s^2 for a frame.
 - **The fade** was linear, so the platform left rest at full speed.
 
 `gcn-recomp/runtime/telemetry.cpp` now builds the output in four stages, each of which stops a
 class of jerk on its own: a smoothstep ease to and from rest; a smoothstep crossfade across a
 discontinuity; the yaw washout; and, last, after the gains, a clamp on every channel's range
-and its rate of change (25 degrees at 60 degrees/s; 15 m/s^2 at 60 m/s^2 per second). The time
+and its rate of change (25 degrees at 60 degrees/s; 15 m/s^2 at 60 m/s^2 per second). Both of
+the last two are gone since: the clamp is off by default (2026-10-15, below), and the washout
+was taken out with the heading input it served (2026-10-16). The time
 between packets is capped at 0.1 s, so a stall in the game cannot let a step through either.
 
 Checked by running the scripted route: start from rest, a hard right turn, pause at 79 km/h,
@@ -204,7 +208,9 @@ all one note; what worked was its karts' own suspension. Three of the four appli
 
 **Yaw: the slip, not the heading.** This game sent the heading washed out, and at `raw 1` the
 hull's own, so every carve turned the rig, and a ski is carving nearly all the time. It is now
-the slip (`yaw_heading` false): the angle between the hull's nose and its velocity, which is
+the slip (then by setting `yaw_heading` false; the flag and the heading input are gone since
+2026-10-16, because yaw is only ever relative on a rig that turns a couple of dozen degrees):
+the angle between the hull's nose and its velocity, which is
 the stern swinging out, the same thing the game banks the hull by (performance.md, "the
 seventh pass"). Its sign was checked on the replayed championship ride
 (`saves/inputs/20261011-225452`): with more than 15 degrees of slip, it agreed with the sway
@@ -222,8 +228,10 @@ thrown away is the chop: the fast acceleration's excess over the eased one, 18 m
 it now goes on heave times `chop` (0.03): about 0.75 m/s^2 RMS, the size of Mario Kart's
 suspension texture on a road. It is the water's own motion, so it is not one note.
 
-**Pitch: not doubled.** Mario Kart's climbs tilted a couple of degrees; the hull's pitch here is
-already its own at full size (`raw 1`), 30 degrees on a dive, against the 25-degree limit.
+**Pitch: not doubled** -- which the ride overturned (below, "The first ride with all of
+this"). Mario Kart's climbs tilted a couple of degrees; the hull's pitch here is already its
+own at full size (`raw 1`), 30 degrees on a dive, against the 25-degree limit, and that was
+taken to be enough.
 
 **The engine, and the turbo.** The packet's rpm was zero. SimRacingStudio does not make a noise
 from it: its engine haptic is a recording, an FMOD Studio car-engine event (`sounds/engine/` in
@@ -261,3 +269,35 @@ frame, `WR_MOTIONLOG_EVERY=n` every nth), with `--hidden` because the eye comes 
 renderer, sent to a listener on port 33011. `WR_SNAP`'s directory cannot be an absolute
 Windows path: its first colon ends the directory, so run from the directory the snapshots
 should go in. Not yet ridden.
+
+## The first ride with all of this (2026-10-15)
+
+On the rig: the pitch hardly read, even off a ramp or over a wave where the ski was plainly
+tilted. The ride (`saves/inputs/20261015-175311`, 93 s of a race on a lake) replayed with the
+per-frame log, which now has the hull's pitch, the eye's, and the angle of the ski's own path
+(its velocity's climb), says what was sent:
+
+- The hull's pitch at racing speed: +4.6 degrees median, +11.6 at the 90th percentile, +25.6 at
+  the 99th, and -3.3 at the 1st. The 25-degree limit held it in 1% of frames and the rate limit
+  in 0.4%, so the limits were not what flattened it.
+- It is the hull, measured right: its axes from the model-view are unit length and square to
+  each other, and the matrix is the longest rigid piece of the racer, the ski that is drawn.
+  The suspicion that a scaled matrix shrank every angle was wrong.
+- It is nose-up nearly always because the game flies it that way. Planing, it sits at about
+  +5. Off a ramp its path climbs at 14 degrees with the hull at 17; through the flight the path
+  falls to -22 while the hull drifts up to +22, and it lands tail first, back to +5 at the
+  splash. Over the race, the hull's pitch and the path's angle are not correlated at all
+  (-0.01). A nose-down hull, on the back of a wave, was not seen on this lake.
+
+So a jump was sent as 20 degrees for half a second, and the rig moved little. Two changes,
+not yet ridden: pitch is doubled (`pitch_gain` 2, as Mario Kart's), and the shared module's
+range and rate limits are off unless `telemetry.txt` asks for them (gcn-recomp,
+`telemetry.cpp`), because a platform has its own travel and speed. How SimRacingStudio maps
+the degrees it is sent onto the rig's travel is the other suspect, and not yet looked at.
+
+Yaw is now the slip as it is: no dead zone, no gain, no limit and no easing (all four keys are
+still there), still faded out below 10-30 km/h. The first version's 12-degree dead zone,
+half, at most 12, turned the rig too seldom and too little to read.
+
+The ride's video was captured from the desktop window, which mirrors the left eye; that is
+what `--record` (gcn-recomp, `docs/diagnostics.md`, "Recording a movie") replaces.
