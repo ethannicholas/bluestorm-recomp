@@ -13,12 +13,15 @@ add_subdirectory(gcn-recomp)
 gcn_add_game(
   NAME waverace
   TITLE "Wave Race: Blue Storm"
-  LABEL "Blue Storm Recomp"
+  LABEL "Wave Race: Blue Storm Recomp"
   DISC_ID GWRE01
   DOL_SHA1 d500d8f5bab39ae5fed67d0a0864095a9ea190d9
   SYMBOLS ${CMAKE_SOURCE_DIR}/analysis/symbols.txt
   TABLES ${CMAKE_SOURCE_DIR}/recomp
   FPS 30
+  # The shader keys a play-through uses, compiled on a fresh install before the game starts:
+  # made by gcn-recomp/tools/shader_keys from headset caches (docs/dev/graphics.md).
+  SHADER_KEYS ${CMAKE_SOURCE_DIR}/runtime/shader_keys.bin
   # The game's half of the headset: its hooks (runtime/vr_waverace.cpp), the starting-light
   # rig detector that starts stereo, the renderer's eye hook for first person on the ski, and
   # the motion telemetry that follows that eye.

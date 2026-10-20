@@ -45,3 +45,30 @@ the compiles at first use again. The startup line reports what happened:
 ```
 [shaders] 80 programs from cache (0 from binaries, 80 compiled) in 138 ms
 ```
+
+**The game ships its keys.** `runtime/shader_keys.bin` is the list gcn-recomp compiles on a
+fresh install before the game starts (`SHADER_KEYS`; see "Shader cache" in
+`gcn-recomp/docs/graphics.md`), so a first play-through on a new headset does not hitch either.
+It was made on 2026-10-19 from the headset's two caches, both written on 2026-10-11: the
+app's (751 records) and the harness's (246). Those are in format 1, from before gcn-recomp
+a55d711, which `tools/shader_keys` does not read. A format-1 key is the current key's first 71
+words (`genmode` to `efb_tex_mask`, with the same raw register values). The five fields added
+since (`efb_pal_mask`, `efb_conv`, `ztex`, `dst_alpha`, `fg_depth`) follow those words, so each
+record was widened with those five set to zero, written as a key list, and run through
+`shader_keys`. That made the keys canonical and left 81 of the 997, 24 KB. A draw that now sets
+one of the new fields would be missing from the list. A check found none: a harness run of the
+current build in the eye path (`--eye --fast`, through the menus, a race at Southern Island and
+its results, no cache) asked for 40 keys, and all 40 were already in the list. On the Quest 3
+the first start with no cache compiles the 81 in 3.0 s. The next start restores them from
+binaries in 33 ms:
+
+```
+[shaders] 81 programs from cache (0 from binaries, 81 compiled, 81 of them from the game's key list) in 2985 ms
+[shaders] 81 programs from cache (81 from binaries, 0 compiled, 0 of them from the game's key list) in 33 ms
+```
+
+To extend the list, put it first so its order holds: `shader_keys runtime/shader_keys.bin
+runtime/shader_keys.bin <new caches>`. With no desktop toolchain, build the tool with the NDK's
+`aarch64-linux-android29-clang++` from `tools/shader_keys.cpp` and `runtime/gx/shadergen.cpp`
+(`-std=c++20 -DGCN_GL_ES -DGCN_GL_ES30 -Iruntime -Iruntime/gx/glad_es/include`), then run it
+on the headset.

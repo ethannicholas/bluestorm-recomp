@@ -222,7 +222,7 @@ directory, and survive reinstalling the app.
 
 ### Playing
 
-The app appears on the headset under **Library → Unknown Sources → Blue Storm Recomp**.
+The app appears on the headset under **Library → Unknown Sources → Wave Race: Blue Storm Recomp**.
 
 ### Tuning the VR view
 
