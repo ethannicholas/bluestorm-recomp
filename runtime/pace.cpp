@@ -31,6 +31,9 @@
 #include <atomic>
 #include <string>
 #include <vector>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 
 namespace gx { extern std::atomic<uint32_t> g_frames_submitted; }
 
@@ -202,7 +205,7 @@ extern "C" uint32_t wr_fields_per_frame(uint32_t game) {
         const uint64_t now = host_ns();
         if (now - g_c_last_ns >= 1000000000ull) {
             static const bool on = getenv("WR_PACE_LOG") != nullptr
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || (defined(TARGET_OS_VISION) && TARGET_OS_VISION)
                                    || true
 #endif
                 ;

@@ -8,7 +8,7 @@ commit the new pointer here (and in prime-recomp). Only what is specific to this
 this repository: `analysis/`, the `recomp/*.txt` tables, the game's answers to the headset
 frontends in `runtime/` (`vr_waverace.cpp`, the `vr::GameHooks`; `start_rig.cpp`, what starts
 stereo; `first_person.cpp`, the renderer's eye and frame hooks; `motion.cpp`, the motion
-telemetry that follows that eye), the two Android build scripts, and
+telemetry that follows that eye), the two Android build scripts, `build-visionos.sh`, and
 `docs/dev/`. The headset frontends themselves (`gcn-recomp/android/`) are shared since
 2026-10-10; a decision that is this game's goes in a hook, not in them.
 

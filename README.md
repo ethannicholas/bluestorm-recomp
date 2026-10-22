@@ -1,7 +1,7 @@
 # bluestorm-recomp
 
 A static recompilation of *Wave Race: Blue Storm* (Nintendo GameCube, 2001) to native code,
-for macOS, Windows, and the Meta Quest 3.
+for macOS, Windows, the Meta Quest 3 and the Apple Vision Pro.
 
 The game's PowerPC executable is translated ahead of time into C, then compiled and linked
 against a runtime that provides virtual GameCube hardware (graphics, audio, DVD, controllers,
@@ -266,6 +266,44 @@ fp_tilt_s 0.15           # seconds it takes to follow the ski's pitch and roll,
 fp_yaw_s 0.1             #   its heading,
 fp_height_s 0            #   and its height; 0 follows exactly
 ```
+
+## Running on an Apple Vision Pro
+
+### Requirements
+
+- A Mac with Xcode 26 (with the visionOS SDK), CMake, and Python 3.
+- An Apple developer account signed in to Xcode. The build signs with the team in
+  `$GCN_APPLE_TEAM`.
+- The Vision Pro paired with the Mac (Xcode → Window → Devices and Simulators) and in
+  developer mode (Settings → Privacy & Security → Developer Mode).
+
+### Build and install
+
+With your disc image in `rom/`:
+
+```sh
+GCN_APPLE_TEAM=<your team id> ./build-visionos.sh --install --push-image
+```
+
+The first build also builds [ANGLE](https://chromium.googlesource.com/angle/angle) (OpenGL
+ES on Metal) from WebKit's sources, which takes a few minutes. `--push-image` copies the disc
+image into the app's Documents folder, which takes several minutes over Wi-Fi. You can
+instead choose it from the Files app in the app's launcher window. The memory card, the
+shader cache, `vr.txt` and the logs live in the same folder, which the Files app shows under
+*On My Apple Vision Pro*.
+
+### Playing
+
+Open **Wave Race: Blue Storm Recomp**. The game runs in a full immersive space; leaving it
+closes the app.
+
+With **PlayStation VR2 Sense controllers**, the buttons are as on the Quest (see
+[Controls](#controls)): the Sense controller's two face buttons on each hand are the Touch
+controller's A and B on the right and X and Y on the left. With a **gamepad** (Xbox,
+PlayStation or MFi), the buttons are laid out as on the desktop, and a right stick click
+switches to first person.
+
+`vr.txt` in the app's Documents folder takes the same settings as on the Quest.
 
 ## Controls
 

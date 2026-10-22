@@ -1036,3 +1036,28 @@ its `read(fd, buf, sizeof(buf) - 1)`, and two copies of `log_pump` mean two call
 Neither `kill -3` nor `debuggerd` works here — the first is refused across uids and the second
 wants root — and the traces the system does write land in `/data/anr`, which the shell cannot read
 either.
+
+## The Vision Pro (2026-10-21)
+
+A standalone Vision Pro build, on gcn-recomp's `visionos/` frontend (how it works, and what
+Prime's first runs on a device overturned, is in `gcn-recomp/docs/visionos.md`): the Quest's
+frontend core on a small OpenXR runtime over CompositorServices, ARKit and GameController,
+the renderer on ANGLE. `VISIONOS_BUNDLE_ID` in `CMakeLists.txt` turns it on, and
+`build-visionos.sh` builds, installs and pushes the disc image, as Prime's does.
+
+This game needed no new hooks. It has no `map_pad`, so a PS VR2 Sense controller, mapped
+onto the Touch profile, plays as a Touch controller on a Quest, the grip-held D-pad and the
+right stick click for first person included. A gamepad gets `vr::default_gamepad_layout`,
+the desktop's GameCube layout, and its right stick click is the same toggle. Nothing here
+follows a hand or the gaze, so `vr::gamepad_play()`, which Prime uses to stop the camera
+following the head, has nothing to change. The one change is the `[pace]` line once a
+second (`runtime/pace.cpp`), on in the app as it is on a Quest, so `log.txt` has the frame
+rate.
+
+Built and linked; not yet run on a device (the headset was locked when it was ready to
+install, so the developer disk image could not be mounted). To look at on the first run:
+whether the race holds 60 (the `[pace]` lines), the levelled sea and the HUD frame's height
+(`world_pitch_deg`, `hud_height_m`, tuned on a Quest), the theater panel, the water's
+reflections in stereo, and whether the motion telemetry's UDP reaches a rig from the
+headset at all (visionOS may want local-network permission for it, which the app does not
+ask for).

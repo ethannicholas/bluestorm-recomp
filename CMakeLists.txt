@@ -9,6 +9,7 @@ endif()
 # See its README. What is left here is the game's tables and its answers to the frontends'
 # questions: when to be in stereo, where the eye sits on the ski, how big the world is.
 add_subdirectory(gcn-recomp)
+gcn_enable_languages()
 
 gcn_add_game(
   NAME waverace
@@ -30,4 +31,6 @@ gcn_add_game(
           ${CMAKE_SOURCE_DIR}/runtime/motion.cpp
   # The headset app and its harness, on an Android build: see build-android.ps1 and
   # package-apk.ps1.
-  ANDROID_PACKAGE com.ethannicholas.waverace)
+  ANDROID_PACKAGE com.ethannicholas.waverace
+  # The Vision Pro app, on a visionOS build: see build-visionos.sh.
+  VISIONOS_BUNDLE_ID com.ethannicholas.waverace)
