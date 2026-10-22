@@ -303,7 +303,8 @@ controller's A and B on the right and X and Y on the left. With a **gamepad** (X
 PlayStation or MFi), the buttons are laid out as on the desktop, and a right stick click
 switches to first person.
 
-`vr.txt` in the app's Documents folder takes the same settings as on the Quest.
+`vr.txt` in the app's Documents folder takes the same settings as on the Quest, and one of its
+own: `render_quality` (0 to 1, default 1) sets how many pixels the headset gives each eye.
 
 ## Controls
 

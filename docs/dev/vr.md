@@ -1054,10 +1054,20 @@ following the head, has nothing to change. The one change is the `[pace]` line o
 second (`runtime/pace.cpp`), on in the app as it is on a Quest, so `log.txt` has the frame
 rate.
 
-Built and linked; not yet run on a device (the headset was locked when it was ready to
-install, so the developer disk image could not be mounted). To look at on the first run:
-whether the race holds 60 (the `[pace]` lines), the levelled sea and the HUD frame's height
-(`world_pitch_deg`, `hud_height_m`, tuned on a Quest), the theater panel, the water's
-reflections in stereo, and whether the motion telemetry's UDP reaches a rig from the
-headset at all (visionOS may want local-network permission for it, which the app does not
-ask for).
+On the device (2026-10-21 and 22): played through a whole championship. It plays as it
+does on the Quest 3, at 60. The Quest's view settings (`world_pitch_deg`, `hud_height_m`)
+needed no change.
+
+- **The resolution was lower than the Quest's.** Each view was 1888x1792 with foveation
+  off. On top of that, dynamic resolution held the eyes at about half of each side,
+  because of a GPU time ANGLE overstates. The layer is now foveated at render quality 1,
+  and the eyes are 2432x2368 with no budget. The championship ran at 60 like that. How,
+  and what disproved the first numbers, is in `gcn-recomp/docs/visionos.md`
+  ("Resolution").
+- **The water vanished for a frame or two once, mid-race.** Possibly a draw left out while
+  its program was built: the championship built five programs that were not in the
+  shipped list. The list now has them (`graphics.md`, "95 keys from the Vision Pro").
+  Whether that was the cause is not known; if it happens again with the full list, it was
+  something else.
+- Not yet checked: whether the motion telemetry's UDP reaches a rig from the headset
+  (visionOS may want local-network permission for it, which the app does not ask for).

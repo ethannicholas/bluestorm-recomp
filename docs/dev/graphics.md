@@ -72,3 +72,17 @@ runtime/shader_keys.bin <new caches>`. With no desktop toolchain, build the tool
 `aarch64-linux-android29-clang++` from `tools/shader_keys.cpp` and `runtime/gx/shadergen.cpp`
 (`-std=c++20 -DGCN_GL_ES -DGCN_GL_ES30 -Iruntime -Iruntime/gx/glad_es/include`), then run it
 on the headset.
+
+**95 keys from the Vision Pro (2026-10-22).** The list was 81 keys when the Vision Pro first
+ran it. Two sessions there, the second a whole championship, left a cache of 95. The first
+session compiled the shipped 81 and 9 more. The championship added another 5. Only one of
+those shows in the log, a `[stall]` line on a course-loading theater frame with one draw left
+out. Those lines are written only for frames over 50 ms, so the other four were built during
+normal frames. Any of them could be the frame or two in mid-race where the water vanished,
+since a draw whose program is still being built is left out. That was not proven. Merged in
+as above (`shader_keys` from the desktop build reads the headset's GL ES cache), the list is
+95 keys. On the headset with its cache emptied, every one came from the list:
+
+```
+[shaders] 95 programs from cache (0 from binaries, 95 compiled, 95 of them from the game's key list) in 318 ms
+```
