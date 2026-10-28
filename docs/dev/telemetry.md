@@ -198,6 +198,12 @@ SimRacingStudio holds UDP 33001 while it runs, and a packet it accepts may move 
 So the checks above sent to another port (`--telemetry=127.0.0.1:33011`) and decoded each
 packet with SRS's own format string. Anything sent to 33001 has to wait for someone at the rig.
 
+To see the motion rather than read it, `~/Source/telemetry-visualizer` (a sibling project, not
+a submodule) listens on a port, moves a Stewart platform with what arrives and charts every
+channel. Its rig is an illustration (angles as sent, accelerations as a few centimetres of
+travel), not SRS's mapping. With `--forward 127.0.0.1:33001` it passes each packet on, so the
+game can go to it on another port while SRS still drives the rig.
+
 ## What Mario Kart's ride taught (2026-10-14)
 
 `mariokartdd-recomp` took the same shared module onto a rig and found four things wrong with
